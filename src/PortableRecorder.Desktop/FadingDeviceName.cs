@@ -21,7 +21,7 @@ public sealed class FadingDeviceName : Grid
         Width = 146; Height = 44;
         ColumnDefinitions.Add(new() { Width = new GridLength(24) });
         ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
-        var microphone = Design.Icon("\uE720",16,Design.Grey);
+        var microphone = Design.Icon("\uE720",16,Design.White);
         microphone.HorizontalAlignment = HorizontalAlignment.Left;
         microphone.IsHitTestVisible = false;
         Children.Add(microphone);
@@ -49,7 +49,7 @@ public sealed class FadingDeviceName : Grid
 
     private void UpdateOverflow()
     {
-        // Short names shrink the group, keeping the following knob 10 DIP away.
+        // Short names shrink the group, keeping the following knob 16 DIP away.
         Width = 24 + Math.Min(MaxTextWidth, _text.ActualWidth);
         _viewport.Clip = new RectangleGeometry { Rect = new Rect(0, 0, _viewport.ActualWidth, _viewport.ActualHeight) };
         _fade.Visibility = _text.ActualWidth > _viewport.ActualWidth + .5 ? Visibility.Visible : Visibility.Collapsed;

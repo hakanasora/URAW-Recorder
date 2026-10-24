@@ -44,7 +44,7 @@ public sealed class MainWindow : Window
     private int _transportGeneration;
     private readonly StackPanel _level=new(),_pitch=new(),_inputPage=new(){Spacing=24},_filePage=new(){Spacing=24};
     private readonly FadingDeviceName _inputName=new();
-    private readonly TextBlock _number=Design.Text("32.0",69),_peak=Design.Text("",14,Design.Muted);
+    private readonly TextBlock _number=Design.Text("32.0",69),_peak=Design.Text("",14,Design.White);
     private readonly TextBlock _note=Design.Text("B2",69),_frequency=Design.Text("123.47",20),_clock=Design.Text("00:00.00",32),_sessionLabel=Design.Text("录制中",12,Design.Zero);
     private readonly TextBlock _fileHint=Design.Text("",12,Design.Label),_pathError=Design.Text("",12,Design.Alert);
     private readonly Border _minus=new(){Width=18,Height=5,Background=Design.Brush(Design.White),VerticalAlignment=VerticalAlignment.Center};
@@ -62,7 +62,7 @@ public sealed class MainWindow : Window
     private bool _firstFrameLogged,_paneOpen,_updatingForm,_started;
     private double _lastSnapshot=-1;
     private int? _displayedNote;
-    private readonly SolidColorBrush _normalPeakInk=Design.Brush(Design.Muted),_overloadPeakInk=Design.Brush(Design.Alert);
+    private readonly SolidColorBrush _normalPeakInk=Design.Brush(Design.White),_overloadPeakInk=Design.Brush(Design.Alert);
     private static readonly bool OverlayDrawer=false;
 
     public MainWindow()
@@ -103,12 +103,12 @@ public sealed class MainWindow : Window
         _header.Children.Add(new Border{Background=Design.Brush(Design.Hex("0A0A0A")),CornerRadius=new CornerRadius(4),Padding=new Thickness(4),Child=_modeSelector,HorizontalAlignment=HorizontalAlignment.Center,VerticalAlignment=VerticalAlignment.Center});
         _monitor.Children.Add(_canvas);BuildReadouts();
         _transport.Background=Design.Brush(Design.Transport);_transport.Children.Add(new Border{Height=1,Background=Design.Brush(Design.Line),VerticalAlignment=VerticalAlignment.Top});
-        _gain=new(_state){Width=96,HorizontalAlignment=HorizontalAlignment.Left,VerticalAlignment=VerticalAlignment.Center,Margin=new Thickness(184,0,0,0)};_transport.Children.Add(_gain);
+        _gain=new(_state){Width=96,HorizontalAlignment=HorizontalAlignment.Left,VerticalAlignment=VerticalAlignment.Center,Margin=new Thickness(190,0,0,0)};_transport.Children.Add(_gain);
         _inputName.HorizontalAlignment=HorizontalAlignment.Left;
         _inputName.VerticalAlignment=VerticalAlignment.Center;
         _inputName.Margin=new Thickness(28,0,0,0);
         _transport.Children.Add(_inputName);
-        _inputName.SizeChanged+=(_,_)=>_gain.Margin=new Thickness(28+_inputName.ActualWidth+10,0,0,0);
+        _inputName.SizeChanged+=(_,_)=>_gain.Margin=new Thickness(28+_inputName.ActualWidth+16,0,0,0);
         _clockSlot.Width=240;_clockSlot.Height=60;
         _clockSlot.RowDefinitions.Add(new(){Height=new GridLength(20)});
         _clockSlot.RowDefinitions.Add(new(){Height=new GridLength(40)});
@@ -190,6 +190,7 @@ public sealed class MainWindow : Window
         _level.Width=200;_level.Margin=new Thickness(28,0,0,0);_level.HorizontalAlignment=HorizontalAlignment.Left;_level.VerticalAlignment=VerticalAlignment.Center;
         var row=new StackPanel{Orientation=Orientation.Horizontal,Spacing=4,Height=72};_number.FontWeight=FontWeights.Bold;_number.CharacterSpacing=-20;row.Children.Add(_minus);row.Children.Add(_number);_level.Children.Add(row);
         var units=Design.Text("dBFS · RMS",12,Design.Muted);units.Height=16;units.Margin=new Thickness(0,10,0,0);_level.Children.Add(units);
+        _peak.FontWeight=FontWeights.Bold;
         var peakRow=new StackPanel{Orientation=Orientation.Horizontal,Spacing=8,Height=28,Margin=new Thickness(0,16,0,0)};
         var reset=Design.Button(Design.Icon("\uE777",14),"清除历史输出峰值",Colors.Transparent);reset.Width=24;reset.Height=28;reset.Padding=new Thickness(0);reset.TabIndex=3;
         reset.Click+=(_,_)=>{_state.ResetPeak();RefreshValues();};peakRow.Children.Add(_peak);peakRow.Children.Add(reset);_level.Children.Add(peakRow);_monitor.Children.Add(_level);
