@@ -80,7 +80,8 @@ public sealed class MainWindow : Window
         _root.Background=Design.Brush(micaSupported?Colors.Transparent:Design.Display);
         // Neutral veils preserve the gray/near-black hierarchy while allowing visible Mica Alt tint.
         var displaySurface=MaterialSurface.Tint(Design.Display,micaSupported?MaterialSurface.DisplayVeilAlpha:255);
-        var transportSurface=MaterialSurface.Tint(Design.Transport,micaSupported?MaterialSurface.TransportVeilAlpha:255);
+        var acrylicSupported=DesktopAcrylicController.IsSupported();
+        var transportSurface=MaterialSurface.Tint(Design.Transport,acrylicSupported?MaterialSurface.TransportVeilAlpha:255);
         StartupLog.Write($"Material: MicaAlt={micaSupported}; neutral veils display={MaterialSurface.DisplayVeilAlpha}/255, transport={MaterialSurface.TransportVeilAlpha}/255");
         _root.RowDefinitions.Add(new(){Height=new GridLength(32)});_root.RowDefinitions.Add(new(){Height=new GridLength(1,GridUnitType.Star)});
         var title=new Grid{Background=Design.Brush(displaySurface),Height=32};
@@ -112,7 +113,10 @@ public sealed class MainWindow : Window
         _modeSelector=Design.Selector(["电平","频谱","音高"],76,2,index=>{_state.Mode=(MonitorMode)index;if(_started)RefreshMode();});_modeSelector.TabIndex=1;
         _header.Children.Add(new Border{Background=Design.Brush(Design.Hex("0A0A0A")),CornerRadius=new CornerRadius(4),Padding=new Thickness(4),Child=_modeSelector,HorizontalAlignment=HorizontalAlignment.Center,VerticalAlignment=VerticalAlignment.Center});
         _monitor.Children.Add(_canvas);BuildReadouts();
-        _transport.Background=Design.Brush(transportSurface);
+        _transport.Background=Design.Brush(Design.Transport);
+        if(acrylicSupported)
+            _transport.Children.Add(new SystemBackdropElement{SystemBackdrop=new TransportBackdrop(),IsHitTestVisible=false});
+        _transport.Children.Add(new Border{Background=Design.Brush(transportSurface),IsHitTestVisible=false});
         _transport.Children.Add(new Border{Height=1,Background=Design.Brush(MaterialSurface.Tint(Colors.White,14)),VerticalAlignment=VerticalAlignment.Top,IsHitTestVisible=false});
         _gain=new(_state){Width=96,HorizontalAlignment=HorizontalAlignment.Left,VerticalAlignment=VerticalAlignment.Center,Margin=new Thickness(190,0,0,0)};_transport.Children.Add(_gain);
         _inputName.HorizontalAlignment=HorizontalAlignment.Left;

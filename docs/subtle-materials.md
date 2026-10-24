@@ -2,7 +2,17 @@
 
 日期：2026-10-25。
 
-## 当前版本：增强材质试版
+## 当前版本：上下异质、底栏透明加强
+
+针对连续两轮效果偏弱的反馈，底栏改用局部 SystemBackdropElement + 自定义 TransportBackdrop，使用 DesktopAcrylicController 的 Thin 模式，实时模糊窗后内容。参数：TintColor #0E0E0E，TintOpacity 0.25，LuminosityOpacity 0.45，额外中性覆盖仅 alpha 24/255。不支持 Acrylic 时保留原纯色；系统默认配置负责透明效果策略、焦点及高对比状态，目标断开时移除并释放控制器。
+
+Display 与标题栏保留 Mica Alt，覆盖 alpha 128/255，底材透出约 49.8%；其布局及顶光不变。底栏的 Acrylic 不是 Mica 透出百分比，最终透明感还取决于原生模糊、亮度及染色参数，不能把 24/255 简化理解成最终 91% 透明。
+
+两区共享原布局但使用不同材质：Display 稳定，底栏更明显地呈现环境色与磨砂透光。设备名字形渐隐与原交互保持。仅必要发布编译、启动及 Git 差异核对；实际透明观感仍待实窗复核。
+
+依据：[系统背景及局部材质区域](https://learn.microsoft.com/en-us/windows/apps/develop/ui/system-backdrops)。
+
+## 上一版：增强 Mica 试版（已被上方方案替代）
 
 用户反馈首版几乎无法察觉。当前改用 MicaBackdrop BaseAlt，允许更明显的壁纸染色；显示区中性覆盖 alpha 160/255（底材透出约 37.3%），控制区覆盖 alpha 144/255（底材透出约 43.5%）。基准色仍是 #1B1B1B / #0E0E0E，实际像素由系统材质与覆盖层共同决定。
 
