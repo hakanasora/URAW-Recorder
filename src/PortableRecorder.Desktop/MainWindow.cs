@@ -76,12 +76,12 @@ public sealed class MainWindow : Window
         _primaryFade=new NativeFade(_primaryContent,()=>_settings.AnimationsEnabled);
         _root.RequestedTheme=ElementTheme.Dark;
         var micaSupported=MicaController.IsSupported();
-        if(micaSupported)SystemBackdrop=new MicaBackdrop{Kind=MicaKind.BaseAlt};
+        if(micaSupported)SystemBackdrop=new MicaBackdrop{Kind=MicaKind.Base};
         _root.Background=Design.Brush(micaSupported?Colors.Transparent:Design.Display);
-        // Neutral veils preserve the gray/near-black hierarchy while allowing visible Mica Alt tint.
+        // Neutral veils preserve the gray/near-black hierarchy while allowing visible Mica tint.
         var displaySurface=MaterialSurface.Tint(Design.Display,micaSupported?MaterialSurface.DisplayVeilAlpha:255);
         var transportSurface=MaterialSurface.Tint(Design.Transport,micaSupported?MaterialSurface.TransportVeilAlpha:255);
-        StartupLog.Write($"Material: MicaAlt={micaSupported}; neutral veils display={MaterialSurface.DisplayVeilAlpha}/255, transport={MaterialSurface.TransportVeilAlpha}/255");
+        StartupLog.Write($"Material: Mica={micaSupported}; neutral veils display={MaterialSurface.DisplayVeilAlpha}/255, transport={MaterialSurface.TransportVeilAlpha}/255");
         _root.RowDefinitions.Add(new(){Height=new GridLength(32)});_root.RowDefinitions.Add(new(){Height=new GridLength(1,GridUnitType.Star)});
         var title=new Grid{Background=Design.Brush(displaySurface),Height=32};
         title.Children.Add(new TextBlock{Text=Title,FontSize=12,Foreground=Design.Brush(Design.Muted),Margin=new Thickness(16,0,140,0),VerticalAlignment=VerticalAlignment.Center});
@@ -96,7 +96,7 @@ public sealed class MainWindow : Window
         _main.RowDefinitions.Add(new(){Height=new GridLength(64)});
         _main.RowDefinitions.Add(new(){Height=new GridLength(236)});
         _main.RowDefinitions.Add(new(){Height=new GridLength(84)});
-        var displayPanel=MaterialSurface.DisplayPanel(displaySurface,micaSupported);
+        var displayPanel=MaterialSurface.DisplayPanel(displaySurface);
         _main.Children.Add(displayPanel);Grid.SetRowSpan(displayPanel,2);
         _main.Children.Add(_header);_main.Children.Add(_monitor);Grid.SetRow(_monitor,1);
         _main.Children.Add(_transport);Grid.SetRow(_transport,2);
