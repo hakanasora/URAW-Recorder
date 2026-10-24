@@ -13,7 +13,8 @@ public sealed class FadingDeviceName : Grid
 {
     private readonly TextBlock _text = Design.Text("", 13);
     private readonly Grid _viewport = new();
-    private readonly Border _fade;
+    private readonly LinearGradientBrush _fadeInk;
+    private readonly SolidColorBrush _solidInk=Design.Brush(Design.White);
     private string _value = "";
     private bool _recording;
     private double _expandedWidth = 146;
@@ -37,11 +38,13 @@ public sealed class FadingDeviceName : Grid
         _text.TextWrapping = TextWrapping.NoWrap;
         _text.TextTrimming = TextTrimming.None;
         naturalWidth.Children.Add(_text); _viewport.Children.Add(naturalWidth);
-        var gradient = new LinearGradientBrush { StartPoint = new Point(0, .5), EndPoint = new Point(1, .5) };
-        gradient.GradientStops.Add(new GradientStop { Offset = 0, Color = Color.FromArgb(0, Design.Transport.R, Design.Transport.G, Design.Transport.B) });
-        gradient.GradientStops.Add(new GradientStop { Offset = 1, Color = Design.Transport });
-        _fade = new Border { Width = 24, Background = gradient, HorizontalAlignment = HorizontalAlignment.Right, IsHitTestVisible = false, Visibility = Visibility.Collapsed };
-        _viewport.Children.Add(_fade);
+        // Fade the glyph fill itself: never paint a background-colored patch over Mica.
+        _fadeInk=new LinearGradientBrush{StartPoint=new Point(0,.5),EndPoint=new Point(1,.5)};
+        var transparent=Color.FromArgb(0,Design.White.R,Design.White.G,Design.White.B);
+        _fadeInk.GradientStops.Add(new GradientStop{Offset=0,Color=Design.White});
+        _fadeInk.GradientStops.Add(new GradientStop{Offset=1,Color=Design.White});
+        _fadeInk.GradientStops.Add(new GradientStop{Offset=1,Color=transparent});
+        _fadeInk.GradientStops.Add(new GradientStop{Offset=1,Color=transparent});
         _viewport.SizeChanged += (_, _) => UpdateOverflow();
         _text.SizeChanged += (_, _) => UpdateOverflow();
         Unloaded += (_, _) => { _reveal?.Stop(); _reveal=null; };
@@ -85,6 +88,14 @@ public sealed class FadingDeviceName : Grid
         _expandedWidth = 24 + Math.Min(MaxTextWidth, _text.ActualWidth);
         if(!_recording && _reveal==null && Math.Abs(Width-_expandedWidth)>.1)Width=_expandedWidth;
         _viewport.Clip = new RectangleGeometry { Rect = new Rect(0, 0, _viewport.ActualWidth, _viewport.ActualHeight) };
-        _fade.Visibility = _text.ActualWidth > _viewport.ActualWidth + .5 ? Visibility.Visible : Visibility.Collapsed;
+        if(_text.ActualWidth>_viewport.ActualWidth+.5 && _text.ActualWidth>0)
+        {
+            var edge=Math.Clamp(_viewport.ActualWidth/_text.ActualWidth,0,1);
+            var start=Math.Clamp((_viewport.ActualWidth-24)/_text.ActualWidth,0,edge);
+            _fadeInk.GradientStops[1].Offset=start;
+            _fadeInk.GradientStops[2].Offset=edge;
+            _text.Foreground=_fadeInk;
+        }
+        else _text.Foreground=_solidInk;
     }
 }

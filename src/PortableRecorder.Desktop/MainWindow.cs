@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using Microsoft.Graphics.Canvas.UI.Xaml;
+using Microsoft.UI.Composition.SystemBackdrops;
 using Microsoft.UI;
 using Microsoft.UI.Input;
 using Microsoft.UI.Text;
@@ -73,13 +74,20 @@ public sealed class MainWindow : Window
         _clockFade=new NativeFade(_clockSlot,()=>_settings.AnimationsEnabled);
         _statusFade=new NativeFade(_sessionLabel,()=>_settings.AnimationsEnabled);
         _primaryFade=new NativeFade(_primaryContent,()=>_settings.AnimationsEnabled);
-        _root.Background=Design.Brush(Design.Display);_root.RequestedTheme=ElementTheme.Dark;
+        _root.RequestedTheme=ElementTheme.Dark;
+        var micaSupported=MicaController.IsSupported();
+        if(micaSupported)SystemBackdrop=new MicaBackdrop{Kind=MicaKind.Base};
+        _root.Background=Design.Brush(micaSupported?Colors.Transparent:Design.Display);
+        // Neutral veils retain the existing gray/near-black balance, admitting only a trace of Mica.
+        var displaySurface=MaterialSurface.Tint(Design.Display,micaSupported?238:255);
+        var transportSurface=MaterialSurface.Tint(Design.Transport,micaSupported?242:255);
+        StartupLog.Write($"Material: Mica={micaSupported}; neutral veils display=238/255, transport=242/255");
         _root.RowDefinitions.Add(new(){Height=new GridLength(32)});_root.RowDefinitions.Add(new(){Height=new GridLength(1,GridUnitType.Star)});
-        var title=new Grid{Background=Design.Brush(Design.Display),Height=32};
+        var title=new Grid{Background=Design.Brush(displaySurface),Height=32};
         title.Children.Add(new TextBlock{Text=Title,FontSize=12,Foreground=Design.Brush(Design.Muted),Margin=new Thickness(16,0,140,0),VerticalAlignment=VerticalAlignment.Center});
         _root.Children.Add(title);SetTitleBar(title);
-        AppWindow.TitleBar.BackgroundColor=Design.Display;AppWindow.TitleBar.ButtonBackgroundColor=Design.Display;
-        AppWindow.TitleBar.ButtonForegroundColor=Design.Muted;AppWindow.TitleBar.ButtonInactiveBackgroundColor=Design.Display;
+        AppWindow.TitleBar.BackgroundColor=Colors.Transparent;AppWindow.TitleBar.ButtonBackgroundColor=Colors.Transparent;
+        AppWindow.TitleBar.ButtonForegroundColor=Design.Muted;AppWindow.TitleBar.ButtonInactiveBackgroundColor=Colors.Transparent;
         AppWindow.TitleBar.ButtonHoverBackgroundColor=Design.Selected;
         _root.Children.Add(_body);Grid.SetRow(_body,1);_body.Children.Add(_splitView);
         _main.Width=FixedWindowFrame.MainWidth;_main.Height=384;
@@ -88,6 +96,8 @@ public sealed class MainWindow : Window
         _main.RowDefinitions.Add(new(){Height=new GridLength(64)});
         _main.RowDefinitions.Add(new(){Height=new GridLength(236)});
         _main.RowDefinitions.Add(new(){Height=new GridLength(84)});
+        var displayPanel=MaterialSurface.DisplayPanel(displaySurface,micaSupported);
+        _main.Children.Add(displayPanel);Grid.SetRowSpan(displayPanel,2);
         _main.Children.Add(_header);_main.Children.Add(_monitor);Grid.SetRow(_monitor,1);
         _main.Children.Add(_transport);Grid.SetRow(_transport,2);
         // The main view is a sibling, never a child of the SplitView's animated content grid.
@@ -102,7 +112,8 @@ public sealed class MainWindow : Window
         _modeSelector=Design.Selector(["电平","频谱","音高"],76,2,index=>{_state.Mode=(MonitorMode)index;if(_started)RefreshMode();});_modeSelector.TabIndex=1;
         _header.Children.Add(new Border{Background=Design.Brush(Design.Hex("0A0A0A")),CornerRadius=new CornerRadius(4),Padding=new Thickness(4),Child=_modeSelector,HorizontalAlignment=HorizontalAlignment.Center,VerticalAlignment=VerticalAlignment.Center});
         _monitor.Children.Add(_canvas);BuildReadouts();
-        _transport.Background=Design.Brush(Design.Transport);_transport.Children.Add(new Border{Height=1,Background=Design.Brush(Design.Line),VerticalAlignment=VerticalAlignment.Top});
+        _transport.Background=Design.Brush(transportSurface);
+        _transport.Children.Add(new Border{Height=1,Background=Design.Brush(MaterialSurface.Tint(Colors.White,10)),VerticalAlignment=VerticalAlignment.Top,IsHitTestVisible=false});
         _gain=new(_state){Width=96,HorizontalAlignment=HorizontalAlignment.Left,VerticalAlignment=VerticalAlignment.Center,Margin=new Thickness(190,0,0,0)};_transport.Children.Add(_gain);
         _inputName.HorizontalAlignment=HorizontalAlignment.Left;
         _inputName.VerticalAlignment=VerticalAlignment.Center;
