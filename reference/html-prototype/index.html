@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>UMIK Recorder · 输入与文件设置</title>
+  <link rel="stylesheet" href="recorder.css">
+  <style>body{margin:0;padding:24px;background:#1B1B1B}@media(max-width:600px){body{padding:8px}}</style>
+</head>
+<body>
+<div id="umik-monitor-modules" data-display="level" data-recording="idle" data-input-open="false" aria-label="带输入与文件设置的双 VU 录音界面演示">
+  <div class="mm-app-shell">
+    <aside class="mm-input-drawer" id="umik-input-panel" aria-label="输入与文件设置" aria-hidden="true" inert>
+      <div class="mm-input-inner">
+        <header class="mm-input-header">
+          <h2 id="umik-input-title">INPUT</h2>
+          <button type="button" class="mm-drawer-close cursor-interaction" data-input-close aria-label="收起设置面板" data-tooltip="收起设置面板">
+            <span class="mm-icon-image" aria-hidden="true"><i data-lucide="x"></i><span class="mm-icon-fallback">×</span></span>
+          </button>
+        </header>
+        <div class="mm-input-fields">
+          <label class="mm-input-field">
+            <span class="mm-input-label"><span class="mm-icon-image" aria-hidden="true"><i data-lucide="mic"></i><span class="mm-icon-fallback">🎙︎</span></span><span>输入设备</span></span>
+            <select class="mm-input-select cursor-interaction" data-input-field="device">
+              <option value="umik1">UMIK-1 · USB</option>
+              <option value="default">系统默认输入</option>
+            </select>
+          </label>
+          <label class="mm-input-field">
+            <span class="mm-input-label"><span class="mm-icon-image" aria-hidden="true"><i data-lucide="file-text"></i><span class="mm-icon-fallback">▤</span></span><span>校准文件</span></span>
+            <select class="mm-input-select cursor-interaction" data-input-field="calibration">
+              <option value="7146299-0">7146299.txt</option>
+              <option value="7146299-90">7146299_90deg.txt</option>
+              <option value="none">不使用校准</option>
+            </select>
+          </label>
+          <div class="mm-calibration-links">
+            <button type="button" class="mm-text-link cursor-interaction" data-calibration-add>添加校准文件</button>
+            <button type="button" class="mm-text-link cursor-interaction" data-calibration-manage>管理已添加的校准</button>
+          </div>
+          <p class="mm-calibration-feedback" data-calibration-feedback role="status" hidden></p>
+          <input type="file" accept=".txt,text/plain" multiple data-calibration-picker hidden>
+        </div>
+        <section class="mm-file-section" aria-labelledby="umik-file-title">
+          <h2 class="mm-sidebar-category-title" id="umik-file-title">FILE</h2>
+          <div class="mm-input-fields">
+            <div class="mm-input-field">
+              <label class="mm-input-label" for="umik-save-path"><span class="mm-icon-image" aria-hidden="true"><i data-lucide="folder"></i><span class="mm-icon-fallback">▱</span></span><span>保存路径</span></label>
+              <div class="mm-path-row">
+                <input type="text" class="mm-input-select mm-output-path" id="umik-save-path" data-save-path placeholder="选择或输入文件夹" autocomplete="off" spellcheck="false" maxlength="1024" aria-describedby="umik-path-feedback">
+                <button type="button" class="mm-browse-button cursor-interaction" data-directory-browse aria-label="浏览保存文件夹" data-tooltip="浏览文件夹"><span class="mm-icon-image" aria-hidden="true"><i data-lucide="folder-open"></i><span class="mm-icon-fallback">▱</span></span></button>
+              </div>
+              <p class="mm-field-hint" id="umik-path-feedback" data-directory-feedback role="status" hidden></p>
+              <input type="file" webkitdirectory multiple data-directory-picker hidden>
+            </div>
+            <label class="mm-input-field">
+              <span class="mm-input-label"><span class="mm-icon-image" aria-hidden="true"><i data-lucide="file-audio"></i><span class="mm-icon-fallback">♫</span></span><span>录制格式</span></span>
+              <select class="mm-input-select cursor-interaction" data-record-format>
+                <option value="wav">WAV</option><option value="flac">FLAC</option><option value="mp3">MP3</option>
+              </select>
+            </label>
+            <label class="mm-input-field" data-compression-field hidden>
+              <span class="mm-input-label"><span class="mm-icon-image" aria-hidden="true"><i data-lucide="sliders-horizontal"></i><span class="mm-icon-fallback">☷</span></span><span>压缩品质</span></span>
+              <select class="mm-input-select cursor-interaction" data-compression-quality></select>
+              <span class="mm-field-hint" data-compression-hint></span>
+            </label>
+          </div>
+        </section>
+      </div>
+    </aside>
+    <div class="mm-main">
+  <div class="mm-board">
+    <section class="mm-display-tile" aria-label="监看显示">
+      <header class="mm-display-header">
+        <div class="mm-display-heading">
+          <div class="mm-display-picker">
+          <select class="mm-display-select cursor-interaction" data-display-select aria-label="显示内容">
+            <option value="level">输出电平</option>
+            <option value="spectrum">实时频谱</option>
+            <option value="pitch">音高与频率</option>
+          </select>
+          <span class="mm-icon-image mm-display-arrow" aria-hidden="true"><i data-lucide="chevron-down"></i><span class="mm-icon-fallback">⌄</span></span>
+          </div>
+        </div>
+      </header>
+      <div class="mm-display-viewport">
+        <section class="mm-display-panel" data-display-panel="level" aria-label="输出电平">
+          <div class="mm-meter-content">
+            <div class="mm-digital">
+              <div class="mm-digital-peak"><span class="mm-peak-lamp" data-peak-indicator role="img" aria-label="当前未过载"></span><span>PEAK <span data-value="peak">−18.6</span> dBFS</span><button type="button" class="mm-peak-reset cursor-interaction" data-peak-reset aria-label="清除已记录峰值并重新累计" data-tooltip="清除峰值，重新累计"><span class="mm-icon-image" aria-hidden="true"><i data-lucide="rotate-ccw"></i><span class="mm-icon-fallback">↺</span></span></button></div>
+              <div class="mm-digital-reading"><div class="mm-digital-number" data-value="level" role="img" aria-label="−32.0 dBFS RMS"><span class="mm-short-minus" data-level-minus aria-hidden="true"></span><span data-level-digits aria-hidden="true">32.0</span></div><div class="mm-digital-unit" data-value="level-unit">dBFS · RMS</div></div>
+            </div>
+            <div class="mm-vu-pair" role="group" aria-label="左右声道 VU；当前为单声道同步演示">
+              <figure class="mm-vu-channel">
+                <canvas class="mm-vu-canvas" data-channel="L" role="img" aria-label="左声道暖琥珀背光 VU，模拟数据"></canvas>
+                <figcaption>L</figcaption>
+              </figure>
+              <figure class="mm-vu-channel">
+                <canvas class="mm-vu-canvas" data-channel="R" role="img" aria-label="右声道暖琥珀背光 VU，单声道时与左声道同步"></canvas>
+                <figcaption>R</figcaption>
+              </figure>
+            </div>
+          </div>
+        </section>
+        <section class="mm-display-panel" data-display-panel="spectrum" aria-label="实时频谱" hidden>
+          <canvas class="mm-spectrum-plot" role="img" aria-label="超高平滑频谱示意，频率 20 Hz 至 20 kHz，纵轴为相对电平 dB"></canvas>
+        </section>
+        <section class="mm-display-panel" data-display-panel="pitch" aria-label="音高与频率" hidden>
+          <div class="mm-pitch-content">
+            <div class="mm-pitch-summary">
+              <div class="mm-note"><span data-pitch-name>B</span><sub data-pitch-octave>2</sub></div>
+              <div class="mm-hz"><span class="mm-frequency-value" data-pitch-frequency>123.47</span><span>Hz</span></div>
+              <canvas class="mm-cents-canvas" role="img" aria-label="音分刻度尺，范围负 50 至正 50 音分；当前约零音分，模拟数据"></canvas>
+            </div>
+            <canvas class="mm-pitch-canvas" role="img" aria-label="最近四秒音高轨迹，固定三个八度，随当前音高上下平滑跟随；模拟数据，右侧渐隐"></canvas>
+          </div>
+        </section>
+      </div>
+    </section>
+    <section class="mm-ctrl-tile" aria-label="录音控制演示">
+      <div class="mm-record-stage">
+        <div class="mm-clock-slot">
+          <div class="mm-input-tools">
+          <button type="button" class="mm-input-toggle cursor-interaction" data-input-toggle aria-label="打开设置面板" aria-controls="umik-input-panel" aria-expanded="false" data-tooltip="输入与文件设置">
+            <span class="mm-icon-image" aria-hidden="true"><i data-lucide="menu"></i><span class="mm-icon-fallback mm-menu-fallback">≡</span></span>
+          </button>
+          <label class="mm-gain-control" data-gain-zero="true" data-tooltip="增益：上拖增加，下拖衰减；Shift 精调，双击归零">
+            <span class="mm-gain-knob" aria-hidden="true"><span class="mm-gain-needle"></span></span>
+            <output class="mm-gain-value" data-gain-value aria-hidden="true">0 dB</output>
+            <input type="range" class="mm-gain-input" data-gain-input min="-60" max="24" step="0.1" value="0" aria-label="录音增益" aria-valuetext="0 dB，不增不减">
+          </label>
+          </div>
+          <div class="mm-record-clock" data-record-clock role="timer" aria-label="演示录音时长，分、秒和百分之一秒，满一小时增加小时位" data-tooltip="分:秒.百分秒；满一小时增加小时位" aria-live="off" hidden><span data-clock-whole>00:00</span><span class="mm-clock-fraction" data-clock-fraction>.00</span></div>
+        </div>
+        <div class="mm-record-actions" role="group" aria-label="录音演示控制">
+          <button type="button" class="mm-control-button mm-icon-button cursor-interaction" data-action="pause" aria-label="暂停录制" data-tooltip="暂停录制" aria-pressed="false" hidden disabled>
+            <span class="mm-icon-image" data-pause-icon aria-hidden="true"><i data-lucide="pause"></i><span class="mm-icon-fallback">Ⅱ</span></span>
+            <span class="mm-icon-image" data-resume-icon aria-hidden="true" hidden><i data-lucide="play"></i><span class="mm-icon-fallback">▶</span></span>
+            <span data-resume-label hidden>继续</span>
+          </button>
+          <button type="button" class="mm-control-button mm-record-button cursor-interaction" data-action="primary" aria-label="开始录制"><span class="mm-record-dot" aria-hidden="true"></span><span data-primary-label>录制</span></button>
+        </div>
+      </div>
+    </section>
+  </div>
+    </div>
+  </div>
+  <dialog class="mm-calibration-dialog" aria-labelledby="umik-calibration-manager-title" data-calibration-dialog>
+    <form method="dialog">
+      <header class="mm-calibration-manager-header"><h2 id="umik-calibration-manager-title">管理已添加的校准</h2><button type="submit" class="mm-drawer-close cursor-interaction" aria-label="关闭校准管理"><span class="mm-icon-image" aria-hidden="true"><i data-lucide="x"></i><span class="mm-icon-fallback">×</span></span></button></header>
+      <ul class="mm-calibration-list" data-calibration-list></ul>
+      <p class="mm-calibration-empty" data-calibration-empty hidden>尚未添加校准文件</p>
+      <p class="mm-calibration-feedback" data-calibration-feedback role="status" hidden></p>
+      <footer class="mm-calibration-manager-footer"><button type="button" class="mm-text-link cursor-interaction" data-calibration-add>添加校准文件</button><button type="submit" class="mm-control-button cursor-interaction">完成</button></footer>
+    </form>
+  </dialog>
+  <span class="mm-status" role="status" aria-live="polite"></span>
+</div>
+<script src="recorder.js"></script>
+</body>
+</html>

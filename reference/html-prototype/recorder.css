@@ -1,0 +1,249 @@
+#umik-monitor-modules {
+  color-scheme: dark;
+  container-type: inline-size;
+  container-name: mm-shell;
+  --mm-level: #1B1B1B;
+  --mm-shell: var(--mm-level);
+  --mm-text: #F5F5F7;
+  --mm-muted: #86868B;
+  --mm-line: light-dark(#d8ddda, #32383a);
+  --mm-grid: light-dark(#e0e4df, #292f31);
+  --mm-accent: #FFB700;
+  --mm-peak: #FF3037;
+  --mm-record: #FF3037;
+  --mm-record-ink: #F5F5F7;
+  --mm-transport: #0E0E0E;
+  --mm-transport-control: #1D1D1F;
+  --mm-transport-muted: #6E6E73;
+  --mm-gain-zero: #9D9D9F;
+  --mm-control: light-dark(#dfe3df, #303536);
+  --mm-selector: #0A0A0A;
+  --mm-selector-border: #6D6D71;
+  --mm-selector-arrow: #85858A;
+  --mm-drawer: #252527;
+  --mm-input-surface: #49494D;
+  --mm-link: light-dark(#86601d, #dfbc79);
+  --mm-gain: #0387FF;
+  --mm-gap: 0px;
+  --mm-radius: 0px;
+  color: var(--mm-text);
+  background: var(--mm-level);
+  font: 13px/1.5 Inter, "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  width: 100%;
+  max-width: 820px;
+  margin-inline: auto;
+  transition: max-width 280ms ease;
+}
+#umik-monitor-modules[data-input-open="true"] { max-width: 1060px; }
+#umik-monitor-modules * { box-sizing: border-box; }
+#umik-monitor-modules [hidden] { display: none !important; }
+#umik-monitor-modules button, #umik-monitor-modules select { font: inherit; color: inherit; }
+#umik-monitor-modules .mm-app-shell { display: grid; grid-template-columns: 0px minmax(0, 1fr); align-items: stretch; transition: grid-template-columns 280ms cubic-bezier(.22, 1, .36, 1); }
+#umik-monitor-modules[data-input-open="true"] .mm-app-shell { grid-template-columns: 240px minmax(0, 1fr); }
+#umik-monitor-modules .mm-main { min-width: 0; container-type: inline-size; container-name: mm-main; }
+#umik-monitor-modules .mm-input-drawer { position: relative; grid-column: 1; grid-row: 1; min-width: 0; min-height: 0; overflow: hidden; visibility: hidden; background: var(--mm-drawer); transition: visibility 0s 280ms; }
+#umik-monitor-modules[data-input-open="true"] .mm-input-drawer { visibility: visible; transition-delay: 0s; }
+#umik-monitor-modules .mm-main { grid-column: 2; grid-row: 1; }
+#umik-monitor-modules .mm-input-inner { position: absolute; inset: 0; width: 240px; min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: var(--mm-line) transparent; padding: 14px 22px 28px; border-right: 1px solid var(--mm-line); opacity: 0; transform: translateX(-14px); transition: transform 280ms cubic-bezier(.22, 1, .36, 1), opacity 180ms ease; }
+#umik-monitor-modules[data-input-open="true"] .mm-input-inner { opacity: 1; transform: none; }
+#umik-monitor-modules .mm-input-header { min-height: 42px; display: flex; align-items: center; justify-content: space-between; margin-bottom: 24px; }
+#umik-monitor-modules .mm-input-header h2, #umik-monitor-modules .mm-sidebar-category-title { margin: 0; color: var(--mm-text); font-size: 12px; font-weight: 500; letter-spacing: .18em; }
+#umik-monitor-modules .mm-sidebar-category-title span { margin-left: 6px; letter-spacing: .04em; }
+#umik-monitor-modules .mm-file-section { margin-top: 30px; }
+#umik-monitor-modules .mm-file-section h2 { margin-bottom: 24px; }
+#umik-monitor-modules .mm-path-row { display: grid; grid-template-columns: minmax(0, 1fr) 32px; gap: 4px; }
+#umik-monitor-modules .mm-output-path { font-family: inherit; font-size: 12px; }
+#umik-monitor-modules .mm-output-path::placeholder { color: var(--mm-muted); opacity: 1; }
+#umik-monitor-modules .mm-browse-button { display: inline-grid; place-items: center; padding: 0; border: 0; border-radius: 3px; background: var(--mm-input-surface); color: var(--mm-muted); }
+#umik-monitor-modules .mm-browse-button:hover { background: var(--mm-control); color: var(--mm-text); }
+#umik-monitor-modules .mm-browse-button .mm-icon-image svg { width: 15px; height: 15px; }
+#umik-monitor-modules .mm-field-hint { margin: 0; color: var(--mm-muted); font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; }
+#umik-monitor-modules .mm-drawer-close { display: inline-grid; place-items: center; width: 32px; min-height: 32px; border: 0; border-radius: 3px; background: transparent; color: #747476; }
+#umik-monitor-modules .mm-drawer-close:hover { color: var(--mm-text); background: var(--mm-control); }
+#umik-monitor-modules .mm-input-fields { display: grid; gap: 24px; }
+#umik-monitor-modules .mm-input-field { display: grid; gap: 10px; min-width: 0; }
+#umik-monitor-modules .mm-input-label { display: flex; align-items: center; gap: 9px; color: var(--mm-muted); font-size: 12px; }
+#umik-monitor-modules .mm-input-label .mm-icon-image { width: 16px; }
+#umik-monitor-modules .mm-input-label .mm-icon-image svg { width: 16px; height: 16px; }
+#umik-monitor-modules .mm-input-label .mm-icon-fallback { font-size: 16px; }
+#umik-monitor-modules .mm-input-select { width: 100%; min-width: 0; min-height: 37px; padding: 7px 9px; border: 0; border-radius: 3px; color: var(--mm-text); background: var(--mm-input-surface); font-size: 12px; }
+#umik-monitor-modules .mm-input-select:disabled { color: var(--mm-muted); }
+#umik-monitor-modules .mm-calibration-links { display: grid; justify-items: start; gap: 10px; margin-top: -12px; }
+#umik-monitor-modules .mm-text-link { border: 0; padding: 0; background: transparent; color: var(--mm-link); text-align: left; font-size: 12px; line-height: 1.6; text-decoration: none; text-underline-offset: 3px; }
+#umik-monitor-modules .mm-text-link:hover { text-decoration: underline; }
+#umik-monitor-modules .mm-calibration-feedback { margin: -12px 0 0; color: var(--mm-muted); font-size: 11px; }
+#umik-monitor-modules .mm-calibration-dialog { width: min(440px, calc(100% - 32px)); max-height: calc(100% - 32px); padding: 0; border: 1px solid var(--mm-line); border-radius: 4px; background: var(--mm-drawer); color: var(--mm-text); font: inherit; box-shadow: 0 18px 70px #0005; }
+#umik-monitor-modules .mm-calibration-dialog::backdrop { background: color-mix(in srgb, var(--mm-level) 70%, transparent); }
+#umik-monitor-modules .mm-calibration-dialog form { margin: 0; padding: 20px; }
+#umik-monitor-modules .mm-calibration-dialog .mm-calibration-feedback { margin: 16px 0 0; }
+#umik-monitor-modules .mm-calibration-manager-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 20px; }
+#umik-monitor-modules .mm-calibration-manager-header h2 { font-size: 14px; font-weight: 500; margin: 0; }
+#umik-monitor-modules .mm-calibration-list { padding: 0; margin: 0; list-style: none; }
+#umik-monitor-modules .mm-calibration-list li { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px 0; border-bottom: 1px solid var(--mm-line); }
+#umik-monitor-modules .mm-calibration-list li > div { min-width: 0; }
+#umik-monitor-modules .mm-calibration-entry-name { display: block; overflow-wrap: anywhere; font-size: 12px; }
+#umik-monitor-modules .mm-calibration-entry-state { display: block; margin-top: 3px; color: var(--mm-muted); font-size: 11px; }
+#umik-monitor-modules .mm-calibration-remove { flex-shrink: 0; }
+#umik-monitor-modules .mm-calibration-empty { color: var(--mm-muted); font-size: 12px; margin: 24px 0; }
+#umik-monitor-modules .mm-calibration-manager-footer { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-top: 24px; }
+#umik-monitor-modules .mm-board {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 536px;
+  grid-template-rows: 56px 244px var(--mm-transport-height, 84px);
+  column-gap: 16px;
+  row-gap: var(--mm-gap);
+  --mm-board-gutter: calc(26px + var(--mm-gap));
+  padding: 0 var(--mm-board-gutter);
+  min-height: 384px;
+  background: var(--mm-level);
+  border-radius: var(--mm-radius);
+}
+#umik-monitor-modules .mm-display-tile,
+#umik-monitor-modules .mm-ctrl-tile,
+#umik-monitor-modules .mm-display-header,
+#umik-monitor-modules .mm-display-viewport,
+#umik-monitor-modules [data-display-panel="level"],
+#umik-monitor-modules .mm-meter-content { display: contents; }
+#umik-monitor-modules .mm-display-heading { grid-column: 1; grid-row: 1; align-self: start; margin-top: min(20px, var(--mm-board-gutter)); min-width: 0; }
+#umik-monitor-modules .mm-display-picker { position: relative; display: inline-grid; max-width: 100%; vertical-align: top; }
+#umik-monitor-modules .mm-display-select { appearance: none; min-height: 36px; field-sizing: content; width: auto; max-width: 100%; min-width: 0; padding: 8px 34px 8px 12px; border: 1px solid var(--mm-selector-border); border-radius: 3px; color: var(--mm-text); background: var(--mm-selector); font-size: 12px; line-height: 18px; }
+#umik-monitor-modules .mm-display-arrow { position: absolute; right: 10px; top: 50%; transform: translateY(-50%); width: 14px; height: 14px; color: var(--mm-selector-arrow); pointer-events: none; }
+#umik-monitor-modules .mm-display-picker .mm-display-arrow svg { width: 14px; height: 14px; }
+#umik-monitor-modules .mm-display-arrow .mm-icon-fallback { font-size: 14px; }
+#umik-monitor-modules .mm-display-select option { color: var(--mm-text); background: var(--mm-level); }
+#umik-monitor-modules .mm-display-select:hover { background: var(--mm-selector); color: var(--mm-text); }
+#umik-monitor-modules .mm-digital { grid-column: 1; grid-row: 2; align-self: center; justify-self: start; width: min(216px, 100%); min-width: 0; text-align: left; }
+#umik-monitor-modules .mm-peak-lamp { flex-shrink: 0; width: 6px; height: 6px; margin-right: 3px; border-radius: 50%; background: var(--mm-muted); }
+#umik-monitor-modules[data-clipping="true"] .mm-peak-lamp { background: var(--mm-record); box-shadow: 0 0 5px var(--mm-record), 0 0 12px color-mix(in srgb, var(--mm-record) 55%, transparent); }
+#umik-monitor-modules .mm-digital-number { display: inline-flex; align-items: center; font-size: 69px; font-weight: 700; letter-spacing: -.06em; line-height: 1.05; font-variant-numeric: tabular-nums; white-space: nowrap; }
+#umik-monitor-modules .mm-short-minus { flex-shrink: 0; width: .26em; height: .075em; margin-right: .055em; background: currentColor; transform: translateY(.055em); }
+#umik-monitor-modules .mm-digital-reading { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; }
+#umik-monitor-modules .mm-digital-unit { flex-shrink: 0; color: var(--mm-muted); margin-top: 0; font-size: 11px; line-height: 1.35; letter-spacing: 0; white-space: nowrap; }
+#umik-monitor-modules .mm-digital-peak { display: flex; align-items: center; gap: 5px; color: var(--mm-muted); margin: 0 0 8px; font-size: 14px; line-height: 1.45; letter-spacing: .01em; font-weight: 400; font-variant-numeric: tabular-nums; white-space: nowrap; }
+#umik-monitor-modules .mm-digital-peak[data-overload="true"] { color: var(--mm-peak); }
+#umik-monitor-modules .mm-peak-reset { display: inline-grid; place-items: center; flex-shrink: 0; width: 24px; min-height: 28px; padding: 0; border: 0; border-radius: 3px; color: var(--mm-muted); background: transparent; }
+#umik-monitor-modules .mm-peak-reset:hover { color: var(--mm-muted); }
+#umik-monitor-modules .mm-peak-reset .mm-icon-image svg { width: 13px; height: 13px; }
+#umik-monitor-modules .mm-peak-reset .mm-icon-fallback { font-size: 15px; }
+#umik-monitor-modules .mm-vu-pair { grid-column: 2; grid-row: 2; align-self: center; justify-self: center; display: grid; grid-template-columns: repeat(2, 260px); gap: 16px; width: 536px; }
+#umik-monitor-modules .mm-vu-channel { margin: 0; min-width: 0; }
+#umik-monitor-modules .mm-vu-canvas { display: block; width: 260px; height: 159px; }
+#umik-monitor-modules .mm-vu-channel figcaption { margin-top: 9px; text-align: center; color: var(--mm-muted); font-size: 11px; letter-spacing: .12em; }
+#umik-monitor-modules .mm-display-panel { grid-column: 1 / -1; grid-row: 2; min-width: 0; min-height: 0; display: grid; grid-template-rows: minmax(0, 1fr); }
+#umik-monitor-modules .mm-display-panel[data-display-panel="level"] { display: contents; }
+#umik-monitor-modules [data-display-panel="spectrum"] { grid-template-rows: minmax(0, 1fr); }
+#umik-monitor-modules .mm-spectrum-plot { width: 100%; height: 100%; min-height: 0; display: block; }
+#umik-monitor-modules .mm-pitch-content { display: grid; grid-template-columns: minmax(170px, .8fr) minmax(0, 2fr); align-items: center; gap: 20px; min-height: 0; }
+#umik-monitor-modules .mm-pitch-summary { min-width: 0; }
+#umik-monitor-modules .mm-note { font-size: 69px; line-height: 1.05; font-weight: 400; letter-spacing: -.055em; }
+#umik-monitor-modules .mm-note sub { font-size: .53em; vertical-align: baseline; margin-left: 3px; }
+#umik-monitor-modules .mm-hz { font-size: 19px; font-variant-numeric: tabular-nums; font-weight: 400; margin-top: 13px; letter-spacing: -.025em; white-space: nowrap; }
+#umik-monitor-modules .mm-hz span { font-size: 11px; color: var(--mm-muted); margin-left: 5px; letter-spacing: 0; }
+#umik-monitor-modules .mm-hz .mm-frequency-value { font-size: inherit; color: inherit; margin-left: 0; letter-spacing: inherit; }
+#umik-monitor-modules .mm-cents-canvas { display: block; width: 100%; max-width: 200px; height: 50px; margin-top: 16px; }
+#umik-monitor-modules .mm-pitch-canvas { display: block; width: 100%; height: 100%; min-height: 0; }
+#umik-monitor-modules .mm-record-stage { grid-column: 1 / -1; grid-row: 3; align-self: stretch; justify-self: stretch; width: auto; margin-inline: calc(-1 * var(--mm-board-gutter)); background: var(--mm-transport); display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: center; column-gap: 12px; padding: 12px var(--mm-board-gutter) 14px; border-top: 1px solid color-mix(in srgb, var(--mm-line) 65%, transparent); min-width: 0; }
+#umik-monitor-modules .mm-record-stage { --mm-transport-wide: 100px; --mm-transport-narrow: 42px; --mm-muted: var(--mm-transport-muted); }
+#umik-monitor-modules .mm-clock-slot { display: contents; }
+#umik-monitor-modules .mm-input-tools { grid-column: 1; grid-row: 1; justify-self: start; display: flex; align-items: center; gap: 8px; height: 42px; }
+#umik-monitor-modules .mm-input-toggle { flex-shrink: 0; width: 32px; min-height: 42px; padding: 0; display: inline-grid; place-items: center; border: 0; border-radius: 3px; background: transparent; color: var(--mm-muted); }
+#umik-monitor-modules .mm-input-toggle:hover, #umik-monitor-modules .mm-input-toggle[aria-expanded="true"] { color: var(--mm-text); background: transparent; }
+#umik-monitor-modules .mm-input-toggle .mm-icon-image svg { width: 21px; height: 21px; }
+#umik-monitor-modules .mm-menu-fallback { font-size: 28px; line-height: 1; }
+#umik-monitor-modules .mm-gain-control { position: relative; display: inline-flex; align-items: center; gap: 7px; height: 42px; width: 82px; background: transparent; }
+#umik-monitor-modules .mm-gain-input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; touch-action: none; cursor: ns-resize; }
+#umik-monitor-modules .mm-gain-control:has(input:focus-visible) { outline: 2px solid var(--mm-gain); outline-offset: 3px; border-radius: 3px; }
+#umik-monitor-modules .mm-gain-knob { display: block; position: relative; flex-shrink: 0; width: 17px; height: 17px; border: 1.4px solid var(--mm-muted); border-radius: 50%; transform: rotate(var(--mm-gain-angle, 0deg)); }
+#umik-monitor-modules .mm-gain-needle { position: absolute; top: -2px; left: calc(50% - .75px); width: 1.5px; height: 7px; background: var(--mm-text); border-radius: 1px; }
+#umik-monitor-modules .mm-gain-value { color: var(--mm-gain); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+#umik-monitor-modules .mm-gain-control[data-gain-zero="true"] .mm-gain-value { color: var(--mm-gain-zero); }
+#umik-monitor-modules .mm-record-clock { grid-column: 2; grid-row: 1; justify-self: center; display: flex; align-items: baseline; color: var(--mm-text); font-size: 32px; line-height: 1.15; font-weight: 400; letter-spacing: -.045em; font-variant-numeric: tabular-nums; white-space: nowrap; }
+#umik-monitor-modules .mm-clock-fraction { margin-left: 0; color: inherit; font-size: inherit; letter-spacing: inherit; }
+#umik-monitor-modules .mm-record-actions { grid-column: 2; grid-row: 1; justify-self: center; display: flex; align-items: center; gap: 3px; padding: 0; border: 0; border-radius: 5px; background: transparent; }
+#umik-monitor-modules .mm-record-actions .mm-control-button { border: 0; }
+#umik-monitor-modules .mm-record-actions .mm-record-button { border-radius: 5px; }
+#umik-monitor-modules[data-transport-active="true"] .mm-record-actions { grid-column: 3; justify-self: end; }
+#umik-monitor-modules[data-transport-active="true"] .mm-record-actions [data-action="pause"] { border-radius: 5px 0 0 5px; }
+#umik-monitor-modules[data-transport-active="true"] .mm-record-actions [data-action="primary"] { border-radius: 0 5px 5px 0; }
+#umik-monitor-modules[data-transport-active="true"] .mm-record-clock { animation: mm-clock-arrive 260ms ease 180ms both; }
+#umik-monitor-modules[data-transport-active="true"] [data-action="pause"] { animation: mm-pause-arrive 260ms ease 180ms both; }
+@keyframes mm-clock-arrive { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }
+@keyframes mm-pause-arrive { from { opacity: 0; } to { opacity: 1; } }
+#umik-monitor-modules .mm-control-button { min-width: 60px; min-height: 42px; padding: 8px 10px; border: 0; border-radius: 5px; background: var(--mm-control); color: var(--mm-text); font-size: 12px; }
+#umik-monitor-modules .mm-control-button:not(:disabled):hover { filter: brightness(1.13); }
+#umik-monitor-modules .mm-control-button:disabled { opacity: .35; }
+#umik-monitor-modules .mm-record-button { min-width: 100px; background: var(--mm-record); color: var(--mm-record-ink); display: inline-flex; align-items: center; justify-content: center; gap: 8px; }
+#umik-monitor-modules .mm-record-dot { width: 10px; height: 10px; flex-shrink: 0; border-radius: 50%; background: currentColor; }
+#umik-monitor-modules[data-recording="recording"] .mm-record-dot, #umik-monitor-modules[data-recording="paused"] .mm-record-dot { border-radius: 1px; }
+#umik-monitor-modules .mm-icon-button { min-width: 42px; width: 42px; height: 42px; padding: 0; display: inline-grid; place-items: center; }
+#umik-monitor-modules .mm-record-actions [data-action] { flex: 0 0 auto; min-width: 0; padding: 8px 0; overflow: hidden; white-space: nowrap; transition: width 240ms cubic-bezier(.22, 1, .36, 1); }
+#umik-monitor-modules .mm-record-actions [data-action="primary"] { width: var(--mm-transport-wide); }
+#umik-monitor-modules .mm-record-actions [data-action="pause"] { display: inline-flex; align-items: center; justify-content: center; gap: 8px; width: var(--mm-transport-narrow); }
+#umik-monitor-modules[data-recording="paused"] .mm-record-actions [data-action="pause"] { width: var(--mm-transport-wide); }
+#umik-monitor-modules[data-recording="paused"] .mm-record-actions [data-action="primary"] { width: var(--mm-transport-narrow); }
+#umik-monitor-modules:not([data-transport-active="true"]) .mm-record-actions [data-action] { transition: none; }
+#umik-monitor-modules .mm-record-actions .mm-control-button { font-size: 14px; font-weight: 500; }
+#umik-monitor-modules[data-transport-active="true"] .mm-record-actions .mm-control-button { background: var(--mm-transport-control); color: var(--mm-text); }
+#umik-monitor-modules[data-transport-active="true"] .mm-record-actions [data-action="primary"] { color: var(--mm-record); }
+#umik-monitor-modules .mm-icon-image { display: inline-grid; place-items: center; }
+#umik-monitor-modules .mm-icon-image i { display: none; }
+#umik-monitor-modules .mm-icon-image svg { display: block; width: 18px; height: 18px; }
+#umik-monitor-modules .mm-record-actions [data-pause-icon] svg { fill: currentColor; }
+#umik-monitor-modules .mm-record-actions [data-resume-icon] svg { fill: currentColor; }
+#umik-monitor-modules .mm-icon-image:has(svg) .mm-icon-fallback { display: none; }
+#umik-monitor-modules .mm-icon-fallback { font-size: 18px; line-height: 1; }
+#umik-monitor-modules .mm-status { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+@container (max-width: 780px) {
+  #umik-monitor-modules .mm-board { grid-template-columns: minmax(0, 1fr); grid-template-rows: 56px 146px 190px var(--mm-transport-height, 84px); }
+  #umik-monitor-modules .mm-vu-pair { grid-column: 1; grid-row: 3; }
+  #umik-monitor-modules .mm-display-panel { grid-row: 2 / 4; }
+  #umik-monitor-modules .mm-record-stage { grid-row: 4; }
+}
+@container (max-width: 620px) {
+  #umik-monitor-modules .mm-board { --mm-board-gutter: 18px; }
+  #umik-monitor-modules .mm-pitch-content { gap: 12px; }
+}
+@container (max-width: 580px) {
+  #umik-monitor-modules .mm-vu-pair { width: 260px; grid-template-columns: 260px; gap: 16px; }
+  #umik-monitor-modules .mm-board { grid-template-rows: 56px 146px 378px var(--mm-transport-height, 84px); }
+  #umik-monitor-modules:not([data-display="level"]) .mm-board { grid-template-rows: 56px 146px 190px var(--mm-transport-height, 84px); }
+  #umik-monitor-modules .mm-record-stage { --mm-transport-wide: 84px; }
+  #umik-monitor-modules .mm-pitch-content { grid-template-columns: minmax(0, 1fr); grid-template-rows: 160px minmax(0, 1fr); gap: 0; }
+  #umik-monitor-modules .mm-pitch-summary { display: grid; grid-template-columns: 100px minmax(0, 1fr); align-items: center; column-gap: 16px; }
+  #umik-monitor-modules .mm-note { grid-row: 1 / 3; }
+  #umik-monitor-modules .mm-hz { margin-top: 0; align-self: end; }
+  #umik-monitor-modules .mm-cents-canvas { margin-top: 8px; align-self: start; }
+}
+@container (max-width: 580px) {
+  #umik-monitor-modules .mm-board { --mm-transport-height: 122px; }
+  #umik-monitor-modules .mm-record-stage { grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); grid-template-rows: 42px 42px; row-gap: 10px; column-gap: 6px; }
+  #umik-monitor-modules .mm-input-tools { grid-column: 1 / -1; grid-row: 1; }
+  #umik-monitor-modules .mm-record-clock { grid-column: 1 / -1; grid-row: 2; }
+  #umik-monitor-modules .mm-record-actions { grid-column: 1 / -1; grid-row: 2; justify-self: center; }
+  #umik-monitor-modules[data-transport-active="true"] .mm-record-actions { grid-column: 2 / -1; grid-row: 1; justify-self: end; }
+}
+@container mm-shell (max-width: 620px) {
+  #umik-monitor-modules .mm-app-shell,
+  #umik-monitor-modules[data-input-open="true"] .mm-app-shell { grid-template-columns: minmax(0, 1fr); grid-template-rows: 0fr auto; transition: grid-template-rows 280ms ease; }
+  #umik-monitor-modules[data-input-open="true"] .mm-app-shell { grid-template-rows: 1fr auto; }
+  #umik-monitor-modules .mm-main { grid-column: 1; grid-row: 2; }
+  #umik-monitor-modules .mm-input-inner { position: relative; inset: auto; width: 100%; min-height: 0; max-height: 420px; padding-bottom: 24px; border-right: 0; border-bottom: 1px solid var(--mm-line); }
+}
+@media (prefers-reduced-motion: reduce) {
+  #umik-monitor-modules,
+  #umik-monitor-modules .mm-app-shell,
+  #umik-monitor-modules .mm-input-drawer,
+  #umik-monitor-modules .mm-input-inner { transition: none !important; }
+  #umik-monitor-modules .mm-record-clock, #umik-monitor-modules [data-action="pause"] { animation: none !important; }
+  #umik-monitor-modules .mm-record-actions, #umik-monitor-modules .mm-record-actions [data-action] { transition: none !important; }
+}
+@media (pointer: coarse) {
+  #umik-monitor-modules .mm-display-heading { margin-top: 12px; }
+  #umik-monitor-modules button, #umik-monitor-modules select { min-height: 44px; }
+  #umik-monitor-modules .mm-icon-button { width: 44px; min-width: 44px; height: 44px; }
+  #umik-monitor-modules .mm-record-stage { --mm-transport-narrow: 44px; }
+  #umik-monitor-modules .mm-path-row { grid-template-columns: minmax(0, 1fr) 44px; }
+  #umik-monitor-modules .mm-input-toggle { width: 44px; }
+  #umik-monitor-modules .mm-peak-reset { width: 32px; }
+  #umik-monitor-modules select, #umik-monitor-modules .mm-output-path { font-size: 16px; min-height: 44px; }
+}
