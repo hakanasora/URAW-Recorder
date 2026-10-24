@@ -40,4 +40,12 @@
 
 首版已具备上述主要交互。跨屏 DPI / 大字模式、所有边界状态及字体光学微调未逐项实测；检查器与模式切换目前即时完成，动画细化留在原生实窗评审中处理。
 
+### 2026-10-24：修复发布版黑屏闪退
+
+此前确认能打开的是调试版；发布目录遗漏了应用 `.pri` 资源索引，导致交付 EXE 建出黑窗口后在原生 XAML 层退出。现在显式开启 `EnableMsixTooling` 所提供的资源构建 / 发布任务，同时仍使用 `WindowsPackageType=None`，不生成 MSIX 安装包。编译后的 XAML 随 PRI 发布，不要求有独立的 `App.xbf` 文件。
+
+已直接启动 `artifacts/native-preview/PortableRecorder.Desktop.exe`，确认首轮 Loaded、监看绘制和计时器启动完成；用户已看到修复后的实际发布界面。构建脚本会检查 EXE 与应用 PRI 是否存在，避免只凭编译成功就交付。启动器不变，没有增加自动测试。
+
+启动诊断保存在 `%LOCALAPPDATA%/PortableRecorder/Logs/startup-进程号.log`，仅记录启动阶段和异常；日志写入失败不掩盖原始错误。
+
 已评审的研究规格和静态参考图保存在 [docs/design](docs/design/README.md)。这些文档是此前设计研究的快照，其中的旧仓库路径和阶段状态属于历史背景。当前可运行内容以 `src/PortableRecorder.Desktop` 为准；旧 HTML 仅保留于 `reference/html-prototype` 作为 VU 绘制参考，不参与应用运行。

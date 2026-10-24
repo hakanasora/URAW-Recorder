@@ -17,6 +17,14 @@ try {
     Set-Location -LiteralPath $repoRoot
     & $dotnetExecutable publish src/PortableRecorder.Desktop/PortableRecorder.Desktop.csproj -c Release -p:Platform=x64 -r win-x64 --self-contained true -p:PublishSingleFile=false -o artifacts/native-preview --nologo
     if ($LASTEXITCODE -ne 0) { throw "Native build failed with exit code $LASTEXITCODE" }
+    # A successful compile alone does not guarantee a runnable WinUI publish.
+    # Compiled XAML may be embedded in the PRI; a loose App.xbf is not required.
+    foreach ($asset in @('PortableRecorder.Desktop.exe', 'PortableRecorder.Desktop.pri')) {
+        $publishedAsset = Join-Path $repoRoot ('artifacts\native-preview\' + $asset)
+        if (-not (Test-Path -LiteralPath $publishedAsset -PathType Leaf)) {
+            throw "Incomplete WinUI publish: missing $asset"
+        }
+    }
     if ($Launch) {
         Start-Process -FilePath (Join-Path $repoRoot 'artifacts\native-preview\PortableRecorder.Desktop.exe')
     }

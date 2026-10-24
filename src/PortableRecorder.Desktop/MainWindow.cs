@@ -51,7 +51,7 @@ public sealed class MainWindow : Window
     private readonly StackPanel _qualityGroup=new(){Spacing=8};
     private readonly List<Control> _configuration=[];
     private Storyboard? _widthAnimation;
-    private bool _paneOpen,_inlinePane,_userResized,_updatingForm,_started;
+    private bool _firstFrameLogged, _paneOpen,_inlinePane,_userResized,_updatingForm,_started;
     private double _lastSnapshot=-1,_programmaticResizeUntil,_unexpandedWidth=820;
     private float _textScale=1;
 
@@ -92,8 +92,26 @@ public sealed class MainWindow : Window
         _paneSelector=Design.Selector(["INPUT","FILE"],84,8,index=>{_inputPage.Visibility=index==0?Visibility.Visible:Visibility.Collapsed;_filePage.Visibility=index==1?Visibility.Visible:Visibility.Collapsed;});
         BuildInspector();
         var scrim=new Border{Background=new SolidColorBrush(Windows.UI.Color.FromArgb(61,0,0,0))};scrim.Tapped+=(_,_)=>TogglePane();_overlay.Children.Add(scrim);_body.Children.Add(_overlay);
-        _canvas.Draw+=(sender,args)=>_renderer.Draw(sender,args,_state);_state.PropertyChanged+=(_,_)=>RefreshValues();
-        _root.Loaded+=(_,_)=>{_started=true;UpdateTextScale();ResizeClient(820,416);SetMinimumSize();RefreshMode();RefreshSession(false);RefreshValues();_timer.Start();};
+        _canvas.Draw+=(sender,args)=>
+        {
+            try { _renderer.Draw(sender,args,_state); if(!_firstFrameLogged){_firstFrameLogged=true;StartupLog.Write($"First monitor frame drawn: {sender.ActualWidth} x {sender.ActualHeight}");} }
+            catch(Exception error){StartupLog.Write("Draw failed: "+error);throw;}
+        };_state.PropertyChanged+=(_,_)=>RefreshValues();
+        _root.Loaded+=(_,_)=>
+        {
+            try
+            {
+                StartupLog.Write("Root Loaded");_started=true;
+                UpdateTextScale();StartupLog.Write("Text scale ready");
+                ResizeClient(820,416);StartupLog.Write("Client resized");
+                SetMinimumSize();StartupLog.Write("Minimum size set");
+                RefreshMode();StartupLog.Write("Mode ready");
+                RefreshSession(false);StartupLog.Write("Session ready");
+                RefreshValues();StartupLog.Write("Values ready");
+                _timer.Start();StartupLog.Write("Timer started");
+            }
+            catch(Exception error){StartupLog.Write("Loaded failed: "+error);throw;}
+        };
         _main.SizeChanged+=(_,_)=>Layout();_root.KeyDown+=OnKeyDown;_timer.Tick+=(_,_)=>Tick();
         AppWindow.Changed+=(_,args)=>{if(args.DidSizeChange&&_paneOpen&&_inlinePane&&_time.Elapsed.TotalSeconds>_programmaticResizeUntil)_userResized=true;};
         _settings.AnimationsEnabledChanged+=(_,_)=>DispatcherQueue.TryEnqueue(()=>_renderer.ReducedMotion=!_settings.AnimationsEnabled);
