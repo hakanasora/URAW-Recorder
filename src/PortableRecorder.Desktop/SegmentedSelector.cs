@@ -36,7 +36,7 @@ public sealed class SegmentedSelector : UserControl
         _indicator = new Border
         {
             Width = itemWidth, Height = 28, HorizontalAlignment = HorizontalAlignment.Left,
-            CornerRadius = new CornerRadius(3), Background = Design.Brush(Design.Selected),
+            CornerRadius = new CornerRadius(3), Background = Design.Brush(MaterialSurface.Tint(Colors.White,36)),
             IsHitTestVisible = false
         };
         root.Children.Add(_indicator);

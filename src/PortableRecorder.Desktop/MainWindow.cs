@@ -110,7 +110,7 @@ public sealed class MainWindow : Window
         _settingsButton.Click+=(_,_)=>TogglePane();_header.Children.Add(_settingsButton);
 
         _modeSelector=Design.Selector(["电平","频谱","音高"],76,2,index=>{_state.Mode=(MonitorMode)index;if(_started)RefreshMode();});_modeSelector.TabIndex=1;
-        _header.Children.Add(new Border{Background=Design.Brush(Design.Hex("0A0A0A")),CornerRadius=new CornerRadius(4),Padding=new Thickness(4),Child=_modeSelector,HorizontalAlignment=HorizontalAlignment.Center,VerticalAlignment=VerticalAlignment.Center});
+        _header.Children.Add(new Border{Background=Design.Brush(MaterialSurface.Tint(Design.Hex("0A0A0A"),102)),CornerRadius=new CornerRadius(4),Padding=new Thickness(4),Child=_modeSelector,HorizontalAlignment=HorizontalAlignment.Center,VerticalAlignment=VerticalAlignment.Center});
         _monitor.Children.Add(_canvas);BuildReadouts();
         _transport.Background=Design.Brush(transportSurface);
         _transport.Children.Add(new Border{Height=1,Background=Design.Brush(MaterialSurface.Tint(Colors.White,14)),VerticalAlignment=VerticalAlignment.Top,IsHitTestVisible=false});
