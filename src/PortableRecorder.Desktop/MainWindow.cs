@@ -103,11 +103,12 @@ public sealed class MainWindow : Window
         _header.Children.Add(new Border{Background=Design.Brush(Design.Hex("0A0A0A")),CornerRadius=new CornerRadius(4),Padding=new Thickness(4),Child=_modeSelector,HorizontalAlignment=HorizontalAlignment.Center,VerticalAlignment=VerticalAlignment.Center});
         _monitor.Children.Add(_canvas);BuildReadouts();
         _transport.Background=Design.Brush(Design.Transport);_transport.Children.Add(new Border{Height=1,Background=Design.Brush(Design.Line),VerticalAlignment=VerticalAlignment.Top});
-        _gain=new(_state){Width=96,HorizontalAlignment=HorizontalAlignment.Left,VerticalAlignment=VerticalAlignment.Center,Margin=new Thickness(172,0,0,0)};_transport.Children.Add(_gain);
+        _gain=new(_state){Width=96,HorizontalAlignment=HorizontalAlignment.Left,VerticalAlignment=VerticalAlignment.Center,Margin=new Thickness(184,0,0,0)};_transport.Children.Add(_gain);
         _inputName.HorizontalAlignment=HorizontalAlignment.Left;
         _inputName.VerticalAlignment=VerticalAlignment.Center;
         _inputName.Margin=new Thickness(28,0,0,0);
         _transport.Children.Add(_inputName);
+        _inputName.SizeChanged+=(_,_)=>_gain.Margin=new Thickness(28+_inputName.ActualWidth+10,0,0,0);
         _clockSlot.Width=240;_clockSlot.Height=60;
         _clockSlot.RowDefinitions.Add(new(){Height=new GridLength(20)});
         _clockSlot.RowDefinitions.Add(new(){Height=new GridLength(40)});
@@ -245,24 +246,59 @@ public sealed class MainWindow : Window
         try{var result=await new FolderPicker(AppWindow.Id).PickSingleFolderAsync();if(result!=null)_path.Text=result.Path;_pathError.Visibility=Visibility.Collapsed;}
         catch{_pathError.Text="暂时无法打开文件夹选择器，请手动输入路径。";_pathError.Visibility=Visibility.Visible;}
     }
-    private async Task AddCalibration()
+    private async Task AddCalibration(bool selectAdded=true)
     {
         if(_state.Session.Active)return;
         try
         {
             var picker=new FileOpenPicker(AppWindow.Id);picker.FileTypeFilter.Add(".txt");var files=await picker.PickMultipleFilesAsync();if(_state.Session.Active || files is null)return;
-            foreach(var file in files){var existing=_state.Calibrations.FirstOrDefault(c=>string.Equals(c.Path,file.Path,StringComparison.OrdinalIgnoreCase));var item=existing??new CalibrationFile(file.Path,System.IO.Path.GetFileName(file.Path));if(existing==null)_state.Calibrations.Add(item);_calibrationBox.SelectedItem=item;}
+            foreach(var file in files){var existing=_state.Calibrations.FirstOrDefault(c=>string.Equals(c.Path,file.Path,StringComparison.OrdinalIgnoreCase));var item=existing??new CalibrationFile(file.Path,System.IO.Path.GetFileName(file.Path));if(existing==null)_state.Calibrations.Add(item);if(selectAdded)_calibrationBox.SelectedItem=item;}
         }
         catch{await Message("校准文件","暂时无法打开文件选择器，请稍后再试。");}
     }
     private async Task ManageCalibrations()
     {
         if(_state.Session.Active)return;
-        var list=new ListView{ItemsSource=_state.Calibrations,DisplayMemberPath="Name",Height=160,SelectedItem=_state.SelectedCalibration};var panel=new StackPanel{Spacing=12};panel.Children.Add(list);var actions=new StackPanel{Orientation=Orientation.Horizontal,Spacing=8};
-        var remove=Design.Button(Design.Text("移除",13),"从列表移除");var add=Design.Button(Design.Text("添加",13),"添加校准文件");actions.Children.Add(remove);actions.Children.Add(add);panel.Children.Add(actions);
-        remove.Click+=(_,_)=>{if(_state.Session.Active||list.SelectedItem is not CalibrationFile item||item.Path=="")return;if(item==_state.SelectedCalibration)_calibrationBox.SelectedItem=_state.Calibrations[0];_state.Calibrations.Remove(item);};add.Click+=async(_,_)=>await AddCalibration();
-        var dialog=new ContentDialog{XamlRoot=_root.XamlRoot,Title="已添加的校准",Content=panel,PrimaryButtonText="使用所选",CloseButtonText="关闭",RequestedTheme=ElementTheme.Dark};
-        if(await dialog.ShowAsync()==ContentDialogResult.Primary&&!_state.Session.Active&&list.SelectedItem is CalibrationFile chosen)_calibrationBox.SelectedItem=chosen;
+        // Management has no selection action; the input ComboBox owns the active calibration.
+        while(!_state.Session.Active)
+        {
+            var rows=new StackPanel{Spacing=4};
+            void Rebuild()
+            {
+                rows.Children.Clear();
+                foreach(var file in _state.Calibrations.Where(file=>!string.IsNullOrWhiteSpace(file.Path)).ToArray())
+                {
+                    var row=new Grid{Height=40,Background=Design.Brush(Colors.Transparent)};
+                    row.ColumnDefinitions.Add(new(){Width=new GridLength(1,GridUnitType.Star)});
+                    row.ColumnDefinitions.Add(new(){Width=new GridLength(56)});
+                    var name=Design.Text(file.Name,13);name.Margin=new Thickness(12,0,8,0);
+                    name.TextTrimming=TextTrimming.CharacterEllipsis;ToolTipService.SetToolTip(name,file.Path);
+                    row.Children.Add(name);
+                    var remove=Design.Button(Design.Text("移除",12,Design.Muted),"移除校准文件："+file.Name,Colors.Transparent);
+                    remove.Height=32;remove.Padding=new Thickness(6,0,6,0);remove.Opacity=0;
+                    Grid.SetColumn(remove,1);row.Children.Add(remove);
+                    var hovered=false;
+                    row.PointerEntered+=(_,_)=>{hovered=true;remove.Opacity=1;};
+                    row.PointerExited+=(_,_)=>{hovered=false;if(remove.FocusState==FocusState.Unfocused)remove.Opacity=0;};
+                    remove.GotFocus+=(_,_)=>remove.Opacity=1;
+                    remove.LostFocus+=(_,_)=>{if(!hovered)remove.Opacity=0;};
+                    remove.Click+=(_,_)=>
+                    {
+                        if(_state.Session.Active)return;
+                        if(file==_state.SelectedCalibration)_calibrationBox.SelectedItem=_state.Calibrations.First(f=>string.IsNullOrWhiteSpace(f.Path));
+                        _state.Calibrations.Remove(file);Rebuild();
+                    };
+                    rows.Children.Add(row);
+                }
+                if(rows.Children.Count==0)rows.Children.Add(Design.Text("尚未添加校准文件",13,Design.Muted));
+            }
+            Rebuild();
+            var list=new ScrollViewer{Content=rows,Height=160,HorizontalScrollBarVisibility=ScrollBarVisibility.Disabled,VerticalScrollBarVisibility=ScrollBarVisibility.Auto};
+            var dialog=new ContentDialog{XamlRoot=_root.XamlRoot,Title="已添加的校准",Content=list,PrimaryButtonText="添加校准",CloseButtonText="关闭",RequestedTheme=ElementTheme.Dark};
+            if(await dialog.ShowAsync()!=ContentDialogResult.Primary)return;
+            // Close the modal before invoking the native picker; restore management afterwards.
+            await AddCalibration(selectAdded:false);
+        }
     }
     private async Task Message(string title,string text){await new ContentDialog{XamlRoot=_root.XamlRoot,Title=title,Content=text,CloseButtonText="关闭",RequestedTheme=ElementTheme.Dark}.ShowAsync();}
     private void Tick()
