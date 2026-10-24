@@ -116,7 +116,7 @@ public sealed class MainWindow : Window
         _clock.HorizontalAlignment=HorizontalAlignment.Stretch;
         _sessionLabel.TextAlignment=TextAlignment.Center;_clock.TextAlignment=TextAlignment.Center;
         _clockSlot.Children.Add(_sessionLabel);_clockSlot.Children.Add(_clock);Grid.SetRow(_clock,1);
-        _clock.CharacterSpacing=-10;_transport.Children.Add(_clockSlot);
+        _clock.FontWeight=FontWeights.Bold;_clock.CharacterSpacing=-10;_transport.Children.Add(_clockSlot);
         _clockSlot.SizeChanged+=(_,_)=>LogClockCenters();
         _actions.Margin=new Thickness(0,0,28,0);_actions.VerticalAlignment=VerticalAlignment.Center;
         _pauseButton=Design.Button(Design.ActionContent("pause"),"暂停录制");
@@ -329,10 +329,12 @@ public sealed class MainWindow : Window
     }
     private void RefreshMode()
     {
-        _level.Visibility=_state.Mode==MonitorMode.Level?Visibility.Visible:Visibility.Collapsed;
+        var keepReadout=_level.Visibility==Visibility.Visible && _state.Mode!=MonitorMode.Pitch;
+        _level.Visibility=_state.Mode!=MonitorMode.Pitch?Visibility.Visible:Visibility.Collapsed;
         _pitch.Visibility=_state.Mode==MonitorMode.Pitch?Visibility.Visible:Visibility.Collapsed;
         Layout();_canvas.Invalidate();
-        if(_started)_monitorFade.In(120);
+        if(_started && !keepReadout)_monitorFade.In(120);
+        else{_monitorFade.Stop();_monitor.Opacity=1;}
     }
 
     private void RefreshSession(bool animate)
@@ -346,6 +348,7 @@ public sealed class MainWindow : Window
         _lastStage=stage;
         var generation=++_transportGeneration;
         _clock.Text=_state.Session.DisplayTime;
+        _inputName.SetRecording(active,animate);
         if(active)DispatcherQueue.TryEnqueue(LogClockCenters);
         foreach(var control in _configuration)control.IsEnabled=!active;
         UpdateQuality();

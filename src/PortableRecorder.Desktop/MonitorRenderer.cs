@@ -162,10 +162,11 @@ public sealed class MonitorRenderer : IDisposable
     }
     private void Spectrum(CanvasControl sender,CanvasDrawingSession ds,ShellViewModel state,float w,float h)
     {
-        float left=46,right=w-22,top=12,bottom=h-40;
+        // Shares the instrument region with VU; the left RMS/PEAK block stays visible.
+        float left=288,right=w-28,top=16,bottom=h-40;
         float Y(double db)=>top+(float)((6-db)/96)*(bottom-top);
         float X(double f)=>left+(float)(Math.Log10(f/20)/3)*(right-left);
-        double[] freqs=[20,50,100,200,500,1000,2000,5000,10000,20000]; double[] dbs=[-12,-30,-48,-66,-84];
+        double[] freqs=[20,100,500,2000,10000,20000]; double[] dbs=[-12,-30,-48,-66,-84];
         using var chart=new CanvasCommandList(sender);
         using(var ink=chart.CreateDrawingSession())
         {

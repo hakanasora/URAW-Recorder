@@ -2,6 +2,7 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
+using Microsoft.UI.Xaml.Media.Animation;
 using Windows.Foundation;
 using Windows.UI;
 
@@ -14,6 +15,9 @@ public sealed class FadingDeviceName : Grid
     private readonly Grid _viewport = new();
     private readonly Border _fade;
     private string _value = "";
+    private bool _recording;
+    private double _expandedWidth = 146;
+    private Storyboard? _reveal;
     private const double MaxTextWidth = 122;
 
     public FadingDeviceName()
@@ -37,6 +41,7 @@ public sealed class FadingDeviceName : Grid
         _viewport.Children.Add(_fade);
         _viewport.SizeChanged += (_, _) => UpdateOverflow();
         _text.SizeChanged += (_, _) => UpdateOverflow();
+        Unloaded += (_, _) => { _reveal?.Stop(); _reveal=null; };
     }
 
     public void SetName(string value)
@@ -47,10 +52,35 @@ public sealed class FadingDeviceName : Grid
         AutomationProperties.SetName(this, "输入设备：" + value);
     }
 
+    public void SetRecording(bool recording, bool animate)
+    {
+        if(recording==_recording && animate)return;
+        _recording=recording;
+        var from=Width;
+        _reveal?.Stop();_reveal=null;
+        var target=recording?24:_expandedWidth;
+        Width=target;
+        if(!animate || Math.Abs(from-target)<.1){UpdateOverflow();return;}
+        // The width boundary wipes the text while the adjacent knob follows it left.
+        var motion=new DoubleAnimationUsingKeyFrames{EnableDependentAnimation=true,FillBehavior=FillBehavior.Stop};
+        motion.KeyFrames.Add(new DiscreteDoubleKeyFrame{KeyTime=TimeSpan.Zero,Value=from});
+        motion.KeyFrames.Add(new SplineDoubleKeyFrame
+        {
+            KeyTime=TimeSpan.FromMilliseconds(420),Value=target,
+            KeySpline=new KeySpline{ControlPoint1=new Point(.4,0),ControlPoint2=new Point(.2,1)}
+        });
+        var storyboard=new Storyboard();
+        Storyboard.SetTarget(motion,this);Storyboard.SetTargetProperty(motion,"Width");
+        storyboard.Children.Add(motion);_reveal=storyboard;
+        storyboard.Completed+=(_,_)=>{if(_reveal==storyboard){_reveal=null;UpdateOverflow();}};
+        storyboard.Begin();
+    }
+
     private void UpdateOverflow()
     {
-        // Short names shrink the group, keeping the following knob 16 DIP away.
-        Width = 24 + Math.Min(MaxTextWidth, _text.ActualWidth);
+        // Natural name width is retained even while its viewport is wiped closed.
+        _expandedWidth = 24 + Math.Min(MaxTextWidth, _text.ActualWidth);
+        if(!_recording && _reveal==null && Math.Abs(Width-_expandedWidth)>.1)Width=_expandedWidth;
         _viewport.Clip = new RectangleGeometry { Rect = new Rect(0, 0, _viewport.ActualWidth, _viewport.ActualHeight) };
         _fade.Visibility = _text.ActualWidth > _viewport.ActualWidth + .5 ? Visibility.Visible : Visibility.Collapsed;
     }
