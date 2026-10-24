@@ -6,6 +6,8 @@ using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Documents;
 using Microsoft.UI.Xaml.Markup;
 using Microsoft.UI.Xaml.Media;
+using Microsoft.UI.Xaml.Media.Animation;
+using Windows.UI.ViewManagement;
 using Windows.UI;
 
 namespace PortableRecorder.Desktop;
@@ -30,10 +32,11 @@ public static class Design
     }
     public static Button Button(object content, string name, Color? fill=null)
     {
-        var b=new Button { Content=content, Height=42, Padding=new Thickness(12,0,12,0),
+        var b=new Button { Content=content, Height=42, MinWidth=0, MinHeight=0, Padding=new Thickness(12,0,12,0),
             Background=Brush(fill??Action), Foreground=Brush(White), BorderThickness=new Thickness(0),
             CornerRadius=new CornerRadius(5), FontSize=14, FontWeight=FontWeights.SemiBold,
-            HorizontalContentAlignment=HorizontalAlignment.Center, VerticalContentAlignment=VerticalAlignment.Center };
+            HorizontalContentAlignment=HorizontalAlignment.Center, VerticalContentAlignment=VerticalAlignment.Center,
+            Tag=fill??Action };
         b.Template=(ControlTemplate)XamlReader.Load("""
             <ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" TargetType="Button">
               <Border Background="{TemplateBinding Background}" CornerRadius="{TemplateBinding CornerRadius}" Padding="{TemplateBinding Padding}">
@@ -42,11 +45,24 @@ public static class Design
             </ControlTemplate>
             """);
         AutomationProperties.SetName(b,name); ToolTipService.SetToolTip(b,name);
-        b.PointerEntered+=(_,_)=> { if(b.IsEnabled) b.Background=Brush(fill==Record?Hex("D9242D"):Hex("29292C")); };
-        b.PointerExited+=(_,_)=> b.Background=Brush(fill??Action);
-        b.PointerPressed+=(_,_)=> { if(b.IsEnabled) b.Background=Brush(fill==Record?Hex("B91C25"):Hex("151517")); };
-        b.PointerReleased+=(_,_)=> b.Background=Brush(fill??Action);
+        b.PointerEntered+=(_,_)=> { if(b.IsEnabled) b.Background=Brush(BaseFill(b)==Record?Hex("D9242D"):Hex("29292C")); };
+        b.PointerExited+=(_,_)=> b.Background=Brush(BaseFill(b));
+        b.PointerPressed+=(_,_)=> { if(b.IsEnabled) b.Background=Brush(BaseFill(b)==Record?Hex("B91C25"):Hex("151517")); };
+        b.PointerReleased+=(_,_)=> b.Background=Brush(BaseFill(b));
         return b;
+    }
+    private static Color BaseFill(Button button)=>button.Tag is Color color?color:Action;
+    public static void SetBaseFill(Button button, Color color, bool animate)
+    {
+        var from=(button.Background as SolidColorBrush)?.Color??color;
+        button.Tag=color;
+        var brush=new SolidColorBrush(color);
+        button.Background=brush;
+        if(!animate)return;
+        var animation=new ColorAnimation{From=from,To=color,Duration=TimeSpan.FromMilliseconds(160),FillBehavior=FillBehavior.Stop};
+        var storyboard=new Storyboard();
+        Storyboard.SetTarget(animation,brush);Storyboard.SetTargetProperty(animation,"Color");
+        storyboard.Children.Add(animation);storyboard.Begin();
     }
     public static FontIcon Icon(string glyph, double size=16, Color? color=null) =>
         new() { Glyph=glyph, FontFamily=new FontFamily("Segoe Fluent Icons"), FontSize=size, Foreground=Brush(color??Muted), IsHitTestVisible=false };
@@ -81,25 +97,48 @@ public static class Design
             var item=new SelectorBarItem { Text=labels[i], Width=itemWidth, Height=28, MinWidth=0, MinHeight=0,
                 Padding=new Thickness(0), Margin=new Thickness(0,0,i==labels.Length-1?0:gap,0), Foreground=Brush(Muted) };
             item.Template=(ControlTemplate)XamlReader.Load("""
-              <ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" TargetType="SelectorBarItem">
-                <Border Background="{TemplateBinding Background}" CornerRadius="3">
+              <ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" TargetType="SelectorBarItem">
+                <Grid>
+                  <Border x:Name="SelectionSurface" Background="{TemplateBinding Background}" CornerRadius="3"/>
                   <TextBlock Text="{TemplateBinding Text}" Foreground="{TemplateBinding Foreground}" FontFamily="Microsoft YaHei UI" FontSize="13" HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                </Border>
+                </Grid>
               </ControlTemplate>
               """);
             bar.Items.Add(item);
         }
+        SelectorBarItem? previous=null;
+        var animationKey="Selector-"+Guid.NewGuid().ToString("N");
         bar.SelectionChanged+=(_,_)=>
         {
+            ConnectedAnimation? animation=null;
+            var target=SelectionSurface(bar.SelectedItem);
+            if(previous!=null && previous!=bar.SelectedItem && new UISettings().AnimationsEnabled &&
+                SelectionSurface(previous) is Border source && target!=null)
+            {
+                var service=ConnectedAnimationService.GetForCurrentView();
+                service.DefaultDuration=TimeSpan.FromMilliseconds(180);
+                animation=service.PrepareToAnimate(animationKey,source);
+                animation.Configuration=new DirectConnectedAnimationConfiguration();
+            }
             for(var i=0;i<bar.Items.Count;i++)
             {
                 var item=bar.Items[i];
                 item.Background=Brush(item==bar.SelectedItem?Selected:Colors.Transparent);
                 item.Foreground=Brush(item==bar.SelectedItem?White:Muted);
             }
+            if(animation!=null && target!=null)animation.TryStart(target);
+            previous=bar.SelectedItem;
             if(bar.SelectedItem is not null) changed(bar.Items.IndexOf(bar.SelectedItem));
         };
         bar.SelectedItem=bar.Items[0];
         return bar;
+    }
+    private static Border? SelectionSurface(DependencyObject? root)
+    {
+        if(root==null)return null;
+        if(root is Border{Name:"SelectionSurface"} surface)return surface;
+        for(var i=0;i<VisualTreeHelper.GetChildrenCount(root);i++)
+            if(SelectionSurface(VisualTreeHelper.GetChild(root,i)) is Border child)return child;
+        return null;
     }
 }
