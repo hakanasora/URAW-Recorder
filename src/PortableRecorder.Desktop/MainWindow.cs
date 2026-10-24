@@ -108,7 +108,7 @@ public sealed class MainWindow : Window
         _inputName.VerticalAlignment=VerticalAlignment.Center;
         _inputName.Margin=new Thickness(28,0,0,0);
         _transport.Children.Add(_inputName);
-        _inputName.SizeChanged+=(_,_)=>_gain.Margin=new Thickness(28+_inputName.ActualWidth+16,0,0,0);
+        _inputName.SizeChanged+=(_,_)=>_gain.Margin=new Thickness(28+_inputName.GainStartOffset,0,0,0);
         _clockSlot.Width=240;_clockSlot.Height=60;
         _clockSlot.RowDefinitions.Add(new(){Height=new GridLength(20)});
         _clockSlot.RowDefinitions.Add(new(){Height=new GridLength(40)});
@@ -187,6 +187,7 @@ public sealed class MainWindow : Window
     }
     private void BuildReadouts()
     {
+        _level.RenderTransform=new TranslateTransform{Y=-14};
         _level.Width=200;_level.Margin=new Thickness(28,0,0,0);_level.HorizontalAlignment=HorizontalAlignment.Left;_level.VerticalAlignment=VerticalAlignment.Center;
         var row=new StackPanel{Orientation=Orientation.Horizontal,Spacing=4,Height=72};_number.FontWeight=FontWeights.Bold;_number.CharacterSpacing=-20;row.Children.Add(_minus);row.Children.Add(_number);_level.Children.Add(row);
         var units=Design.Text("dBFS · RMS",12,Design.Muted);units.Height=16;units.Margin=new Thickness(0,10,0,0);_level.Children.Add(units);
@@ -320,7 +321,9 @@ public sealed class MainWindow : Window
             {
                 string[] names=["C","C♯","D","D♯","E","F","F♯","G","G♯","A","A♯","B"];
                 _note.Inlines.Clear();
-                _note.Inlines.Add(new Run{Text=names[((n%12)+12)%12]});
+                var name=names[((n%12)+12)%12];
+                _note.Inlines.Add(new Run{Text=name[..1]});
+                if(name.Length>1)_note.Inlines.Add(new Run{Text="♯",FontSize=42,FontFamily=new FontFamily("Segoe UI Symbol")});
                 _note.Inlines.Add(new Run{Text=$"{n/12-1}",FontSize=36});_displayedNote=n;
             }
             _frequency.Text=$"{_state.Snapshot.FrequencyHz:0.00}";

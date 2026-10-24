@@ -197,7 +197,7 @@ public sealed class MonitorRenderer : IDisposable
         using(var faded=new AlphaMaskEffect{Source=chart,AlphaMask=mask}) ds.DrawImage(faded);
         foreach(var db in dbs) Text(ds,$"{db}",left-22,Y(db),12,Design.Muted);
         for(var i=0;i<freqs.Length;i++) Text(ds,freqs[i]>=1000?$"{freqs[i]/1000}k":$"{freqs[i]}",X(freqs[i])+(i==0?5:i==freqs.Length-1?-6:0),bottom+21,12,Design.Muted);
-        Text(ds,"dB",left-22,top-4,12,Design.Muted); Text(ds,"Hz",right-7,h-5,12,Design.Muted);
+        Text(ds,"dB",left-22,top-4,12,Design.Muted);
     }
     private void Pitch(CanvasControl sender,CanvasDrawingSession ds,ShellViewModel state,float w,float h)
     {
@@ -235,7 +235,7 @@ public sealed class MonitorRenderer : IDisposable
         ds.DrawLine(left,top,left,bottom,Design.Muted,1);
         for(var n=(int)Math.Ceiling(_low);n<=_low+36;n++)
             if(n%12==0 || (bottom-top>=230 && n%12==7)) Text(ds,$"{(n%12==0?"C":"G")}{n/12-1}",left-22,Y(n),12,Design.Muted);
-        Text(ds,"−4 s",left+12,h-9,12,Design.Muted); Text(ds,"现在",right-12,h-9,12,Design.Muted);
+
         Cents(ds,state.Snapshot.Cents,28,CentsTop,200*TextScale);
     }
     private void Cents(CanvasDrawingSession ds,double? cents,float x,float y,float width)

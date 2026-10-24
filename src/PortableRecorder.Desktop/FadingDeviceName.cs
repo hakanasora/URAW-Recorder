@@ -19,6 +19,9 @@ public sealed class FadingDeviceName : Grid
     private double _expandedWidth = 146;
     private Storyboard? _reveal;
     private const double MaxTextWidth = 122;
+    // Idle name-to-knob gap stays 16; the fully wiped state leaves 12 DIP after the 16-DIP icon.
+    public double GainStartOffset => ActualWidth + 16 - 12 * Math.Clamp(
+        (_expandedWidth-ActualWidth)/Math.Max(1,_expandedWidth-24),0,1);
 
     public FadingDeviceName()
     {
