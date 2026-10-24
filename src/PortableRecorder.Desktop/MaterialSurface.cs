@@ -10,8 +10,8 @@ namespace PortableRecorder.Desktop;
 /// <summary>Neutral content layer above the system backdrop; no layout or input ownership.</summary>
 internal static class MaterialSurface
 {
-    public const int DisplayVeilAlpha=128;
-    public const int TransportVeilAlpha=24;
+    public const int DisplayVeilAlpha=160;
+    public const int TransportVeilAlpha=144;
 
     public static Color Tint(Color color,int alpha)=>Color.FromArgb((byte)alpha,color.R,color.G,color.B);
 
