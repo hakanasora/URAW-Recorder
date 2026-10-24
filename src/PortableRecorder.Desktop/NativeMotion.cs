@@ -55,7 +55,7 @@ internal sealed class NativeFade(FrameworkElement target, Func<bool> animationsE
         if (!animationsEnabled()) return;
         var animation = new DoubleAnimation
         {
-            From = 1, To = .45, Duration = TimeSpan.FromMilliseconds(1500),
+            From = 1, To = .45, Duration = TimeSpan.FromMilliseconds(1000),
             AutoReverse = true, RepeatBehavior = RepeatBehavior.Forever,
             EasingFunction = new SineEase { EasingMode = EasingMode.EaseInOut }
         };

@@ -7,7 +7,6 @@ using Microsoft.UI.Xaml.Documents;
 using Microsoft.UI.Xaml.Markup;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Animation;
-using Windows.UI.ViewManagement;
 using Windows.UI;
 
 namespace PortableRecorder.Desktop;
@@ -89,56 +88,6 @@ public static class Design
         if(label!=null) panel.Children.Add(Text(label,14,ink,true));
         return panel;
     }
-    public static SelectorBar Selector(string[] labels, double itemWidth, double gap, Action<int> changed)
-    {
-        var bar=new SelectorBar { Padding=new Thickness(0), HorizontalAlignment=HorizontalAlignment.Center, VerticalAlignment=VerticalAlignment.Center };
-        for(var i=0;i<labels.Length;i++)
-        {
-            var item=new SelectorBarItem { Text=labels[i], Width=itemWidth, Height=28, MinWidth=0, MinHeight=0,
-                Padding=new Thickness(0), Margin=new Thickness(0,0,i==labels.Length-1?0:gap,0), Foreground=Brush(Muted) };
-            item.Template=(ControlTemplate)XamlReader.Load("""
-              <ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" TargetType="SelectorBarItem">
-                <Grid>
-                  <Border x:Name="SelectionSurface" Background="{TemplateBinding Background}" CornerRadius="3"/>
-                  <TextBlock Text="{TemplateBinding Text}" Foreground="{TemplateBinding Foreground}" FontFamily="Microsoft YaHei UI" FontSize="13" HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                </Grid>
-              </ControlTemplate>
-              """);
-            bar.Items.Add(item);
-        }
-        SelectorBarItem? previous=null;
-        var animationKey="Selector-"+Guid.NewGuid().ToString("N");
-        bar.SelectionChanged+=(_,_)=>
-        {
-            ConnectedAnimation? animation=null;
-            var target=SelectionSurface(bar.SelectedItem);
-            if(previous!=null && previous!=bar.SelectedItem && new UISettings().AnimationsEnabled &&
-                SelectionSurface(previous) is Border source && target!=null)
-            {
-                var service=ConnectedAnimationService.GetForCurrentView();
-                service.DefaultDuration=TimeSpan.FromMilliseconds(180);
-                animation=service.PrepareToAnimate(animationKey,source);
-                animation.Configuration=new DirectConnectedAnimationConfiguration();
-            }
-            for(var i=0;i<bar.Items.Count;i++)
-            {
-                var item=bar.Items[i];
-                item.Background=Brush(item==bar.SelectedItem?Selected:Colors.Transparent);
-                item.Foreground=Brush(item==bar.SelectedItem?White:Muted);
-            }
-            if(animation!=null && target!=null)animation.TryStart(target);
-            previous=bar.SelectedItem;
-            if(bar.SelectedItem is not null) changed(bar.Items.IndexOf(bar.SelectedItem));
-        };
-        bar.SelectedItem=bar.Items[0];
-        return bar;
-    }
-    private static Border? SelectionSurface(DependencyObject? root)
-    {
-        if(root==null)return null;
-        if(root is Border{Name:"SelectionSurface"} surface)return surface;
-        for(var i=0;i<VisualTreeHelper.GetChildrenCount(root);i++)
-            if(SelectionSurface(VisualTreeHelper.GetChild(root,i)) is Border child)return child;
-        return null;
-    }
+    public static SegmentedSelector Selector(string[] labels,double itemWidth,double gap,Action<int> changed)
+        =>new(labels,itemWidth,gap,changed);
 }

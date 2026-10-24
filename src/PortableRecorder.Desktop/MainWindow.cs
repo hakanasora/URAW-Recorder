@@ -43,17 +43,17 @@ public sealed class MainWindow : Window
     private RecordingStage? _lastStage;
     private int _transportGeneration;
     private readonly StackPanel _level=new(),_pitch=new(),_inputPage=new(){Spacing=24},_filePage=new(){Spacing=24};
-    private readonly TextBlock _inputName=Design.Text(""),_number=Design.Text("32.0",69),_peak=Design.Text("",14,Design.Muted);
+    private readonly FadingDeviceName _inputName=new();
+    private readonly TextBlock _number=Design.Text("32.0",69),_peak=Design.Text("",14,Design.Muted);
     private readonly TextBlock _note=Design.Text("B2",69),_frequency=Design.Text("123.47",20),_clock=Design.Text("00:00.00",32),_sessionLabel=Design.Text("录制中",12,Design.Zero);
     private readonly TextBlock _fileHint=Design.Text("",12,Design.Label),_pathError=Design.Text("",12,Design.Alert);
-    private readonly StackPanel _clip=new(){Orientation=Orientation.Horizontal,Spacing=5,Visibility=Visibility.Collapsed};
     private readonly Border _minus=new(){Width=18,Height=5,Background=Design.Brush(Design.White),VerticalAlignment=VerticalAlignment.Center};
     private readonly Button _settingsButton,_pauseButton,_stopButton;
     private readonly GainControl _gain;
     private readonly Grid _actions=new(){HorizontalAlignment=HorizontalAlignment.Right};
     private readonly StackPanel _activeButtons=new(){Orientation=Orientation.Horizontal,Spacing=3,Visibility=Visibility.Collapsed};
-    private readonly StackPanel _clockSlot=new(){HorizontalAlignment=HorizontalAlignment.Center,VerticalAlignment=VerticalAlignment.Center,Visibility=Visibility.Collapsed};
-    private readonly SelectorBar _modeSelector,_paneSelector;
+    private readonly Grid _clockSlot=new(){HorizontalAlignment=HorizontalAlignment.Center,VerticalAlignment=VerticalAlignment.Center,Visibility=Visibility.Collapsed};
+    private readonly SegmentedSelector _modeSelector,_paneSelector;
     private readonly ComboBox _deviceBox=new(),_calibrationBox=new(),_formatBox=new(),_qualityBox=new();
     private readonly TextBox _path=new(){PlaceholderText="选择文件夹",MinWidth=0};
     private readonly StackPanel _qualityGroup=new(){Spacing=8};
@@ -61,6 +61,9 @@ public sealed class MainWindow : Window
     private Storyboard? _widthAnimation;
     private bool _firstFrameLogged,_paneOpen,_updatingForm,_started;
     private double _lastSnapshot=-1;
+    private int? _displayedNote;
+    private readonly SolidColorBrush _normalPeakInk=Design.Brush(Design.Muted),_overloadPeakInk=Design.Brush(Design.Alert);
+    private static readonly bool OverlayDrawer=false;
 
     public MainWindow()
     {
@@ -81,22 +84,39 @@ public sealed class MainWindow : Window
         _root.Children.Add(_body);Grid.SetRow(_body,1);_body.Children.Add(_splitView);
         _main.Width=FixedWindowFrame.MainWidth;_main.Height=384;
         _main.HorizontalAlignment=HorizontalAlignment.Right;
+        _main.Clip=new RectangleGeometry{Rect=new Rect(0,0,820,384)};
         _main.RowDefinitions.Add(new(){Height=new GridLength(64)});
         _main.RowDefinitions.Add(new(){Height=new GridLength(236)});
         _main.RowDefinitions.Add(new(){Height=new GridLength(84)});
         _main.Children.Add(_header);_main.Children.Add(_monitor);Grid.SetRow(_monitor,1);
         _main.Children.Add(_transport);Grid.SetRow(_transport,2);
-        _splitView.Content=_main;
+        // The main view is a sibling, never a child of the SplitView's animated content grid.
+        _body.Children.Add(_main);
+        Canvas.SetZIndex(_main,1);
+        Canvas.SetZIndex(_splitView,OverlayDrawer?2:0);
+        _splitView.DisplayMode=OverlayDrawer?SplitViewDisplayMode.Overlay:SplitViewDisplayMode.Inline;
         _settingsButton=Design.Button(MenuGlyph(),"输入与文件设置",Colors.Transparent);_settingsButton.Width=40;_settingsButton.Height=44;_settingsButton.Padding=new Thickness(0);
         _settingsButton.HorizontalAlignment=HorizontalAlignment.Left;_settingsButton.VerticalAlignment=VerticalAlignment.Center;_settingsButton.Margin=new Thickness(28,0,0,0);_settingsButton.TabIndex=0;
         _settingsButton.Click+=(_,_)=>TogglePane();_header.Children.Add(_settingsButton);
-        _inputName.Margin=new Thickness(76,0,0,0);_inputName.Height=20;_inputName.TextTrimming=TextTrimming.CharacterEllipsis;_inputName.HorizontalAlignment=HorizontalAlignment.Left;_header.Children.Add(_inputName);
+
         _modeSelector=Design.Selector(["电平","频谱","音高"],76,2,index=>{_state.Mode=(MonitorMode)index;if(_started)RefreshMode();});_modeSelector.TabIndex=1;
         _header.Children.Add(new Border{Background=Design.Brush(Design.Hex("0A0A0A")),CornerRadius=new CornerRadius(4),Padding=new Thickness(4),Child=_modeSelector,HorizontalAlignment=HorizontalAlignment.Center,VerticalAlignment=VerticalAlignment.Center});
         _monitor.Children.Add(_canvas);BuildReadouts();
         _transport.Background=Design.Brush(Design.Transport);_transport.Children.Add(new Border{Height=1,Background=Design.Brush(Design.Line),VerticalAlignment=VerticalAlignment.Top});
-        _gain=new(_state){HorizontalAlignment=HorizontalAlignment.Left,VerticalAlignment=VerticalAlignment.Center,Margin=new Thickness(28,0,0,0)};_transport.Children.Add(_gain);
-        _clockSlot.Children.Add(_sessionLabel);_clockSlot.Children.Add(_clock);_sessionLabel.HorizontalAlignment=HorizontalAlignment.Center;_clock.HorizontalAlignment=HorizontalAlignment.Center;_clock.CharacterSpacing=-10;_transport.Children.Add(_clockSlot);
+        _gain=new(_state){Width=96,HorizontalAlignment=HorizontalAlignment.Left,VerticalAlignment=VerticalAlignment.Center,Margin=new Thickness(172,0,0,0)};_transport.Children.Add(_gain);
+        _inputName.HorizontalAlignment=HorizontalAlignment.Left;
+        _inputName.VerticalAlignment=VerticalAlignment.Center;
+        _inputName.Margin=new Thickness(28,0,0,0);
+        _transport.Children.Add(_inputName);
+        _clockSlot.Width=240;_clockSlot.Height=60;
+        _clockSlot.RowDefinitions.Add(new(){Height=new GridLength(20)});
+        _clockSlot.RowDefinitions.Add(new(){Height=new GridLength(40)});
+        _sessionLabel.HorizontalAlignment=HorizontalAlignment.Stretch;
+        _clock.HorizontalAlignment=HorizontalAlignment.Stretch;
+        _sessionLabel.TextAlignment=TextAlignment.Center;_clock.TextAlignment=TextAlignment.Center;
+        _clockSlot.Children.Add(_sessionLabel);_clockSlot.Children.Add(_clock);Grid.SetRow(_clock,1);
+        _clock.CharacterSpacing=-10;_transport.Children.Add(_clockSlot);
+        _clockSlot.SizeChanged+=(_,_)=>LogClockCenters();
         _actions.Margin=new Thickness(0,0,28,0);_actions.VerticalAlignment=VerticalAlignment.Center;
         _pauseButton=Design.Button(Design.ActionContent("pause"),"暂停录制");
         _pauseButton.Width=0;_pauseButton.Opacity=0;_pauseButton.Visibility=Visibility.Collapsed;
@@ -126,13 +146,13 @@ public sealed class MainWindow : Window
         });
         BuildInspector();
         _splitView.Pane=_inspector;
-        _splitView.PaneOpening+=(_,_)=>{if(_paneOpen)_frame.SetExpanded(true);};
         _splitView.PaneClosed+=(_,_)=>
         {
             if(_paneOpen)return; // A rapid reopen must not shrink the new opening.
-            _frame.SetExpanded(false);
+            if(!OverlayDrawer){_frame.SetExpanded(false);_root.UpdateLayout();}
             _settingsButton.Focus(FocusState.Programmatic);
         };
+        _splitView.PaneClosing+=(_,_)=>{if(OverlayDrawer)_paneOpen=false;};
         _canvas.Draw+=(sender,args)=>
         {
             try { _renderer.Draw(sender,args,_state); if(!_firstFrameLogged){_firstFrameLogged=true;StartupLog.Write($"First monitor frame drawn: {sender.ActualWidth} x {sender.ActualHeight}");} }
@@ -168,14 +188,13 @@ public sealed class MainWindow : Window
     {
         _level.Width=200;_level.Margin=new Thickness(28,0,0,0);_level.HorizontalAlignment=HorizontalAlignment.Left;_level.VerticalAlignment=VerticalAlignment.Center;
         var row=new StackPanel{Orientation=Orientation.Horizontal,Spacing=4,Height=72};_number.FontWeight=FontWeights.Bold;_number.CharacterSpacing=-20;row.Children.Add(_minus);row.Children.Add(_number);_level.Children.Add(row);
-        var units=new Grid{Height=16,Margin=new Thickness(0,10,0,0)};units.Children.Add(Design.Text("dBFS · RMS",12,Design.Muted));_clip.HorizontalAlignment=HorizontalAlignment.Right;
-        _clip.Children.Add(new Ellipse{Width=6,Height=6,Fill=Design.Brush(Design.Alert),VerticalAlignment=VerticalAlignment.Center});_clip.Children.Add(Design.Text("过载",12,Design.Alert));units.Children.Add(_clip);_level.Children.Add(units);
+        var units=Design.Text("dBFS · RMS",12,Design.Muted);units.Height=16;units.Margin=new Thickness(0,10,0,0);_level.Children.Add(units);
         var peakRow=new StackPanel{Orientation=Orientation.Horizontal,Spacing=8,Height=28,Margin=new Thickness(0,16,0,0)};
         var reset=Design.Button(Design.Icon("\uE777",14),"清除历史输出峰值",Colors.Transparent);reset.Width=24;reset.Height=28;reset.Padding=new Thickness(0);reset.TabIndex=3;
         reset.Click+=(_,_)=>{_state.ResetPeak();RefreshValues();};peakRow.Children.Add(_peak);peakRow.Children.Add(reset);_level.Children.Add(peakRow);_monitor.Children.Add(_level);
         _pitch.Width=200;_pitch.Margin=new Thickness(28,0,0,0);_pitch.HorizontalAlignment=HorizontalAlignment.Left;_pitch.VerticalAlignment=VerticalAlignment.Center;_pitch.Visibility=Visibility.Collapsed;
         _note.Height=72;_note.CharacterSpacing=-20;_pitch.Children.Add(_note);var hz=new StackPanel{Orientation=Orientation.Horizontal,Spacing=5,Margin=new Thickness(0,10,0,0),Height=26};hz.Children.Add(_frequency);hz.Children.Add(Design.Text("Hz",12,Design.Muted));_pitch.Children.Add(hz);_pitch.Children.Add(new Border{Height=64});_monitor.Children.Add(_pitch);
-        AutomationProperties.SetName(_number,"当前输出 RMS，dBFS");AutomationProperties.SetLiveSetting(_sessionLabel,AutomationLiveSetting.Polite);AutomationProperties.SetLiveSetting(_clip,AutomationLiveSetting.Polite);
+        AutomationProperties.SetName(_number,"当前输出 RMS，dBFS");AutomationProperties.SetLiveSetting(_sessionLabel,AutomationLiveSetting.Polite);
     }
     private void BuildInspector()
     {
@@ -195,7 +214,7 @@ public sealed class MainWindow : Window
         StyleField(_deviceBox);_deviceBox.ItemsSource=_state.Devices;_deviceBox.DisplayMemberPath="FriendlyName";_deviceBox.SelectedItem=_state.SelectedInput;_deviceBox.SelectionChanged+=(_,_)=>{if(_deviceBox.SelectedItem is InputDevice d){_state.SelectedInput=d;RefreshValues();}};_inputPage.Children.Add(Group("输入设备","\uE720",_deviceBox));
         StyleField(_calibrationBox);_calibrationBox.ItemsSource=_state.Calibrations;_calibrationBox.DisplayMemberPath="Name";_calibrationBox.SelectedItem=_state.SelectedCalibration;_calibrationBox.SelectionChanged+=(_,_)=>{if(_calibrationBox.SelectedItem is CalibrationFile f)_state.SelectedCalibration=f;};
         var calibration=Group("校准文件","\uE8A5",_calibrationBox);var add=LinkButton("添加校准文件");add.Click+=async(_,_)=>await AddCalibration();var manage=LinkButton("管理已添加的校准");manage.Click+=async(_,_)=>await ManageCalibrations();calibration.Children.Add(add);calibration.Children.Add(manage);_inputPage.Children.Add(calibration);
-        StyleField(_path);_path.TextChanged+=(_,_)=>{_state.OutputPath=_path.Text;ToolTipService.SetToolTip(_path,_path.Text);};
+        StyleField(_path);_path.VerticalContentAlignment=VerticalAlignment.Center;_path.Padding=new Thickness(12,8,12,8);_path.TextChanged+=(_,_)=>{_state.OutputPath=_path.Text;ToolTipService.SetToolTip(_path,_path.Text);};
         var pathRow=new Grid{ColumnSpacing=8};pathRow.ColumnDefinitions.Add(new(){Width=new GridLength(1,GridUnitType.Star)});pathRow.ColumnDefinitions.Add(new(){Width=new GridLength(36)});pathRow.Children.Add(_path);
         var browse=Design.Button(Design.Icon("\uE8B7",16,Design.White),"浏览保存文件夹",Design.Field);browse.Width=36;browse.Height=36;browse.CornerRadius=new(3);browse.Padding=new Thickness(0);Grid.SetColumn(browse,1);pathRow.Children.Add(browse);_configuration.Add(browse);browse.Click+=async(_,_)=>await BrowseFolder();
         var pathGroup=Group("保存路径","\uE8B7",pathRow);_pathError.TextWrapping=TextWrapping.Wrap;_pathError.Visibility=Visibility.Collapsed;pathGroup.Children.Add(_pathError);_filePage.Children.Add(pathGroup);
@@ -253,13 +272,23 @@ public sealed class MainWindow : Window
     }
     private void RefreshValues()
     {
-        _inputName.Text=_state.SelectedInput.FriendlyName;ToolTipService.SetToolTip(_inputName,_inputName.Text);
+        _inputName.SetName(_state.SelectedInput.FriendlyName);
         var db=_state.Snapshot.RmsDbfs;_number.Text=$"{(db>0?"+":"")}{Math.Abs(db):0.0}";_minus.Visibility=db<0?Visibility.Visible:Visibility.Collapsed;
-        _peak.Text=_state.HeldPeak is double p?$"PEAK {(p>=0?"+":"−")}{Math.Abs(p):0.0} dBFS":"PEAK — dBFS";_peak.Foreground=Design.Brush(_state.HeldPeak>=0?Design.Alert:Design.Muted);
-        _clip.Visibility=_state.CurrentClipping?Visibility.Visible:Visibility.Collapsed;ToolTipService.SetToolTip(_clip,_state.Snapshot.SourcePeakDbfs>=0?"当前输入已过载":"增益后的当前输出已过载");_gain.Refresh();
-        _note.Inlines.Clear();
-        if(_state.Snapshot.MidiNote is double midi){string[] names=["C","C♯","D","D♯","E","F","F♯","G","G♯","A","A♯","B"];var n=(int)Math.Round(midi);_note.Inlines.Add(new Run{Text=names[((n%12)+12)%12]});_note.Inlines.Add(new Run{Text=$"{n/12-1}",FontSize=36});_frequency.Text=$"{_state.Snapshot.FrequencyHz:0.00}";}
-        else{_note.Text="—";_frequency.Text="—";}
+        _peak.Text=_state.HeldPeak is double p?$"PEAK {(p>=0?"+":"−")}{Math.Abs(p):0.0} dBFS":"PEAK — dBFS";_peak.Foreground=_state.HeldPeak>=0?_overloadPeakInk:_normalPeakInk;
+        _gain.Refresh();
+        if(_state.Snapshot.MidiNote is double midi)
+        {
+            var n=(int)Math.Round(midi);
+            if(_displayedNote!=n)
+            {
+                string[] names=["C","C♯","D","D♯","E","F","F♯","G","G♯","A","A♯","B"];
+                _note.Inlines.Clear();
+                _note.Inlines.Add(new Run{Text=names[((n%12)+12)%12]});
+                _note.Inlines.Add(new Run{Text=$"{n/12-1}",FontSize=36});_displayedNote=n;
+            }
+            _frequency.Text=$"{_state.Snapshot.FrequencyHz:0.00}";
+        }
+        else{_displayedNote=null;_note.Text="—";_frequency.Text="—";}
     }
     private void RefreshMode()
     {
@@ -280,6 +309,7 @@ public sealed class MainWindow : Window
         _lastStage=stage;
         var generation=++_transportGeneration;
         _clock.Text=_state.Session.DisplayTime;
+        if(active)DispatcherQueue.TryEnqueue(LogClockCenters);
         foreach(var control in _configuration)control.IsEnabled=!active;
         UpdateQuality();
         _stopButton.CornerRadius=active?new CornerRadius(0,5,5,0):new CornerRadius(5);
@@ -394,12 +424,25 @@ public sealed class MainWindow : Window
         _canvas.Invalidate();
     }
 
+    private void LogClockCenters()
+    {
+        if(!_state.Session.Active||_clockSlot.ActualWidth<1)return;
+        var status=_sessionLabel.TransformToVisual(_main).TransformPoint(new Point(_sessionLabel.ActualWidth/2,0));
+        var clock=_clock.TransformToVisual(_main).TransformPoint(new Point(_clock.ActualWidth/2,0));
+        var dpi=_root.XamlRoot?.RasterizationScale??1;
+        StartupLog.Write($"Clock alignment: status center={status.X:F3} DIP, clock center={clock.X:F3} DIP, delta={(status.X-clock.X)*dpi:F3} physical px");
+    }
+
     private void TogglePane()
     {
         _paneOpen=!_paneOpen;
-        if(_paneOpen)_frame.SetExpanded(true);
+        if(_paneOpen&&!OverlayDrawer)
+        {
+            _frame.SetExpanded(true);
+            _root.UpdateLayout();
+        }
         _splitView.IsPaneOpen=_paneOpen;
-        if(_paneOpen)_paneSelector.Focus(FocusState.Programmatic);
+        if(_paneOpen)_paneSelector.FocusSelected();
     }
 
     private async void OnKeyDown(object sender,KeyRoutedEventArgs e)

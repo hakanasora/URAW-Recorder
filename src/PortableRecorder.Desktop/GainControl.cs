@@ -17,13 +17,14 @@ public sealed class GainControl : UserControl
 {
     private readonly ShellViewModel _state;
     private readonly TextBlock _number=Design.Text("0 dB",13,Design.Zero);
-    private readonly TextBox _editor=new(){Visibility=Visibility.Collapsed,Width=100,Height=36,FontSize=13};
+    private readonly TextBox _editor=new(){Visibility=Visibility.Collapsed,Width=96,Height=36,FontSize=13};
     private readonly Line _marker;
     private bool _dragging;
     private double _startY,_startGain;
+    private double _lastGain=double.NaN;
     public GainControl(ShellViewModel state)
     {
-        _state=state; Width=112; Height=44; IsTabStop=true; TabIndex=4;
+        _state=state; Width=96; Height=44; IsTabStop=true; TabIndex=4;
         AutomationProperties.SetName(this,"软件增益");
         ToolTipService.SetToolTip(this,"上拖增加，下拖衰减；Shift 精调；双击归零；Enter 输入数值");
         var root=new Grid{Background=Design.Brush(Microsoft.UI.Colors.Transparent)};
@@ -75,7 +76,10 @@ public sealed class GainControl : UserControl
     }
     public void Refresh()
     {
-        var value=_state.GainDb;_number.Text=value==0?"0 dB":$"{(value>0?"+":"−")}{Math.Abs(value):0.0} dB";
+        var value=_state.GainDb;
+        if(value==_lastGain)return;
+        _lastGain=value;
+        _number.Text=value==0?"0 dB":$"{(value>0?"+":"−")}{Math.Abs(value):0.0} dB";
         _number.Foreground=Design.Brush(value==0?Design.Zero:Design.Blue);
         _marker.RenderTransform=new RotateTransform{CenterX=8.5,CenterY=8.5,Angle=value/(value>=0?24:60)*130};
     }
