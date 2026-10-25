@@ -6,8 +6,8 @@ namespace PortableRecorder.Desktop;
 /// <summary>Uniform neutral veils over a single system Mica backdrop. No synthetic gray gradient.</summary>
 internal static class MaterialSurface
 {
-    public const int DisplayVeilAlpha=176;
-    public const int TransportVeilAlpha=0;
+    public const int DisplayVeilAlpha=153;
+    public const int TransportVeilAlpha=20;
 
     public static Color Tint(Color color,int alpha)=>Color.FromArgb((byte)alpha,color.R,color.G,color.B);
 
