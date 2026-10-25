@@ -1,3 +1,4 @@
+using PortableRecorder.Desktop;
 using System.Buffers;
 using System.Buffers.Binary;
 using System.Diagnostics;
@@ -177,6 +178,57 @@ foreach(double frequency in new[]{27.5,32.7032,110,123.47,440,1000,2093})
     await engine.SelectDeviceAsync(factory.Device);await engine.StartRecordingAsync(root,RecordingMode.Shared);factory.Push(new float[480]);
     await Until(()=>engine.Status.State==AudioRunState.Faulted,"Recording queue rejects data");
     Assert(engine.Status.Partial && !engine.Latest.Valid,"Recording overflow stops, never silently drops");
+}
+// Discard is paused-only, deletes exactly the current file, and releases exclusive capture.
+{
+    var factory=new FakeFactory();await using var engine=new AudioEngine(factory);
+    await engine.SelectDeviceAsync(factory.Device);await engine.StartRecordingAsync(root,RecordingMode.Exclusive);
+    string discarded=engine.Status.FilePath!;string keep=Path.Combine(root,"keep-existing.wav");File.WriteAllText(keep,"keep");
+    factory.Push(new float[480]);await Until(()=>engine.WrittenFrames==480,"discard first write");
+    bool rejected=false;try{await engine.DiscardRecordingAsync();}catch(InvalidOperationException){rejected=true;}
+    Assert(rejected && File.Exists(discarded),"Cannot discard an unpaused recording");
+    await engine.PauseAsync(true);await engine.DiscardRecordingAsync();
+    Assert(!File.Exists(discarded) && File.ReadAllText(keep)=="keep","Discard removes only owned current file");
+    Assert(engine.WrittenFrames==0 && engine.Status.State==AudioRunState.Monitoring && !factory.Current!.Info.Exclusive,"Discard clears clock and restores shared monitoring");
+}
+{
+    var factory=new FakeFactory();await using var engine=new AudioEngine(factory);
+    var second=new AudioDevice("second","Second microphone");var third=new AudioDevice("third","Third microphone");
+    await engine.ReconcileDevicesAsync([factory.Device]);
+    Assert(engine.SelectedDevice!.Id==factory.Device.Id,"Initial topology chooses default");
+    await engine.ReconcileDevicesAsync([factory.Device,second]);Assert(engine.SelectedDevice!.Id==second.Id,"New device automatically selected while idle");
+    await engine.StartRecordingAsync(root,RecordingMode.Exclusive);var current=factory.Current!;string saved=engine.Status.FilePath!;
+    factory.Push(new float[480]);await Until(()=>engine.WrittenFrames==480,"hotplug recording");
+    await engine.ReconcileDevicesAsync([factory.Device,second,third]);
+    Assert(engine.SelectedDevice!.Id==second.Id && ReferenceEquals(current,factory.Current),"New device cannot switch ongoing recording");
+    await engine.ReconcileDevicesAsync([factory.Device,third]);
+    Assert(engine.SelectedDevice!.Id!=second.Id && !factory.Current!.Info.Exclusive && engine.Status.State==AudioRunState.Monitoring,"Removed recording device finalizes and restores shared on remaining input");
+    using(var reader=new WaveFileReader(saved))Assert(reader.Length==480*4,"Removed device preserves completed samples");
+    await engine.ReconcileDevicesAsync([]);Assert(engine.SelectedDevice==null && !engine.Latest.Valid,"No input leaves invalid readings");
+    await engine.ReconcileDevicesAsync([second]);Assert(engine.SelectedDevice!.Id==second.Id && engine.Status.State==AudioRunState.Monitoring,"New microphone recovers without manual refresh");
+}
+{
+    string settings=Path.Combine(root,"preferences.json");
+    Assert(RecordingPreferences.Load(settings)==RecordingMode.Exclusive,"Missing mode preference uses default");
+    RecordingPreferences.Save(RecordingMode.Shared,settings);Assert(RecordingPreferences.Load(settings)==RecordingMode.Shared,"Shared choice survives process reload");
+    RecordingPreferences.Save(RecordingMode.Exclusive,settings);Assert(RecordingPreferences.Load(settings)==RecordingMode.Exclusive,"Exclusive choice survives process reload");
+    File.WriteAllText(settings,"{broken");Assert(RecordingPreferences.Load(settings)==RecordingMode.Exclusive,"Invalid preference safely falls back");
+    Assert(!Directory.GetFiles(root,"*.tmp").Any(),"Atomic preference save cleans temporary file");
+}
+{
+    var motion=new MeterMotion();var low=AudioSnapshot.Empty(10) with{Valid=true,SampleRate=48000,FramePosition=1440,VuLeft=-20,VuRight=-10};
+    motion.Push(low,0);var high=low with{FramePosition=2880,VuLeft=0,VuRight=3};motion.Push(high,.030);
+    Near(motion.Read(.030,false).Left,-20,.001,"Visual interpolation begins at previous sample");
+    double last=-20;
+    for(int i=0;i<=4;i++)
+    {
+        double value=motion.Read(.030+i/120d,false).Left;
+        Assert(value>=last && value<=0,"120 Hz interpolation is monotonic, no overshoot");last=value;
+    }
+    Near(motion.Read(.060,false).Left,0,.001,"Visual interpolation reaches measured target");
+    Near(motion.Read(.035,true).Left,0,0,"Reduced motion uses measured target");
+    motion.Push(high with{Epoch=11,VuLeft=-8},.070);Near(motion.Read(.070,false).Left,-8,.001,"Epoch change never blends old device");
+    motion.Push(AudioSnapshot.Empty(11),.080);Assert(double.IsNegativeInfinity(motion.Read(.080,false).Left),"Failure clears interpolated pointer");
 }
 Console.WriteLine($"Maximum pure-tone pitch error: {maximumPitchError:0.0000} cents");
 Console.WriteLine($"PASS: {checks} targeted assertions. No microphone, desktop, or browser used. Fixtures: {root}");

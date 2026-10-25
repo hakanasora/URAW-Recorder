@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Numerics;
 using Microsoft.Graphics.Canvas;
 using Microsoft.Graphics.Canvas.Brushes;
@@ -19,7 +20,13 @@ public sealed class MonitorRenderer : IDisposable
     private Vector2[] _spectrumPoints=[];
     private float _projectionWidth;
     private readonly Dictionary<float,CanvasTextFormat> _formats = new();
-    private double _low = 36, _targetLow = 36, _lastTime;
+    private double _low = 36, _targetLow = 36, _frameDelta,_lastDrawTime,_timeline;
+    private readonly Stopwatch _visualClock=Stopwatch.StartNew();
+    private readonly MeterMotion _meterMotion=new();
+    private CanvasRenderTarget? _needleGlow;
+    private Vector2[] _fromSpectrum=[],_drawSpectrum=[];
+    private double _blendStarted;
+    private long _visualEpoch=-1;
     private float _faceDpi;
     private static readonly double[] Marks=[-20,-10,-7,-5,-3,0,3];
     private static readonly double[] Angles=[-153,-132,-111,-90,-69,-48,-27];
@@ -70,7 +77,7 @@ public sealed class MonitorRenderer : IDisposable
     private CanvasRenderTarget Face(CanvasControl sender)
     {
         if(_face!=null && _faceDpi==sender.Dpi) return _face;
-        _face?.Dispose(); _faceDpi=sender.Dpi;
+        _face?.Dispose();_needleGlow?.Dispose();_needleGlow=null; _faceDpi=sender.Dpi;
         _face=new CanvasRenderTarget(sender,260,159,sender.Dpi);
         using var ds=_face.CreateDrawingSession(); ds.Clear(Color.FromArgb(0,0,0,0));
         const float cx=130,cy=150,r=104;
@@ -139,11 +146,17 @@ public sealed class MonitorRenderer : IDisposable
         ds.DrawImage(Face(sender),x,y);
         var a=Angle(Math.Clamp(value,-20,3));
         var start=new Vector2(x+130,y+150); var end=start+new Vector2(99*(float)Math.Cos(a),99*(float)Math.Sin(a));
-        using(var cmd=new CanvasCommandList(sender))
+        if(_needleGlow==null)
         {
-            using(var glow=cmd.CreateDrawingSession()) glow.DrawLine(start,end,A(Amber,.9),2.5f);
-            using var blur=new GaussianBlurEffect{Source=cmd,BlurAmount=3,BorderMode=EffectBorderMode.Soft}; ds.DrawImage(blur);
+            _needleGlow=new CanvasRenderTarget(sender,115,20,sender.Dpi);
+            using var ink=_needleGlow.CreateDrawingSession();ink.Clear(Color.FromArgb(0,0,0,0));
+            using var line=new CanvasCommandList(sender);
+            using(var light=line.CreateDrawingSession())light.DrawLine(8,10,107,10,A(Amber,.9),2.5f);
+            using var blur=new GaussianBlurEffect{Source=line,BlurAmount=3,BorderMode=EffectBorderMode.Soft};ink.DrawImage(blur);
         }
+        var transform=ds.Transform;
+        ds.Transform=Matrix3x2.CreateTranslation(-8,-10)*Matrix3x2.CreateRotation((float)a)*Matrix3x2.CreateTranslation(start)*transform;
+        ds.DrawImage(_needleGlow);ds.Transform=transform;
         ds.DrawLine(start,end,Design.Gold,1.6f); ds.DrawLine(start,end,A(Ivory,.8),.65f);
         ds.FillCircle(start,6.7f,Design.Hex("0C0D0D"));
         using(var hub=new CanvasRadialGradientBrush(sender,[Stop(0,Ivory),Stop(.32f,Design.Gold),Stop(.8f,Amber),Stop(1,Design.Hex("AB6400"))])
@@ -152,6 +165,15 @@ public sealed class MonitorRenderer : IDisposable
     }
     public void Draw(CanvasControl sender,CanvasDrawEventArgs args,ShellViewModel state)
     {
+        double now=_visualClock.Elapsed.TotalSeconds;
+        _frameDelta=Math.Clamp(now-_lastDrawTime,0,.050);_lastDrawTime=now;
+        var sample=state.Audio.Latest;
+        if(!sample.Valid || sample.Epoch!=_visualEpoch)
+        {
+            _visualEpoch=sample.Epoch;_projectedFrame=null;_spectrumPoints=[];_fromSpectrum=[];_drawSpectrum=[];
+        }
+        _meterMotion.Push(sample,now);var vu=_meterMotion.Read(now,ReducedMotion);
+        _timeline=_meterMotion.Timeline(now);
         var ds=args.DrawingSession;
         var width=(float)sender.ActualWidth; var height=(float)sender.ActualHeight;
         ds.TextAntialiasing=CanvasTextAntialiasing.Grayscale;
@@ -159,11 +181,11 @@ public sealed class MonitorRenderer : IDisposable
         {
             var x=Stacked?(width-536)/2:256+(width-284-536)/2;
             var y=Stacked?StackedVuTop:(height-188)/2;
-            Vu(sender,ds,x,y,state.Snapshot.VuLeft,"L"); Vu(sender,ds,x+276,y,state.Snapshot.VuRight,"R");
+            Vu(sender,ds,x,y,vu.Left,"L"); Vu(sender,ds,x+276,y,vu.Right,"R");
         }
         else if(state.Mode==MonitorMode.Spectrum) Spectrum(sender,ds,state,width,height);
         else Pitch(sender,ds,state,width,height);
-        _lastTime=state.MonitorTime;
+
     }
     private void Spectrum(CanvasControl sender,CanvasDrawingSession ds,ShellViewModel state,float w,float h)
     {
@@ -221,21 +243,24 @@ public sealed class MonitorRenderer : IDisposable
                 }
                 points.Add(new(left+pixel,Y(level)));
             }
-            _spectrumPoints=points.ToArray();
+            _fromSpectrum=_drawSpectrum.Length==points.Count?_drawSpectrum.ToArray():points.ToArray();
+            _spectrumPoints=points.ToArray();_drawSpectrum=new Vector2[points.Count];_blendStarted=_visualClock.Elapsed.TotalSeconds;
         }
         if(_spectrumPoints.Length<2)return;
+        float blend=ReducedMotion?1:(float)Math.Clamp((_visualClock.Elapsed.TotalSeconds-_blendStarted)/.020,0,1);
+        for(int i=0;i<_drawSpectrum.Length;i++)_drawSpectrum[i]=Vector2.Lerp(_fromSpectrum[i],_spectrumPoints[i],blend);
         using var chart=new CanvasCommandList(sender);
         using(var ink=chart.CreateDrawingSession())
         {
             using var brush=new CanvasLinearGradientBrush(sender,[Stop(0,A(Design.Gold,.84)),Stop(.14f,A(Design.Gold,.58)),Stop(.42f,A(Amber,.30)),Stop(.76f,A(Amber,.075)),Stop(1,A(Amber,0))]);
-            foreach(var point in _spectrumPoints)
+            foreach(var point in _drawSpectrum)
             {
                 float depth=Math.Max(1,Math.Min((bottom-top)*.46f,bottom-point.Y));
                 brush.StartPoint=point;brush.EndPoint=point+new Vector2(0,depth);
                 brush.Opacity=(float)(.84+.16*Math.Cos((point.X-left)*Math.PI));
                 ink.FillRectangle(point.X,point.Y,1.1f,bottom-point.Y,brush);
             }
-            using var curve=Path(sender,_spectrumPoints);
+            using var curve=Path(sender,_drawSpectrum);
             double level=Math.Clamp((state.Snapshot.RmsDbfs+60)/54,0,1);float bloom=(float)(level*level);
             using var glow=new CanvasCommandList(sender);
             using(var g=glow.CreateDrawingSession())g.DrawGeometry(curve,A(Design.Gold,.035+.48*bloom),2.5f);
@@ -255,7 +280,7 @@ public sealed class MonitorRenderer : IDisposable
             if(note<_targetLow+3) _targetLow=note-7;
             if(note>_targetLow+33) _targetLow=note-29;
         }
-        var dt=Math.Clamp(state.MonitorTime-_lastTime,0,.2);
+        var dt=_frameDelta;
         _low=ReducedMotion?_targetLow:_low+(_targetLow-_low)*(1-Math.Exp(-dt/.055));
         float left=288,right=w-8,top=16,bottom=h-28;
         if(Stacked) { left=60; top=StackedVuTop; }
@@ -269,7 +294,7 @@ public sealed class MonitorRenderer : IDisposable
             Vector2? last=null;
             foreach(var p in state.PitchHistory)
             {
-                var u=(p.Time-(state.MonitorTime-4))/4;
+                var u=(p.Time-(_timeline-4))/4;
                 if(u<0 || u>1 || p.Midi is not double n) { last=null; continue; }
                 var point=new Vector2(left+(float)u*(right-left)*.94f,Y(n));
                 if(last is Vector2 prev) ink.DrawLine(prev,point,Design.Gold,1.45f);
@@ -299,5 +324,5 @@ public sealed class MonitorRenderer : IDisposable
         }
         ds.DrawLine(x+width/2,y+3,x+width/2,y+27,Design.Gold,2);
     }
-    public void Dispose() { _face?.Dispose(); _spectrumGrid?.Dispose(); foreach(var f in _formats.Values) f.Dispose(); }
+    public void Dispose() { _needleGlow?.Dispose(); _face?.Dispose(); _spectrumGrid?.Dispose(); foreach(var f in _formats.Values) f.Dispose(); }
 }

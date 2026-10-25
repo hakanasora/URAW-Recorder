@@ -1,3 +1,8 @@
+using Microsoft.Graphics.Canvas;
+using Microsoft.Graphics.Canvas.Brushes;
+using Microsoft.Graphics.Canvas.Effects;
+using Microsoft.Graphics.Canvas.Text;
+using Microsoft.Graphics.Canvas.UI.Xaml;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
@@ -15,8 +20,10 @@ public sealed class FadingDeviceName : Grid
     private int _channels=-1;
     private readonly TextBlock _text = Design.Text("", 13);
     private readonly Grid _viewport = new();
-    private readonly LinearGradientBrush _fadeInk;
-    private readonly SolidColorBrush _solidInk=Design.Brush(Design.White);
+    private readonly CanvasControl _labelCanvas=new(){IsHitTestVisible=false};
+    private readonly CanvasTextFormat _labelFormat=new(){FontFamily="Segoe UI Variable",FontSize=13,
+        HorizontalAlignment=CanvasHorizontalAlignment.Left,VerticalAlignment=CanvasVerticalAlignment.Center,
+        WordWrapping=CanvasWordWrapping.NoWrap};
     private string _value = "";
     private bool _recording;
     private double _expandedWidth = 146;
@@ -40,13 +47,10 @@ public sealed class FadingDeviceName : Grid
         _text.TextWrapping = TextWrapping.NoWrap;
         _text.TextTrimming = TextTrimming.None;
         naturalWidth.Children.Add(_text); _viewport.Children.Add(naturalWidth);
-        // Fade the glyph fill itself: never paint a background-colored patch over Mica.
-        _fadeInk=new LinearGradientBrush{StartPoint=new Point(0,.5),EndPoint=new Point(1,.5)};
-        var transparent=Color.FromArgb(0,Design.White.R,Design.White.G,Design.White.B);
-        _fadeInk.GradientStops.Add(new GradientStop{Offset=0,Color=Design.White});
-        _fadeInk.GradientStops.Add(new GradientStop{Offset=1,Color=Design.White});
-        _fadeInk.GradientStops.Add(new GradientStop{Offset=1,Color=transparent});
-        _fadeInk.GradientStops.Add(new GradientStop{Offset=1,Color=transparent});
+        // Keep native measurement/accessibility, render the entire mixed-font line through one alpha mask.
+        // A XAML Foreground gradient restarts across font-fallback runs (Chinese / Latin), causing holes.
+        _text.Opacity=0;_viewport.Children.Add(_labelCanvas);
+        _labelCanvas.Draw+=DrawLabel;
         _viewport.SizeChanged += (_, _) => UpdateOverflow();
         _text.SizeChanged += (_, _) => UpdateOverflow();
         Unloaded += (_, _) => { _reveal?.Stop(); _reveal=null; };
@@ -55,7 +59,7 @@ public sealed class FadingDeviceName : Grid
     public void SetName(string value)
     {
         if (_value == value) return;
-        _value = value; _text.Text = value;_channels=-1;
+        _value = value; _text.Text = value;_channels=-1;_labelCanvas.Invalidate();
         ToolTipService.SetToolTip(this, value);
         AutomationProperties.SetName(this, "输入设备：" + value);
     }
@@ -99,14 +103,24 @@ public sealed class FadingDeviceName : Grid
         _expandedWidth = 24 + Math.Min(MaxTextWidth, _text.ActualWidth);
         if(!_recording && _reveal==null && Math.Abs(Width-_expandedWidth)>.1)Width=_expandedWidth;
         _viewport.Clip = new RectangleGeometry { Rect = new Rect(0, 0, _viewport.ActualWidth, _viewport.ActualHeight) };
-        if(_text.ActualWidth>_viewport.ActualWidth+.5 && _text.ActualWidth>0)
-        {
-            var edge=Math.Clamp(_viewport.ActualWidth/_text.ActualWidth,0,1);
-            var start=Math.Clamp((_viewport.ActualWidth-24)/_text.ActualWidth,0,edge);
-            _fadeInk.GradientStops[1].Offset=start;
-            _fadeInk.GradientStops[2].Offset=edge;
-            _text.Foreground=_fadeInk;
-        }
-        else _text.Foreground=_solidInk;
+        _labelCanvas.Invalidate();
     }
+    private void DrawLabel(CanvasControl sender,CanvasDrawEventArgs args)
+    {
+        float width=(float)sender.ActualWidth,height=(float)sender.ActualHeight;
+        if(width<.5f || height<1)return;
+        var ds=args.DrawingSession;ds.TextAntialiasing=CanvasTextAntialiasing.Grayscale;
+        using var line=new CanvasCommandList(sender);
+        using(var ink=line.CreateDrawingSession())ink.DrawText(_value,new Rect(0,0,Math.Max(_text.ActualWidth,width)+4,height),Design.White,_labelFormat);
+        if(_text.ActualWidth<=width+.5){ds.DrawImage(line);return;}
+        using var mask=new CanvasCommandList(sender);
+        using(var ink=mask.CreateDrawingSession())
+        using(var gradient=new CanvasLinearGradientBrush(sender,[
+            new CanvasGradientStop{Position=0,Color=Design.White},
+            new CanvasGradientStop{Position=Math.Max(0,(width-24)/width),Color=Design.White},
+            new CanvasGradientStop{Position=1,Color=Color.FromArgb(0,255,255,255)}])
+            {StartPoint=new(0,0),EndPoint=new(width,0)})ink.FillRectangle(0,0,width,height,gradient);
+        using var faded=new AlphaMaskEffect{Source=line,AlphaMask=mask};ds.DrawImage(faded);
+    }
+    public void ReleaseResources(){_reveal?.Stop();_labelCanvas.RemoveFromVisualTree();_labelFormat.Dispose();}
 }

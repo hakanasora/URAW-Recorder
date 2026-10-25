@@ -34,7 +34,7 @@ public sealed class ShellViewModel:INotifyPropertyChanged
     public InputDevice SelectedInput {get;set;}=new("","未选择输入设备");
     public CalibrationFile SelectedCalibration {get;set;}
     public MonitorMode Mode {get;set;}
-    public RecordingMode RecordMode {get;set;}=RecordingMode.Exclusive;
+    public RecordingMode RecordMode {get;set;}=RecordingPreferences.Load();
     public double GainDb {get;private set;}
     public double? HeldPeak {get;private set;}
     public string OutputPath {get;set;}="";

@@ -16,6 +16,8 @@ public sealed class AudioEngine:IAsyncDisposable
     private long _epoch,_decision,_lastWritten;
     private int _lastRate;
     private double _previousPeak=double.NaN;
+    private HashSet<string> _knownDevices=[];
+    public AudioDevice? SelectedDevice=>_device;
     public AudioEngine(ICaptureFactory? factory=null,ICalibrationStage? calibration=null,Func<string,AudioFormat,IRecordingWriter>? writerFactory=null)
     {_factory=factory??new WasapiCaptureFactory();_calibration=calibration??new IdentityCalibration();_createWriter=writerFactory??((path,format)=>new FloatWaveWriter(path,format));}
     public IReadOnlyList<AudioDevice> EnumerateDevices()=>_factory.Enumerate();
@@ -46,6 +48,35 @@ public sealed class AudioEngine:IAsyncDisposable
     private void Set(AudioRunState state,string message,string? file=null,bool partial=false)
         =>Volatile.Write(ref _status,new(state,_capture?.Info,message,file,partial));
     public void SetGain(double db)=>Interlocked.Exchange(ref _gain,Math.Pow(10,Math.Clamp(db,-60,24)/20));
+    public async Task ReconcileDevicesAsync(IReadOnlyList<AudioDevice> devices,bool manualRefresh=false)
+    {
+        await _commands.WaitAsync();
+        try
+        {
+            ThrowIfDisposed();
+            var added=devices.Where(d=>!_knownDevices.Contains(d.Id)).ToArray();
+            _knownDevices=devices.Select(d=>d.Id).ToHashSet();
+            var current=devices.FirstOrDefault(d=>d.Id==_device?.Id);
+            // Recording never changes source mid-file. A removed source is finalized, then monitoring recovers.
+            if(_writer!=null && current!=null)return;
+            bool lostRecording=_writer!=null;
+            string? endedPath=_writer?.Path;Exception? endingError=null;
+            if(lostRecording){try{await StopWriter(false);}catch(Exception error){endingError=error;}}
+            var chosen=(!manualRefresh?added.FirstOrDefault():null)??current??devices.FirstOrDefault(d=>d.IsDefault)??devices.FirstOrDefault();
+            bool changed=chosen?.Id!=_device?.Id;
+            if(!changed && _capture!=null && !manualRefresh && !lostRecording)return;
+            await CloseCapture();
+            if(changed)_normalConsent=false;_device=chosen;RawDecisionPending=false;
+            if(chosen==null)Set(AudioRunState.Stopped,"没有可用输入设备；插入设备后将自动恢复监看。",endedPath,endingError!=null);
+            else
+            {
+                await OpenMonitor();
+                if(lostRecording && _capture!=null)
+                    Set(AudioRunState.Monitoring,endingError==null?"输入设备已断开，本次录音已结束；已切换共享监看。":"输入设备断开，录音收尾异常；已恢复共享监看。",endedPath,endingError!=null);
+            }
+        }
+        finally{_commands.Release();}
+    }
     public async Task SelectDeviceAsync(AudioDevice device)
     {
         await _commands.WaitAsync();
@@ -153,6 +184,24 @@ public sealed class AudioEngine:IAsyncDisposable
     public async Task StopRecordingAsync()
     {
         await _commands.WaitAsync();try{await StopWriter();}finally{_commands.Release();}
+    }
+    public async Task DiscardRecordingAsync()
+    {
+        await _commands.WaitAsync();
+        try
+        {
+            ThrowIfDisposed();
+            if(_writer==null || Status.State!=AudioRunState.Paused)throw new InvalidOperationException("请先暂停，再丢弃本次录音。");
+            string path=_writer.Path;bool exclusive=_capture?.Info.Exclusive==true;
+            // Close/drain the owned file before deleting; this cannot touch earlier recordings.
+            try{await StopWriter(false);}catch{/* An explicitly discarded partial file may also be removed. */}
+            Exception? failure=null;try{File.Delete(path);}catch(Exception error){failure=error;}
+            _lastWritten=0;
+            if(exclusive){await CloseCapture();await OpenMonitor();}
+            if(failure!=null){Set(AudioRunState.Faulted,"无法丢弃文件："+Friendly(failure),path,true);throw new IOException("文件已关闭但未能丢弃："+path,failure);}
+            if(_capture!=null)Set(AudioRunState.Monitoring,"已丢弃本次录音");
+        }
+        finally{_commands.Release();}
     }
     private async Task StopWriter(bool restoreMonitor=true)
     {
