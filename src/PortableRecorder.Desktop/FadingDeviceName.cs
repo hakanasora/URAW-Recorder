@@ -11,6 +11,8 @@ namespace PortableRecorder.Desktop;
 /// <summary>Compact microphone label, with a conditional fade only on overflowing device names.</summary>
 public sealed class FadingDeviceName : Grid
 {
+    private readonly FontIcon _microphone=Design.Icon("\uE720",16,Design.White);
+    private int _channels=-1;
     private readonly TextBlock _text = Design.Text("", 13);
     private readonly Grid _viewport = new();
     private readonly LinearGradientBrush _fadeInk;
@@ -29,7 +31,7 @@ public sealed class FadingDeviceName : Grid
         Width = 146; Height = 44;
         ColumnDefinitions.Add(new() { Width = new GridLength(24) });
         ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
-        var microphone = Design.Icon("\uE720",16,Design.White);
+        var microphone = _microphone;
         microphone.HorizontalAlignment = HorizontalAlignment.Left;
         microphone.IsHitTestVisible = false;
         Children.Add(microphone);
@@ -53,11 +55,20 @@ public sealed class FadingDeviceName : Grid
     public void SetName(string value)
     {
         if (_value == value) return;
-        _value = value; _text.Text = value;
+        _value = value; _text.Text = value;_channels=-1;
         ToolTipService.SetToolTip(this, value);
         AutomationProperties.SetName(this, "输入设备：" + value);
     }
 
+    public void SetChannels(int channels)
+    {
+        if(_channels==channels)return;_channels=channels;
+        // Two adjacent microphone glyphs identify stereo/multichannel without falsifying mono files.
+        _microphone.Glyph=channels>1?"\uE720\uE720":"\uE720";
+        _microphone.FontSize=channels>1?11:16;
+        var detail=_value+(channels>0?$" · 实际 {channels} 声道" : " · 尚未取得输入");
+        ToolTipService.SetToolTip(this,detail);AutomationProperties.SetName(this,"输入设备："+detail);
+    }
     public void SetRecording(bool recording, bool animate)
     {
         if(recording==_recording && animate)return;

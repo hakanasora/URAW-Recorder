@@ -13,6 +13,11 @@ namespace PortableRecorder.Desktop;
 public sealed class MonitorRenderer : IDisposable
 {
     private CanvasRenderTarget? _face;
+    private CanvasRenderTarget? _spectrumGrid;
+    private (float W,float H,float Dpi) _gridKey;
+    private PortableRecorder.Audio.SpectrumFrame? _projectedFrame;
+    private Vector2[] _spectrumPoints=[];
+    private float _projectionWidth;
     private readonly Dictionary<float,CanvasTextFormat> _formats = new();
     private double _low = 36, _targetLow = 36, _lastTime;
     private float _faceDpi;
@@ -162,51 +167,85 @@ public sealed class MonitorRenderer : IDisposable
     }
     private void Spectrum(CanvasControl sender,CanvasDrawingSession ds,ShellViewModel state,float w,float h)
     {
-        // Shares the instrument region with VU; the left RMS/PEAK block stays visible.
         float left=288,right=w-28,top=24,bottom=h-40;
-        float Y(double db)=>top+(float)SpectrumScale.LevelPosition(db)*(bottom-top);
+        float Y(double db)=>top+(float)SpectrumScale.LevelPosition(Math.Clamp(db,-96,0))*(bottom-top);
         float X(double f)=>left+(float)SpectrumScale.FrequencyPosition(f)*(right-left);
         var freqs=SpectrumScale.Frequencies;var dbs=SpectrumScale.Levels;
+        var key=(w,h,sender.Dpi);
+        if(_spectrumGrid==null || _gridKey!=key)
+        {
+            _spectrumGrid?.Dispose();_gridKey=key;
+            _spectrumGrid=new CanvasRenderTarget(sender,w,h,sender.Dpi);
+            using var ink=_spectrumGrid.CreateDrawingSession();ink.Clear(Color.FromArgb(0,0,0,0));
+            for(int i=0;i<dbs.Length-1;i++)ink.DrawLine(left,Y((dbs[i]+dbs[i+1])/2),right,Y((dbs[i]+dbs[i+1])/2),A(Design.Grid,.48),.65f);
+            for(int decade=10;decade<=10000;decade*=10)
+                for(int part=1;part<=9;part++)
+                {
+                    int f=decade*part;
+                    if(f>=20 && f<=20000 && !freqs.Contains(f))ink.DrawLine(X(f),top,X(f),bottom,A(Design.Grid,.48),.65f);
+                }
+            foreach(var db in dbs){ink.DrawLine(left,Y(db),right,Y(db),A(Design.Line,.78),.8f);Text(ink,$"{db}",left-22,Y(db),12,Design.Muted);}
+            for(int i=0;i<freqs.Length;i++)
+            {
+                var f=freqs[i];ink.DrawLine(X(f),top,X(f),bottom,A(Design.Line,.78),.8f);
+                Text(ink,f>=1000?$"{f/1000}k":$"{f}",X(f)+(i==0?5:i==freqs.Length-1?-6:0),bottom+21,12,Design.Muted);
+            }
+            Text(ink,"dBFS · 非线性",left+44,top-14,11,Design.Muted);
+        }
+        ds.DrawImage(_spectrumGrid);
+        var frame=state.Snapshot.Spectrum;
+        if(!state.Snapshot.Valid || frame==null)return;
+        if(_projectedFrame!=frame || _projectionWidth!=w)
+        {
+            _projectedFrame=frame;_projectionWidth=w;
+            var points=new List<Vector2>();var hz=frame.FrequenciesHz;var db=frame.Dbfs;
+            int last=hz.Length-1;
+            for(int pixel=0;pixel<=right-left;pixel++)
+            {
+                double f=20*Math.Pow(1000,pixel/(double)(right-left));
+                if(f>hz[last])break;
+                double start=20*Math.Pow(1000,Math.Max(0,pixel-.5)/(right-left));
+                double end=20*Math.Pow(1000,Math.Min(right-left,pixel+.5)/(right-left));
+                int first=Array.BinarySearch(hz,start);if(first<0)first=~first;
+                int stop=Array.BinarySearch(hz,end);if(stop<0)stop=~stop;
+                double level=double.NegativeInfinity;
+                if(stop>first)for(int k=first;k<Math.Min(stop,hz.Length);k++)level=Math.Max(level,db[k]);
+                else
+                {
+                    int index=Array.BinarySearch(hz,f);if(index<0)index=~index;
+                    index=Math.Clamp(index,1,last);
+                    // Power interpolation between real FFT points: no spline overshoot.
+                    double mix=(f-hz[index-1])/(hz[index]-hz[index-1]);
+                    double power=(1-mix)*Math.Pow(10,db[index-1]/10d)+mix*Math.Pow(10,db[index]/10d);
+                    level=power>0?10*Math.Log10(power):double.NegativeInfinity;
+                }
+                points.Add(new(left+pixel,Y(level)));
+            }
+            _spectrumPoints=points.ToArray();
+        }
+        if(_spectrumPoints.Length<2)return;
         using var chart=new CanvasCommandList(sender);
         using(var ink=chart.CreateDrawingSession())
         {
-            for(var i=0;i<dbs.Length-1;i++)
-            {
-                var midpoint=(dbs[i]+dbs[i+1])/2;
-                ink.DrawLine(left,Y(midpoint),right,Y(midpoint),A(Design.Grid,.48),.65f);
-            }
-            for(var decade=10;decade<=10000;decade*=10)
-                for(var part=1;part<=9;part++)
-                {
-                    var f=decade*part;
-                    if(f>=20 && f<=20000 && !freqs.Contains(f))
-                        ink.DrawLine(X(f),top,X(f),bottom,A(Design.Grid,.48),.65f);
-                }
-            foreach(var db in dbs) ink.DrawLine(left,Y(db),right,Y(db),A(Design.Line,.78),.8f);
-            foreach(var f in freqs) ink.DrawLine(X(f),top,X(f),bottom,A(Design.Line,.78),.8f);
-            var points=state.Snapshot.SpectrumBins.Select((db,i)=>new Vector2(X(SpectrumScale.MockFrequencyAt(i,state.Snapshot.SpectrumBins.Length)),Y(db))).ToArray();
             using var brush=new CanvasLinearGradientBrush(sender,[Stop(0,A(Design.Gold,.84)),Stop(.14f,A(Design.Gold,.58)),Stop(.42f,A(Amber,.30)),Stop(.76f,A(Amber,.075)),Stop(1,A(Amber,0))]);
-            for(var x=(int)left;x<right;x++)
+            foreach(var point in _spectrumPoints)
             {
-                var pos=(x-left)/(right-left)*(points.Length-1); var i=Math.Min(points.Length-2,(int)pos); var mix=pos-i;
-                var y=points[i].Y*(1-mix)+points[i+1].Y*mix; var depth=Math.Max(1,Math.Min((bottom-top)*.46f,bottom-y));
-                brush.StartPoint=new(x,y); brush.EndPoint=new(x,y+depth); brush.Opacity=(float)(.84+.16*Math.Cos((x-left)*Math.PI));
-                ink.FillRectangle(x,y,1.1f,bottom-y,brush);
+                float depth=Math.Max(1,Math.Min((bottom-top)*.46f,bottom-point.Y));
+                brush.StartPoint=point;brush.EndPoint=point+new Vector2(0,depth);
+                brush.Opacity=(float)(.84+.16*Math.Cos((point.X-left)*Math.PI));
+                ink.FillRectangle(point.X,point.Y,1.1f,bottom-point.Y,brush);
             }
-            using var curve=Path(sender,points);
-            var b=Math.Clamp((state.Snapshot.RmsDbfs+34)/4,0,1); var bloom=(float)(b*b);
+            using var curve=Path(sender,_spectrumPoints);
+            double level=Math.Clamp((state.Snapshot.RmsDbfs+60)/54,0,1);float bloom=(float)(level*level);
             using var glow=new CanvasCommandList(sender);
-            using(var g=glow.CreateDrawingSession()) g.DrawGeometry(curve,A(Design.Gold,.035+.48*bloom),2.5f);
-            using(var blur=new GaussianBlurEffect{Source=glow,BlurAmount=2+8*bloom,BorderMode=EffectBorderMode.Soft}) ink.DrawImage(blur);
+            using(var g=glow.CreateDrawingSession())g.DrawGeometry(curve,A(Design.Gold,.035+.48*bloom),2.5f);
+            using(var blur=new GaussianBlurEffect{Source=glow,BlurAmount=2+8*bloom,BorderMode=EffectBorderMode.Soft})ink.DrawImage(blur);
             ink.DrawGeometry(curve,Design.Gold,1.8f);
         }
         using var mask=new CanvasCommandList(sender);
         using(var m=mask.CreateDrawingSession())
-        using(var fade=new CanvasLinearGradientBrush(sender,[Stop(0,A(Design.White,0)),Stop(.05f,Design.White),Stop(.95f,Design.White),Stop(1,A(Design.White,0))]){StartPoint=new(left,0),EndPoint=new(right,0)}) m.FillRectangle(left,top,right-left,bottom-top,fade);
-        using(var faded=new AlphaMaskEffect{Source=chart,AlphaMask=mask}) ds.DrawImage(faded);
-        foreach(var db in dbs) Text(ds,$"{db}",left-22,Y(db),12,Design.Muted);
-        for(var i=0;i<freqs.Length;i++) Text(ds,freqs[i]>=1000?$"{freqs[i]/1000}k":$"{freqs[i]}",X(freqs[i])+(i==0?5:i==freqs.Length-1?-6:0),bottom+21,12,Design.Muted);
-        Text(ds,"dB · 非线性",left+44,top-14,11,Design.Muted);
+        using(var fade=new CanvasLinearGradientBrush(sender,[Stop(0,A(Design.White,0)),Stop(.05f,Design.White),Stop(.95f,Design.White),Stop(1,A(Design.White,0))]){StartPoint=new(left,0),EndPoint=new(right,0)})m.FillRectangle(left,top,right-left,bottom-top,fade);
+        using(var faded=new AlphaMaskEffect{Source=chart,AlphaMask=mask})ds.DrawImage(faded);
     }
     private void Pitch(CanvasControl sender,CanvasDrawingSession ds,ShellViewModel state,float w,float h)
     {
@@ -260,5 +299,5 @@ public sealed class MonitorRenderer : IDisposable
         }
         ds.DrawLine(x+width/2,y+3,x+width/2,y+27,Design.Gold,2);
     }
-    public void Dispose() { _face?.Dispose(); foreach(var f in _formats.Values) f.Dispose(); }
+    public void Dispose() { _face?.Dispose(); _spectrumGrid?.Dispose(); foreach(var f in _formats.Values) f.Dispose(); }
 }
