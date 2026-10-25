@@ -55,7 +55,7 @@ public sealed class MainWindow : Window
     private readonly StackPanel _activeButtons=new(){Orientation=Orientation.Horizontal,Spacing=3,Visibility=Visibility.Collapsed};
     private readonly Grid _clockSlot=new(){HorizontalAlignment=HorizontalAlignment.Center,VerticalAlignment=VerticalAlignment.Center,Visibility=Visibility.Collapsed};
     private readonly SegmentedSelector _modeSelector,_paneSelector;
-    private readonly DropDownButton _recordModeBox=new();
+    private readonly ComboBox _recordModeBox=new();
     private readonly ComboBox _deviceBox=new(),_calibrationBox=new(),_formatBox=new(),_qualityBox=new();
     private readonly TextBox _path=new(){PlaceholderText="选择文件夹",MinWidth=0};
     private readonly StackPanel _qualityGroup=new(){Spacing=8};
@@ -81,7 +81,6 @@ public sealed class MainWindow : Window
     private int _renderFrames,_drawFrames;
     private double _renderReportTime;
     private double _maxRenderGap;
-    private readonly ToggleMenuFlyoutItem _exclusiveItem=new(){Text="独占"},_sharedItem=new(){Text="不独占"};
 
     public MainWindow()
     {
@@ -282,20 +281,9 @@ public sealed class MainWindow : Window
         var deviceGroup=Group("输入设备","\uE720",_deviceBox);
         var refresh=LinkButton("刷新设备 / 重新监看");refresh.Click+=async(_,_)=>await LoadDevices();deviceGroup.Children.Add(refresh);_inputPage.Children.Add(deviceGroup);
         StyleField(_recordModeBox);
-        _recordModeBox.HorizontalContentAlignment=HorizontalAlignment.Left;
-        _recordModeBox.VerticalContentAlignment=VerticalAlignment.Center;
-        var modes=new MenuFlyout{Placement=Microsoft.UI.Xaml.Controls.Primitives.FlyoutPlacementMode.Bottom};
-        modes.MenuFlyoutPresenterStyle=(Style)Microsoft.UI.Xaml.Markup.XamlReader.Load("""
-            <Style xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" TargetType="MenuFlyoutPresenter">
-              <Setter Property="Background" Value="#252527"/><Setter Property="BorderThickness" Value="1"/>
-              <Setter Property="BorderBrush" Value="#49494D"/><Setter Property="CornerRadius" Value="4"/>
-              <Setter Property="MinWidth" Value="216"/>
-            </Style>
-            """);
-        modes.Items.Add(_exclusiveItem);modes.Items.Add(_sharedItem);_recordModeBox.Flyout=modes;
-        _exclusiveItem.Click+=(_,_)=>SetRecordingMode(RecordingMode.Exclusive);
-        _sharedItem.Click+=(_,_)=>SetRecordingMode(RecordingMode.Shared);
-        UpdateRecordingMode();
+        _recordModeBox.ItemsSource=new[]{"独占","不独占"};
+        _recordModeBox.SelectedIndex=_state.RecordMode==RecordingMode.Exclusive?0:1;
+        _recordModeBox.SelectionChanged+=(_,_)=>SetRecordingMode(_recordModeBox.SelectedIndex==0?RecordingMode.Exclusive:RecordingMode.Shared);
         _inputPage.Children.Add(Group("录制模式","\uE713",_recordModeBox));
         _captureInfo.TextWrapping=TextWrapping.Wrap;_captureInfo.MaxHeight=64;_inputPage.Children.Add(_captureInfo);
         var calibration=LinkButton("校准（预留）");calibration.Click+=async(_,_)=>await CalibrationSettings();_inputPage.Children.Add(calibration);
@@ -424,15 +412,9 @@ public sealed class MainWindow : Window
         catch(Exception error){StartupLog.Write("Audio command: "+error);await Message("音频服务",AudioEngine.Friendly(error));}
         finally{_audioBusy=false;_state.Refresh();RefreshSession(true);RefreshValues();}
     }
-    private void UpdateRecordingMode()
-    {
-        _exclusiveItem.IsChecked=_state.RecordMode==RecordingMode.Exclusive;
-        _sharedItem.IsChecked=_state.RecordMode==RecordingMode.Shared;
-        _recordModeBox.Content=Design.Text(_exclusiveItem.IsChecked?"独占":"不独占",13);
-    }
     private void SetRecordingMode(RecordingMode mode)
     {
-        _state.RecordMode=mode;UpdateRecordingMode();
+        _state.RecordMode=mode;
         try{RecordingPreferences.Save(mode);}catch(Exception error){StartupLog.Write("Preferences save failed: "+error);}
     }
     private void OnRendering(object? sender,object args)
