@@ -1,0 +1,14 @@
+# 侧栏、增益编辑与控制按钮细修
+
+2026-10-26。延续既有原生 WinUI 布局、字体、Mica 和琥珀仪表；只调整用户圈出的控件。
+
+- 侧栏 / SplitView PaneBackground 统一固定 #161617，现有项目框 #49494D 不变。
+- 增益数字单击进入短款输入框。参考 macOS 紧凑数值框的结构，采用本程序暗色适配：70×26 DIP、5 DIP 圆角、#262628 底、#65656A 一像素边缘，右侧 14 DIP 上下步进列；完整控件宽 96 DIP = 17 DIP 旋钮 + 8 DIP 间隔 + 70 DIP 编辑框 + 1 DIP 余量，不挤压中央时钟。原生 TextBox 负责编辑、光标和选择，未做浮动网页窗。
+- 输入 Enter / 失焦 / 点击外部确认，Esc 还原进入编辑前的值；上下小箭头每次 0.1 dB，支持按住重复。范围仍为 −60 至 +24 dB，非有限 / 无法解析的内容不应用。旋钮原有上下拖动、Shift 精调、双击归零、F2 / Enter 编辑保留；单击数字与拖动以 3 DIP 阈值区分。
+- 暂停 / 继续 / 停止 / 丢弃按钮填充 #363639，悬停 #434347，按下 #2B2B2E。只提亮填充，不加描边，不改变既有外侧 5 DIP 圆角、内侧直角和 3 DIP 间隙；录制红、停止红字与图标不变。
+- 全部菜单文字链接共享同一个 Windows 强调色浅色变体（UISettings AccentLight2）画刷，便于深色背景阅读；ColorValuesChanged 事件在 UI 线程更新画刷，关闭时解除监听。禁用链接为灰色，不改变增益数字的蓝色语义或录制的红色语义。
+- “刷新设备 / 重新监看”缩短为“刷新”，悬停提示说明“刷新输入设备并重新连接监看”，行为不变。
+
+设计方法参考已安装的 design-taste-frontend app-screen 章节：中性色调分层、明确控制边界、相邻控件尺寸和语义一致。本轮为已有 Windows 原生窗体的局部调整，用户指定色值与既有产品方向优先；没有重新抽取网页风格、换字体或改变仪表。网页浏览器检查器不适用于这份 C# / WinUI 源码；按既定约定只做源码差异核对和必要 Release 编译 / 发布，没有启动实窗、占用麦克风或操作桌面，输入框操作及实时换色仍待用户实窗确认。
+
+Windows API 依据：https://learn.microsoft.com/en-us/windows/apps/develop/ui/theming 与 https://learn.microsoft.com/en-us/uwp/api/windows.ui.viewmanagement.uisettings.colorvalueschanged 。

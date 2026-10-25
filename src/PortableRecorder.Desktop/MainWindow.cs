@@ -60,6 +60,7 @@ public sealed class MainWindow : Window
     private readonly TextBox _path=new(){PlaceholderText="选择文件夹",MinWidth=0};
     private readonly StackPanel _qualityGroup=new(){Spacing=8};
     private readonly List<Control> _configuration=[];
+    private readonly SolidColorBrush _linkInk=Design.Brush(Design.Link);
     private Storyboard? _widthAnimation;
     private bool _firstFrameLogged,_paneOpen,_updatingForm,_started;
     private bool _audioBusy,_closing,_closeAllowed,_dialogOpen;
@@ -149,7 +150,7 @@ public sealed class MainWindow : Window
         _clock.FontWeight=FontWeights.Bold;_clock.CharacterSpacing=-10;_transport.Children.Add(_clockSlot);
         _clockSlot.SizeChanged+=(_,_)=>LogClockCenters();
         _actions.Margin=new Thickness(0,0,28,0);_actions.VerticalAlignment=VerticalAlignment.Center;
-        _pauseButton=Design.Button(Design.ActionContent("pause"),"暂停录制");
+        _pauseButton=Design.Button(Design.ActionContent("pause"),"暂停录制",Design.TransportAction);
         _pauseButton.Width=0;_pauseButton.Opacity=0;_pauseButton.Visibility=Visibility.Collapsed;
         _pauseButton.CornerRadius=new(5,0,0,5);_pauseButton.TabIndex=5;
         _pauseFade=new NativeFade(_pauseButton,()=>_settings.AnimationsEnabled);
@@ -163,7 +164,7 @@ public sealed class MainWindow : Window
             else await _state.Audio.StartRecordingAsync(_state.OutputPath,_state.RecordMode);
         });
         _activeButtons.Visibility=Visibility.Visible;_activeButtons.Spacing=0;
-        _discardButton=Design.Button(Design.Icon("\uE74D",16,Design.White),"丢弃");
+        _discardButton=Design.Button(Design.Icon("\uE74D",16,Design.White),"丢弃",Design.TransportAction);
         _discardButton.Width=0;_discardButton.Opacity=0;_discardButton.Visibility=Visibility.Collapsed;
         _discardButton.Padding=new Thickness(0);_discardButton.CornerRadius=new(5,0,0,5);_discardButton.TabIndex=5;
         _discardButton.Click+=async(_,_)=>await AudioCommand(_state.Audio.DiscardRecordingAsync);
@@ -178,7 +179,7 @@ public sealed class MainWindow : Window
             _inputPage.Visibility=index==0?Visibility.Visible:Visibility.Collapsed;
             _filePage.Visibility=index==1?Visibility.Visible:Visibility.Collapsed;
         });
-        BuildInspector();
+        BuildInspector();UpdateSystemAccent();_settings.ColorValuesChanged+=OnSystemColorsChanged;
         _splitView.Pane=_inspector;
         _splitView.PaneClosed+=(_,_)=>
         {
@@ -225,6 +226,7 @@ public sealed class MainWindow : Window
             if(_audioBusy || _dialogOpen)return;
             _deviceRefreshTimer.Stop();await LoadDevices(manual:false);
         };
+        _root.AddHandler(UIElement.PointerPressedEvent,new PointerEventHandler((_,args)=>_gain.CommitIfOutside(args)),true);
         _main.SizeChanged+=(_,_)=>Layout();_root.KeyDown+=OnKeyDown;_timer.Tick+=(_,_)=>Tick();
         _settings.AnimationsEnabledChanged+=(_,_)=>DispatcherQueue.TryEnqueue(()=>{UpdateTextScale();RefreshSession(false);});
         _settings.TextScaleFactorChanged+=(_,_)=>DispatcherQueue.TryEnqueue(()=>{UpdateTextScale();Layout();});
@@ -237,7 +239,7 @@ public sealed class MainWindow : Window
             catch(Exception error){StartupLog.Write("Audio close: "+error);await Message("录音收尾异常",AudioEngine.Friendly(error));}
             finally{_closeAllowed=true;Close();}
         };
-        Closed+=(_,_)=>{CompositionTarget.Rendering-=OnRendering;_inputName.ReleaseResources();_timer.Stop();_widthAnimation?.Stop();_monitorFade.Stop();_clockFade.Stop();_statusFade.Stop();_primaryFade.Stop();_pauseFade.Stop();_canvas.RemoveFromVisualTree();_renderer.Dispose();};Content=_root;
+        Closed+=(_,_)=>{_settings.ColorValuesChanged-=OnSystemColorsChanged;CompositionTarget.Rendering-=OnRendering;_inputName.ReleaseResources();_timer.Stop();_widthAnimation?.Stop();_monitorFade.Stop();_clockFade.Stop();_statusFade.Stop();_primaryFade.Stop();_pauseFade.Stop();_canvas.RemoveFromVisualTree();_renderer.Dispose();};Content=_root;
     }
     private static Grid MenuGlyph()
     {
@@ -283,7 +285,7 @@ public sealed class MainWindow : Window
             await AudioCommand(()=>_state.Audio.SelectDeviceAsync(new(device.Id,device.FriendlyName)));
         };
         var deviceGroup=Group("输入设备","\uE720",_deviceBox);
-        var refresh=LinkButton("刷新设备 / 重新监看");refresh.Click+=async(_,_)=>await LoadDevices();deviceGroup.Children.Add(refresh);_inputPage.Children.Add(deviceGroup);
+        var refresh=LinkButton("刷新");ToolTipService.SetToolTip(refresh,"刷新输入设备并重新连接监看");refresh.Click+=async(_,_)=>await LoadDevices();deviceGroup.Children.Add(refresh);_inputPage.Children.Add(deviceGroup);
         StyleField(_recordModeBox);
         _recordModeBox.ItemsSource=new[]{"独占","不独占"};
         _recordModeBox.SelectedIndex=_state.RecordMode==RecordingMode.Exclusive?0:1;
@@ -307,7 +309,23 @@ public sealed class MainWindow : Window
     }
     private static StackPanel Label(string text,string glyph){var row=new StackPanel{Orientation=Orientation.Horizontal,Spacing=8,Height=20};row.Children.Add(Design.Icon(glyph,16,Design.Label));row.Children.Add(Design.Text(text,13,Design.Label));return row;}
     private static StackPanel Group(string title,string glyph,UIElement field){var panel=new StackPanel{Spacing=8};panel.Children.Add(Label(title,glyph));panel.Children.Add(field);return panel;}
-    private Button LinkButton(string text){var b=Design.Button(Design.Text(text,13,Design.Link),text,Colors.Transparent);b.Height=24;b.Padding=new Thickness(0);b.HorizontalAlignment=HorizontalAlignment.Left;_configuration.Add(b);return b;}
+    private Button LinkButton(string text)
+    {
+        var label=Design.Text(text,13);label.Foreground=_linkInk;
+        var button=Design.Button(label,text,Colors.Transparent);button.Height=24;button.Padding=new Thickness(0);
+        button.HorizontalAlignment=HorizontalAlignment.Left;
+        button.IsEnabledChanged+=(_,_)=>label.Foreground=button.IsEnabled?_linkInk:Design.Brush(Design.Muted);
+        _configuration.Add(button);return button;
+    }
+    private void OnSystemColorsChanged(UISettings sender,object args)
+        =>DispatcherQueue.TryEnqueue(()=>{if(!_closing)UpdateSystemAccent();});
+    private void UpdateSystemAccent()
+    {
+        // A Windows-generated light accent shade stays legible on the fixed dark surfaces.
+        try{_linkInk.Color=_settings.GetColorValue(UIColorType.AccentLight2);}
+        catch{_linkInk.Color=Design.Blue;}
+        _gain.SetAccent(_linkInk.Color);
+    }
     private void StyleField(Control field)
     {
         field.Height=36;field.MinHeight=36;field.MinWidth=0;field.FontSize=13;field.Foreground=Design.Brush(Design.White);field.Background=Design.Brush(Design.Field);field.BorderThickness=new Thickness(0);field.CornerRadius=new CornerRadius(3);field.Padding=new Thickness(12,0,12,0);field.HorizontalAlignment=HorizontalAlignment.Stretch;
@@ -584,7 +602,7 @@ public sealed class MainWindow : Window
         _discardButton.IsEnabled=paused && !_audioBusy;
         _pauseButton.CornerRadius=paused?new CornerRadius(0):new CornerRadius(5,0,0,5);
         _pauseButton.Content=Design.ActionContent(paused?"play":"pause",paused?"继续":null);
-        Design.SetBaseFill(_stopButton,active?Design.Action:Design.Record,animate&&changed);
+        Design.SetBaseFill(_stopButton,active?Design.TransportAction:Design.Record,animate&&changed);
 
         void PrimaryContent()
         {

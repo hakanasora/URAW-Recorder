@@ -20,9 +20,9 @@
 - 音高为 Pitchy 4.1.0 的 MIT McLeod 方法 C# 适配，A4=440 Hz；低清晰度、静音 / 噪声不显示音名，轨迹断开。只用于单音；保留音分尺、四秒轨迹和越界平移。
 - 单声道双 VU 镜像、文件仍为单声道；立体声 / 多声道双麦克风图标，提示真实声道。多声道 VU 前两路，RMS 与频谱按实际声道能量平均，PEAK 取全部声道的最大绝对值，文件全部保留。
 - 保持固定 820×416 DIP 主界面、264 DIP 左侧设置、现有 Mica 覆盖和 VU 外观。时钟由已保存音频帧数计算，显示百分秒，暂停不增长。绘制读取窗体所在屏幕当前刷新率作为目标，跟随 XAML 合成周期，不再固定封顶 120 Hz；每秒后台复查，跨屏和更改刷新率后自动跟随，实际仍受合成器和负载限制。测量频率不随绘制翻倍。指针、频谱和音分尺仅在视觉层插值，音高视窗按显示时间平滑移动。最小化停止绘制，采集和写盘继续。
-- 增益上下拖动，Shift 精调，双击 / Home / 0 归零，方向键 / Shift+方向键调整，Enter / F2 输入，Esc 撤销。`Ctrl+Alt+T` 保留字体试用；模拟场景 F12 已移除。
+- 增益上下拖动，Shift 精调，双击 / Home / 0 归零，方向键 / Shift+方向键调整，单击数字或 Enter / F2 输入，短数值框支持每次 0.1 dB 步进，Esc 取消编辑或撤销拖动。`Ctrl+Alt+T` 保留字体试用；模拟场景 F12 已移除。
 
-内置麦克风待机断读的修复与诊断见 [不连续事件恢复](docs/capture-discontinuity.md)。详细定义、信号链、RAW 边界及验证记录见 [真实音频服务](docs/audio-service.md)。材质见 [材质说明](docs/subtle-materials.md)。第三方来源和许可见 [第三方说明](third_party/README.md)，发布目录也带 `licenses/`。
+内置麦克风待机断读的修复与诊断见 [不连续事件恢复](docs/capture-discontinuity.md)。详细定义、信号链、RAW 边界及验证记录见 [真实音频服务](docs/audio-service.md)。材质见 [材质说明](docs/subtle-materials.md)，最新侧栏 / 增益编辑 / 按钮 / 系统强调色细节见 [控件细修](docs/ui-controls-polish.md)。第三方来源和许可见 [第三方说明](third_party/README.md)，发布目录也带 `licenses/`。
 
 ## 构建与校验
 

@@ -13,10 +13,10 @@ namespace PortableRecorder.Desktop;
 
 public static class Design
 {
-    public static readonly Color Display = Hex("1B1B1B"), Transport = Hex("0E0E0E"), Inspector = Hex("252527"),
+    public static readonly Color Display = Hex("1B1B1B"), Transport = Hex("0E0E0E"), Inspector = Hex("161617"),
         Field = Hex("49494D"), White = Hex("F5F5F7"), Muted = Hex("86868B"), Label = Hex("A1A1A6"),
         Grey = Hex("6E6E73"), Zero = Hex("9D9D9F"), Blue = Hex("0387FF"), Alert = Hex("FF3037"),
-        Record = Hex("D3222B"), Action = Hex("1D1D1F"), Selected = Hex("343437"), Gold = Hex("FFB700"),
+        Record = Hex("D3222B"), Action = Hex("1D1D1F"), TransportAction = Hex("363639"), Selected = Hex("343437"), Gold = Hex("FFB700"),
         Grid = Hex("29292C"), Line = Hex("323234"), Link = Hex("DFBC79");
     public static Color Hex(string value) => Color.FromArgb(255,Convert.ToByte(value[..2],16),Convert.ToByte(value[2..4],16),Convert.ToByte(value[4..6],16));
     public static SolidColorBrush Brush(Color c) => new(c);
@@ -44,9 +44,9 @@ public static class Design
             </ControlTemplate>
             """);
         AutomationProperties.SetName(b,name); ToolTipService.SetToolTip(b,name);
-        b.PointerEntered+=(_,_)=> { if(b.IsEnabled) b.Background=Brush(BaseFill(b)==Record?Hex("D9242D"):Hex("29292C")); };
+        b.PointerEntered+=(_,_)=> { if(b.IsEnabled) b.Background=Brush(BaseFill(b)==Record?Hex("D9242D"):BaseFill(b)==TransportAction?Hex("434347"):Hex("29292C")); };
         b.PointerExited+=(_,_)=> b.Background=Brush(BaseFill(b));
-        b.PointerPressed+=(_,_)=> { if(b.IsEnabled) b.Background=Brush(BaseFill(b)==Record?Hex("B91C25"):Hex("151517")); };
+        b.PointerPressed+=(_,_)=> { if(b.IsEnabled) b.Background=Brush(BaseFill(b)==Record?Hex("B91C25"):BaseFill(b)==TransportAction?Hex("2B2B2E"):Hex("151517")); };
         b.PointerReleased+=(_,_)=> b.Background=Brush(BaseFill(b));
         return b;
     }
