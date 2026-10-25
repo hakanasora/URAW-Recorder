@@ -100,6 +100,8 @@ public static class MockMonitorSource
         var a = Phrase[index]; var b = Phrase[index + 1];
         var u = Math.Clamp((phase - a.Time) / (b.Time - a.Time), 0, 1); u = u*u*(3-2*u);
         double? midi = scenario == MockScenario.MissingPitch ? null : a.Midi + (b.Midi-a.Midi)*u + .025*Math.Sin(t*9);
+        // UI mock samples are uniformly spaced in log frequency, from 20 Hz to 20 kHz.
+        // A future linear FFT must be mapped using its actual Hz values, not this mock index convention.
         var bins = new float[211];
         for (var i=0; i<bins.Length; i++)
         {

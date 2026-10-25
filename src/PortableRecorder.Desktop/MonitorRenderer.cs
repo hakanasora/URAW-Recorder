@@ -163,19 +163,28 @@ public sealed class MonitorRenderer : IDisposable
     private void Spectrum(CanvasControl sender,CanvasDrawingSession ds,ShellViewModel state,float w,float h)
     {
         // Shares the instrument region with VU; the left RMS/PEAK block stays visible.
-        float left=288,right=w-28,top=16,bottom=h-40;
-        float Y(double db)=>top+(float)((6-db)/96)*(bottom-top);
-        float X(double f)=>left+(float)(Math.Log10(f/20)/3)*(right-left);
-        double[] freqs=[20,100,500,2000,10000,20000]; double[] dbs=[-12,-30,-48,-66,-84];
+        float left=288,right=w-28,top=24,bottom=h-40;
+        float Y(double db)=>top+(float)SpectrumScale.LevelPosition(db)*(bottom-top);
+        float X(double f)=>left+(float)SpectrumScale.FrequencyPosition(f)*(right-left);
+        var freqs=SpectrumScale.Frequencies;var dbs=SpectrumScale.Levels;
         using var chart=new CanvasCommandList(sender);
         using(var ink=chart.CreateDrawingSession())
         {
-            for(var db=-88.5;db<=6;db+=4.5) ink.DrawLine(left,Y(db),right,Y(db),A(Design.Grid,.48),.65f);
+            for(var i=0;i<dbs.Length-1;i++)
+            {
+                var midpoint=(dbs[i]+dbs[i+1])/2;
+                ink.DrawLine(left,Y(midpoint),right,Y(midpoint),A(Design.Grid,.48),.65f);
+            }
             for(var decade=10;decade<=10000;decade*=10)
-                for(var part=2;part<20;part++) { var f=decade*part/2.0; if(f>=20 && f<=20000) ink.DrawLine(X(f),top,X(f),bottom,A(Design.Grid,.48),.65f); }
+                for(var part=1;part<=9;part++)
+                {
+                    var f=decade*part;
+                    if(f>=20 && f<=20000 && !freqs.Contains(f))
+                        ink.DrawLine(X(f),top,X(f),bottom,A(Design.Grid,.48),.65f);
+                }
             foreach(var db in dbs) ink.DrawLine(left,Y(db),right,Y(db),A(Design.Line,.78),.8f);
             foreach(var f in freqs) ink.DrawLine(X(f),top,X(f),bottom,A(Design.Line,.78),.8f);
-            var points=state.Snapshot.SpectrumBins.Select((db,i)=>new Vector2(left+i*(right-left)/(state.Snapshot.SpectrumBins.Length-1),Math.Clamp(Y(db),top,bottom))).ToArray();
+            var points=state.Snapshot.SpectrumBins.Select((db,i)=>new Vector2(X(SpectrumScale.MockFrequencyAt(i,state.Snapshot.SpectrumBins.Length)),Y(db))).ToArray();
             using var brush=new CanvasLinearGradientBrush(sender,[Stop(0,A(Design.Gold,.84)),Stop(.14f,A(Design.Gold,.58)),Stop(.42f,A(Amber,.30)),Stop(.76f,A(Amber,.075)),Stop(1,A(Amber,0))]);
             for(var x=(int)left;x<right;x++)
             {
@@ -197,7 +206,7 @@ public sealed class MonitorRenderer : IDisposable
         using(var faded=new AlphaMaskEffect{Source=chart,AlphaMask=mask}) ds.DrawImage(faded);
         foreach(var db in dbs) Text(ds,$"{db}",left-22,Y(db),12,Design.Muted);
         for(var i=0;i<freqs.Length;i++) Text(ds,freqs[i]>=1000?$"{freqs[i]/1000}k":$"{freqs[i]}",X(freqs[i])+(i==0?5:i==freqs.Length-1?-6:0),bottom+21,12,Design.Muted);
-        Text(ds,"dB",left-22,top-4,12,Design.Muted);
+        Text(ds,"dB · 非线性",left+44,top-14,11,Design.Muted);
     }
     private void Pitch(CanvasControl sender,CanvasDrawingSession ds,ShellViewModel state,float w,float h)
     {
