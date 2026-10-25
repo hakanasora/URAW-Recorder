@@ -18,6 +18,8 @@ public sealed class AudioEngine:IAsyncDisposable
     private double _previousPeak=double.NaN;
     private HashSet<string> _knownDevices=[];
     public AudioDevice? SelectedDevice=>_device;
+    public event Action<string>? Diagnostic;
+    private void Trace(string message){try{Diagnostic?.Invoke(message);}catch{/* Diagnostics cannot stop capture. */}}
     public AudioEngine(ICaptureFactory? factory=null,ICalibrationStage? calibration=null,Func<string,AudioFormat,IRecordingWriter>? writerFactory=null)
     {_factory=factory??new WasapiCaptureFactory();_calibration=calibration??new IdentityCalibration();_createWriter=writerFactory??((path,format)=>new FloatWaveWriter(path,format));}
     public IReadOnlyList<AudioDevice> EnumerateDevices()=>_factory.Enumerate();
@@ -26,6 +28,9 @@ public sealed class AudioEngine:IAsyncDisposable
         get
         {
             var status=Volatile.Read(ref _status);
+            int recovered=_pipeline?.RecoveredDiscontinuities??0;
+            if(status.State==AudioRunState.Monitoring && recovered>0)
+                return status with{Message=status.Message+$"；已从 {recovered} 次短暂数据不连续恢复监看。"};
             return status.State==AudioRunState.Preparing && (_writer?.WrittenFrames??0)>0?
                 status with{State=AudioRunState.Recording,Message="录制中"}:status;
         }
@@ -116,11 +121,12 @@ public sealed class AudioEngine:IAsyncDisposable
     private async Task OpenCapture(bool exclusive,bool raw)
     {
         Set(AudioRunState.Opening,"正在打开输入设备");long epoch=Interlocked.Increment(ref _epoch);
-        var pipe=new ProcessingPipeline(()=>Volatile.Read(ref _gain),_calibration,error=>ReportFault(epoch,error));
+        var pipe=new ProcessingPipeline(()=>Volatile.Read(ref _gain),_calibration,error=>ReportFault(epoch,error),Trace);
         try
         {
             var capture=await _factory.OpenAsync(_device!,exclusive,raw,epoch,pipe.Submit,error=>ReportFault(epoch,error));
             pipe.Configure(capture.Info);_pipeline=pipe;_capture=capture;
+            Trace($"Capture ready: device={_device!.Name}; {capture.Info.Format.Description}; exclusive={exclusive}; RAW={raw}; epoch={epoch}");
         }
         catch{await pipe.DisposeAsync();throw;}
     }
@@ -232,7 +238,15 @@ public sealed class AudioEngine:IAsyncDisposable
                 if(_disposed || epoch!=_capture?.Info.Epoch)return;
                 string? file=_writer?.Path;bool partial=_writer!=null;
                 try{await StopWriter(false);}catch{}
-                await CloseCapture();Set(AudioRunState.Faulted,Friendly(error),file,partial);
+                await CloseCapture();
+                Trace("Capture fault: "+error);
+                if(partial && error is CaptureGapException)
+                {
+                    await OpenMonitor();
+                    if(_capture!=null)Set(AudioRunState.Monitoring,"录制因音频数据不连续而停止，文件可能不完整；已恢复共享监看。",file,true);
+                    else Set(AudioRunState.Faulted,Friendly(error),file,true);
+                }
+                else Set(AudioRunState.Faulted,Friendly(error),file,partial);
             }
             finally{_commands.Release();}
         });

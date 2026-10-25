@@ -6,6 +6,7 @@ internal sealed class CentsMotion
     private long _epoch=-1;
     private int? _note;
     private double? _position;
+    public void Reset(){_epoch=-1;_note=null;_position=null;}
     public double? Advance(long epoch,double? midi,double? cents,double elapsed,bool reducedMotion)
     {
         if(midi is not double pitch || cents is not double target || !double.IsFinite(target))

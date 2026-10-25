@@ -51,7 +51,8 @@ internal sealed class WasapiCaptureSession:IAudioCaptureService
             var wave=exclusive?FindFormat(client,mix):mix;
             var format=Describe(wave);
             using var signal=new EventWaitHandle(false,EventResetMode.AutoReset);
-            long duration=Math.Max(300_000,client.DefaultDevicePeriod);
+            // Shared monitoring benefits from scheduling headroom; event cadence remains engine-driven.
+            long duration=Math.Max(exclusive?300_000:1_000_000,client.DefaultDevicePeriod);
             for(int attempt=0;;attempt++)
             {
                 if(raw)RequestRaw(client);
@@ -71,7 +72,7 @@ internal sealed class WasapiCaptureSession:IAudioCaptureService
             client.Start();
             _ready.TrySetResult(new(description,format,exclusive,raw,epoch));
             var waits=new WaitHandle[]{signal,_stop.Token.WaitHandle};
-            bool first=true,previousPositionValid=false;long previousEnd=0;
+            var continuity=new CaptureContinuity();
             while(!_stop.IsCancellationRequested)
             {
                 int signaled=WaitHandle.WaitAny(waits,3000);
@@ -80,17 +81,14 @@ internal sealed class WasapiCaptureSession:IAudioCaptureService
                 // GetNextPacketSize is shared-mode only. Exclusive events supply one buffer.
                 do
                 {
-                    var pointer=capture.GetBuffer(out int frames,out var flags,out long position,out _);
+                    var pointer=capture.GetBuffer(out int frames,out var flags,out long position,out long qpc);
                     if(frames==0)break;
                     try
                     {
-                        bool positionValid=(flags&AudioClientBufferFlags.TimestampError)==0;
-                        bool discontinuity=!first && ((flags&AudioClientBufferFlags.DataDiscontinuity)!=0 ||
-                            (positionValid && previousPositionValid && position!=previousEnd));
-                        first=false;previousEnd=position+frames;previousPositionValid=positionValid;
+                        var boundary=continuity.Observe(frames,position,(int)flags);
                         var bytes=ArrayPool<byte>.Shared.Rent(frames*format.BlockAlign);
                         var packet=new CapturePacket(bytes,frames*format.BlockAlign,frames,position,
-                            (flags&AudioClientBufferFlags.Silent)!=0,discontinuity);
+                            (flags&AudioClientBufferFlags.Silent)!=0,boundary.Discontinuous,(int)flags,boundary.Delta,qpc);
                         try
                         {
                             if(packet.Silent)Array.Clear(bytes,0,packet.Length);

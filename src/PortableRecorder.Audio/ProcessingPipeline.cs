@@ -10,15 +10,17 @@ internal sealed class ProcessingPipeline:IAsyncDisposable
     private readonly Task _worker;
     private readonly Func<double> _gain;
     private readonly Action<Exception> _fault;
+    private readonly Action<string> _diagnostic;
     private readonly ICalibrationStage _calibration;
     private long _queuedBytes,_budget=64*1024*1024,_frames;
     private AudioAnalyzer? _analyzer;
     private IRecordingWriter? _writer;
     private bool _paused;
     private Exception? _failure;
-    public AudioSnapshot Latest=>_analyzer?.Latest??AudioSnapshot.Empty();
-    public ProcessingPipeline(Func<double> gain,ICalibrationStage calibration,Action<Exception> fault)
-    {_gain=gain;_calibration=calibration;_fault=fault;_worker=Task.Run(Run);}
+    public AudioSnapshot Latest=>Volatile.Read(ref _analyzer)?.Latest??AudioSnapshot.Empty();
+    public int RecoveredDiscontinuities=>Latest.RecoveredDiscontinuities;
+    public ProcessingPipeline(Func<double> gain,ICalibrationStage calibration,Action<Exception> fault,Action<string> diagnostic)
+    {_gain=gain;_calibration=calibration;_fault=fault;_diagnostic=diagnostic;_worker=Task.Run(Run);}
     public void Configure(CaptureInfo info)
     {
         _budget=Math.Min(64L*1024*1024,info.Format.SampleRate*(long)info.Format.BlockAlign*2);
@@ -45,7 +47,17 @@ internal sealed class ProcessingPipeline:IAsyncDisposable
                     continue;
                 }
                 using var packet=work.Packet!;Interlocked.Add(ref _queuedBytes,-packet.Length);
-                if(packet.Discontinuity)throw new IOException("检测到音频包断流，未插入虚构静音来掩盖缺口。");
+                if(packet.Discontinuity)
+                {
+                    string detail=$" flags=0x{packet.NativeFlags:X}; position={packet.Position}; delta={packet.PositionDelta?.ToString()??"unknown"}; frames={packet.Frames}; qpc100ns={packet.Qpc100ns}; exclusive={info.Exclusive}; raw={info.Raw}; rate={info.Format.SampleRate}; epoch={info.Epoch}; writing={_writer!=null && !_paused}";
+                    _diagnostic("Capture discontinuity:"+detail);
+                    if(_writer!=null && !_paused)throw new CaptureGapException(detail);
+                    // A monitoring-only boundary must not permanently kill the capture stream.
+                    // Reset all rolling/windowed analysis, keep historical peak, and use real samples only.
+                    var previous=_analyzer!.Latest;_analyzer.Dispose();
+                    Volatile.Write(ref _analyzer,new AudioAnalyzer(info.Format,info.Epoch,
+                        segment:previous.Segment+1,recoveredDiscontinuities:previous.RecoveredDiscontinuities+1,initialPeak:previous.HeldPeakDbfs));
+                }
                 var data=ArrayPool<float>.Shared.Rent(packet.Frames*info.Format.Channels);
                 try
                 {

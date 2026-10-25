@@ -4,7 +4,7 @@
 
 WASAPI 原始包 / 原生格式 / 设备样本位置 → PCM 解码 → 原始输入峰值 → ICalibrationStage（Identity 直通）→ 软件增益 → 测量分析 / 有界写盘队列 → float32 WAV / RF64。
 
-捕获线程为 MTA / MMCSS Pro Audio，持有 CoreAudio 对象，及时 ReleaseBuffer，只复制到池化包并投递，不操作 XAML、不写盘。单消费者处理队列按样本顺序执行增益、峰值重置、暂停与写入分支。FFT / 音高分析在单独任务读取最新环形窗；可以跳过旧显示窗口，不能静默丢录音样本。写盘另有单消费者队列，采集处理和写盘队列各最多约 2 秒 / 64 MiB，先到者为限；超限、断流、非有限样本或磁盘错误会停止并报告。会话代号隔离过期错误和结果。
+捕获线程为 MTA / MMCSS Pro Audio，持有 CoreAudio 对象，及时 ReleaseBuffer，只复制到池化包并投递，不操作 XAML、不写盘。单消费者处理队列按样本顺序执行增益、峰值重置、暂停与写入分支。FFT / 音高分析在单独任务读取最新环形窗；可以跳过旧显示窗口，不能静默丢录音样本。写盘另有单消费者队列，采集处理和写盘队列各最多约 2 秒 / 64 MiB，先到者为限；超限、非有限样本或磁盘错误会停止并报告。音频包不连续按是否正在向文件写入分别处理，见下文 2026-10-26 更新。会话代号隔离过期错误和结果。
 
 不主动启用 AGC、降噪、回声消除、均衡、归一化、采样率转换或限制器。PCM 到 float32 是保存格式转换；32 位整数最低有效位可能受 float32 精度限制，不能称整数位精确归档。软件增益属于入口之后的显式处理。RAW 和独占不能绕过不可关闭的硬件、固件、驱动或端点 always-on APO，也不承诺绝对硬件直通。RAW 接受只表示 Windows 接受该请求。参见 [Windows RAW 定义](https://learn.microsoft.com/en-us/windows/win32/api/audioclient/ne-audioclient-audclnt_streamoptions)。
 
@@ -13,7 +13,7 @@ WASAPI 原始包 / 原生格式 / 设备样本位置 → PCM 解码 → 原始�
 - 启动读取当前默认输入；不因仅有默认设备标记变化而更换有效输入。原生 Core Audio 设备通知经 300 ms 合并后刷新列表，待机中新接入的有效输入优先；录制中保持原输入，移除后先完成本次文件，再在剩余设备中恢复共享监看，绝不接着往同一文件录另一支麦克风。
 - 启动、待机及停止后为共享，使用设备 MixFormat；菜单模式只决定正式录制，首次默认独占；此后从独立偏好文件读取用户上次选择，与设备无关。暂停保持当前模式和监看。
 - 独占模式优先现有格式，其后当前采样率、48k / 44.1k / 96k / 88.2k / 192k / 176.4k；同声道按原格式、24 PCM（含 24-in-32）、float32、PCM32、PCM16 探测，兼顾 WAVEFORMATEXTENSIBLE。只接受驱动 IsFormatSupported 支持的格式。
-- 请求约 30 ms 事件缓冲。独占 duration / periodicity 相同，遇 BUFFER_SIZE_NOT_ALIGNED 读取对齐帧数、重建客户端只重试一次；独占不调用共享专用 GetNextPacketSize。[初始化](https://learn.microsoft.com/en-us/windows/win32/api/audioclient/nf-audioclient-iaudioclient-initialize)、[读取约束](https://learn.microsoft.com/en-us/windows/win32/api/audioclient/nf-audioclient-iaudiocaptureclient-getnextpacketsize)。
+- 独占请求约 30 ms 事件缓冲；共享请求约 100 ms 缓冲余量，事件到达节奏仍由音频引擎决定，避免繁忙电脑上仅 30 ms 余量过小。独占 duration / periodicity 相同，遇 BUFFER_SIZE_NOT_ALIGNED 读取对齐帧数、重建客户端只重试一次；独占不调用共享专用 GetNextPacketSize。[初始化](https://learn.microsoft.com/en-us/windows/win32/api/audioclient/nf-audioclient-iaudioclient-initialize)、[读取约束](https://learn.microsoft.com/en-us/windows/win32/api/audioclient/nf-audioclient-iaudiocaptureclient-getnextpacketsize)。
 - 只有 RAW_MODE_UNSUPPORTED、缺少 IAudioClient2 / 明确不支持该接口才触发降级选择。设备忙、权限、移除、服务停止不归类为 RAW 不支持。ContentDialog 的允许只对当前设备本次运行的普通共享监看有效；关闭等于停止，换设备清除许可，正式录制依然必须 RAW。独占失败恢复共享并显示错误，不静默改用共享录制。
 - 时钟为文件中实际写入的音频帧 / 实际采样率；UI 定时器只取快照。Preparing 等到有效样本写入才进入 Recording。暂停跳过真实样本，不插入静音。停止后排空队列、补齐文件头才成功。
 - 写盘异常保留尽力完成的部分文件并报告失败；暂停时提供“丢弃”：有序关闭本次 WAV 后只移除这一份，清零本次时钟，恢复共享监看；非暂停状态不能丢弃。关闭窗口取消首次关闭，异步收尾后再真正关闭。没有用旧数值或模拟数据填补失败。
@@ -62,3 +62,10 @@ WASAPI 原始包 / 原生格式 / 设备样本位置 → PCM 解码 → 原始�
 
 
 后续更新：绘制目标已从固定 120 Hz 改为后台读取窗体所在屏幕当前刷新率，每秒复查；音分尺也按绘制时间作视觉平滑。现共 171 项后台断言通过。具体实现、系统只读查询结果和实际呈现限制见 round2-feedback.md 的后续记录，测量、写盘和录制时钟未改变。
+
+
+## 2026-10-26 待机数据不连续恢复
+
+旧实现对待机 / 暂停 / 正式写盘采用同一个 fatal 分支，驱动只要报告一次 DATA_DISCONTINUITY 或有效帧位置跳变，监看就永久停止。现改为：待机和暂停时保留采集客户端、设备、RAW / 独占状态和历史 PEAK，重建全部分析窗并处理当前真实包；不用虚构静音或旧 FFT / 音高连接缺口，新的分析 Segment 使 UI 清除轨迹和插值。正式写入时不改变严格性：停止该文件、排空已接受样本、尽力完成头，标为可能不完整，再恢复共享监看，绝不自动继续同一录音。
+
+共享缓冲请求由 30 ms 提至 100 ms；独占 30 ms 与对齐重试逻辑不变。新增包原生 flags、设备帧位置差、QPC、包长、格式、会话与是否写盘的诊断；区分数据不连续和物理设备断开。191 项离线断言通过。尚未在用户内置麦克风上运行修复版确认，具体证据与复测步骤见 capture-discontinuity.md。

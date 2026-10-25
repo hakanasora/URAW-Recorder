@@ -44,6 +44,7 @@ public sealed class ShellViewModel:INotifyPropertyChanged
     public Queue<PitchPoint> PitchHistory {get;}=new();
     public double MonitorTime {get;private set;}
     private long _epoch=-1,_pitchFrame=-1;
+    private int _segment=-1;
     public ShellViewModel()=>SelectedCalibration=Calibrations[0];
     public void SetGain(double db)
     {
@@ -55,7 +56,7 @@ public sealed class ShellViewModel:INotifyPropertyChanged
     public void Refresh()
     {
         var source=Audio.Latest;
-        if(source.Epoch!=_epoch){PitchHistory.Clear();_pitchFrame=-1;_epoch=source.Epoch;}
+        if(source.Epoch!=_epoch || source.Segment!=_segment){PitchHistory.Clear();_pitchFrame=-1;_epoch=source.Epoch;_segment=source.Segment;}
         MonitorTime=source.Time;HeldPeak=source.HeldPeakDbfs;
         double? hz=source.Valid?source.FrequencyHz:null;
         double? midi=hz is double f?69+12*Math.Log2(f/440):null;

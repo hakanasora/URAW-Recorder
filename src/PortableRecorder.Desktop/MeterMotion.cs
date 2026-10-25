@@ -9,7 +9,7 @@ internal sealed class MeterMotion
     public void Push(AudioSnapshot sample,double now)
     {
         if(!sample.Valid){_previous=null;_current=null;return;}
-        if(_current?.Epoch!=sample.Epoch || _current!=null && sample.Time-_current.Time>.200){_previous=null;_current=null;}
+        if(_current?.Epoch!=sample.Epoch || _current.Segment!=sample.Segment || _current!=null && sample.Time-_current.Time>.200){_previous=null;_current=null;}
         if(_current?.FramePosition==sample.FramePosition)return;
         _previous=_current;_current=sample;_received=now;
     }

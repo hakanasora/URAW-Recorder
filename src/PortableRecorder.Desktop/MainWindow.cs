@@ -87,6 +87,7 @@ public sealed class MainWindow : Window
     public MainWindow()
     {
         Title="Portable Recorder";ExtendsContentIntoTitleBar=true;
+        _state.Audio.Diagnostic+=StartupLog.Write;
         _frame=new FixedWindowFrame(this,()=>_root.XamlRoot?.RasterizationScale??1);
         _monitorFade=new NativeFade(_monitor,()=>_settings.AnimationsEnabled);
         _clockFade=new NativeFade(_clockSlot,()=>_settings.AnimationsEnabled);
@@ -188,6 +189,7 @@ public sealed class MainWindow : Window
         _splitView.PaneClosing+=(_,_)=>{if(OverlayDrawer)_paneOpen=false;};
         _canvas.Draw+=(sender,args)=>
         {
+            if(_closing || _closeAllowed)return;
             try { _drawFrames++;_renderer.Draw(sender,args,_state); if(!_firstFrameLogged){_firstFrameLogged=true;StartupLog.Write($"First monitor frame drawn: {sender.ActualWidth} x {sender.ActualHeight}");} }
             catch(Exception error){StartupLog.Write("Draw failed: "+error);throw;}
         };_state.PropertyChanged+=(_,_)=>RefreshValues();
@@ -392,12 +394,13 @@ public sealed class MainWindow : Window
         _inputName.SetChannels(capture?.Format.Channels??0);
         _captureInfo.Text=capture==null?(_noCapture?"诊断模式：未打开麦克风":_state.Devices.Count==0?"未找到可用输入设备；接入设备后自动恢复监看。":status.Message):
             $"{(capture.Exclusive?"独占":"共享")} · {(capture.Raw?"RAW 请求已接受":"普通输入（本次许可）")}\n{capture.Format.Description}\n待机与停止后使用共享监看；校准未应用。";
-        ToolTipService.SetToolTip(_captureInfo,_captureInfo.Text);
+        ToolTipService.SetToolTip(_captureInfo,_captureInfo.Text+"\n"+status.Message);
         if(status.Message!=_lastAudioMessage)
         {
             _lastAudioMessage=status.Message;StartupLog.Write("Audio: "+status.State+" / "+status.Message);
             _serviceNotice.Text=status.State is AudioRunState.Faulted or AudioRunState.Stopped || status.FilePath!=null && ! _state.Session.Active
-                ?status.Message:"";
+                ?status.Message:status.State==AudioRunState.Monitoring && _state.Audio.Latest.RecoveredDiscontinuities>0
+                ?$"监看已恢复（短暂不连续 {_state.Audio.Latest.RecoveredDiscontinuities} 次）":"";
             ToolTipService.SetToolTip(_serviceNotice,status.Message+(status.FilePath==null?"":"\n"+status.FilePath));
         }
         _=CheckRawDecision();

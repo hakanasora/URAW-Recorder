@@ -28,6 +28,8 @@ public sealed class MonitorRenderer : IDisposable
     private Vector2[] _fromSpectrum=[],_drawSpectrum=[];
     private double _blendStarted;
     private long _visualEpoch=-1;
+    private int _visualSegment=-1;
+    private bool _disposed;
     private float _faceDpi;
     private static readonly double[] Marks=[-20,-10,-7,-5,-3,0,3];
     private static readonly double[] Angles=[-153,-132,-111,-90,-69,-48,-27];
@@ -166,12 +168,13 @@ public sealed class MonitorRenderer : IDisposable
     }
     public void Draw(CanvasControl sender,CanvasDrawEventArgs args,ShellViewModel state)
     {
+        if(_disposed)return;
         double now=_visualClock.Elapsed.TotalSeconds;
         _frameDelta=Math.Clamp(now-_lastDrawTime,0,.050);_lastDrawTime=now;
         var sample=state.Audio.Latest;
-        if(!sample.Valid || sample.Epoch!=_visualEpoch)
+        if(!sample.Valid || sample.Epoch!=_visualEpoch || sample.Segment!=_visualSegment)
         {
-            _visualEpoch=sample.Epoch;_projectedFrame=null;_spectrumPoints=[];_fromSpectrum=[];_drawSpectrum=[];
+            _visualEpoch=sample.Epoch;_visualSegment=sample.Segment;_centsMotion.Reset();_projectedFrame=null;_spectrumPoints=[];_fromSpectrum=[];_drawSpectrum=[];
         }
         _meterMotion.Push(sample,now);var vu=_meterMotion.Read(now,ReducedMotion);
         _timeline=_meterMotion.Timeline(now);
@@ -326,5 +329,5 @@ public sealed class MonitorRenderer : IDisposable
         }
         ds.DrawLine(x+width/2,y+3,x+width/2,y+27,Design.Gold,2);
     }
-    public void Dispose() { _needleGlow?.Dispose(); _face?.Dispose(); _spectrumGrid?.Dispose(); foreach(var f in _formats.Values) f.Dispose(); }
+    public void Dispose() { _disposed=true; _needleGlow?.Dispose(); _face?.Dispose(); _spectrumGrid?.Dispose(); foreach(var f in _formats.Values) f.Dispose(); }
 }

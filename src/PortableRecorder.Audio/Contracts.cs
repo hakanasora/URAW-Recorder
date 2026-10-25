@@ -14,7 +14,7 @@ public sealed record CaptureInfo(AudioDevice Device,AudioFormat Format,bool Excl
 public sealed record SpectrumFrame(double[] FrequenciesHz,float[] Dbfs,int FftSize,long EndFrame);
 public sealed record AudioSnapshot(long Epoch,long FramePosition,int SampleRate,int Channels,bool Valid,
     double RmsDbfs,double SourcePeakDbfs,double OutputPeakDbfs,double? HeldPeakDbfs,
-    double VuLeft,double VuRight,double? FrequencyHz,double PitchClarity,SpectrumFrame? Spectrum,long PitchFramePosition=0,bool InputFullScale=false,bool OutputOverload=false)
+    double VuLeft,double VuRight,double? FrequencyHz,double PitchClarity,SpectrumFrame? Spectrum,long PitchFramePosition=0,bool InputFullScale=false,bool OutputOverload=false,int Segment=0,int RecoveredDiscontinuities=0)
 {
     public double Time=>SampleRate>0?FramePosition/(double)SampleRate:0;
     public static AudioSnapshot Empty(long epoch=0)=>new(epoch,0,0,0,false,double.NaN,double.NaN,double.NaN,null,
@@ -22,7 +22,9 @@ public sealed record AudioSnapshot(long Epoch,long FramePosition,int SampleRate,
 }
 public sealed record AudioStatus(AudioRunState State,CaptureInfo? Capture,string Message,string? FilePath=null,bool Partial=false);
 public sealed class RawUnavailableException(string message,Exception? inner=null):Exception(message,inner);
-public sealed class CapturePacket(byte[] data,int length,int frames,long position,bool silent,bool discontinuity):IDisposable
+public sealed class CaptureGapException(string detail):IOException("录音期间音频数据不连续，本次录音已停止；这不代表麦克风已断开。"+detail);
+public sealed class CapturePacket(byte[] data,int length,int frames,long position,bool silent,bool discontinuity,
+    int nativeFlags=0,long? positionDelta=null,long qpc100ns=0):IDisposable
 {
     public byte[] Data {get;}=data;
     public int Length {get;}=length;
@@ -30,6 +32,9 @@ public sealed class CapturePacket(byte[] data,int length,int frames,long positio
     public long Position {get;}=position;
     public bool Silent {get;}=silent;
     public bool Discontinuity {get;}=discontinuity;
+    public int NativeFlags {get;}=nativeFlags;
+    public long? PositionDelta {get;}=positionDelta;
+    public long Qpc100ns {get;}=qpc100ns;
     public void Dispose()=>ArrayPool<byte>.Shared.Return(Data);
 }
 public interface IAudioCaptureService:IAsyncDisposable { CaptureInfo Info {get;} }

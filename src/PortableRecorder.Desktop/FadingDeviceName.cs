@@ -25,7 +25,7 @@ public sealed class FadingDeviceName : Grid
         HorizontalAlignment=CanvasHorizontalAlignment.Left,VerticalAlignment=CanvasVerticalAlignment.Center,
         WordWrapping=CanvasWordWrapping.NoWrap};
     private string _value = "";
-    private bool _recording;
+    private bool _recording,_released;
     private double _expandedWidth = 146;
     private Storyboard? _reveal;
     private const double MaxTextWidth = 122;
@@ -107,6 +107,7 @@ public sealed class FadingDeviceName : Grid
     }
     private void DrawLabel(CanvasControl sender,CanvasDrawEventArgs args)
     {
+        if(_released)return;
         float width=(float)sender.ActualWidth,height=(float)sender.ActualHeight;
         if(width<.5f || height<1)return;
         var ds=args.DrawingSession;ds.TextAntialiasing=CanvasTextAntialiasing.Grayscale;
@@ -122,5 +123,5 @@ public sealed class FadingDeviceName : Grid
             {StartPoint=new(0,0),EndPoint=new(width,0)})ink.FillRectangle(0,0,width,height,gradient);
         using var faded=new AlphaMaskEffect{Source=line,AlphaMask=mask};ds.DrawImage(faded);
     }
-    public void ReleaseResources(){_reveal?.Stop();_labelCanvas.RemoveFromVisualTree();_labelFormat.Dispose();}
+    public void ReleaseResources(){_released=true;_reveal?.Stop();_labelCanvas.RemoveFromVisualTree();_labelFormat.Dispose();}
 }

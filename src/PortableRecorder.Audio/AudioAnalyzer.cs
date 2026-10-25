@@ -90,9 +90,9 @@ public sealed class AudioAnalyzer:IAudioAnalyzer
     private AudioSnapshot _latest;
     public AudioSnapshot Latest=>Volatile.Read(ref _latest);
     public Exception? Failure {get;private set;}
-    public AudioAnalyzer(AudioFormat format,long epoch,bool background=true)
+    public AudioAnalyzer(AudioFormat format,long epoch,bool background=true,int segment=0,int recoveredDiscontinuities=0,double? initialPeak=null)
     {
-        _format=format;_epoch=epoch;_latest=AudioSnapshot.Empty(epoch);
+        _format=format;_epoch=epoch;_latest=AudioSnapshot.Empty(epoch) with{Segment=segment,RecoveredDiscontinuities=recoveredDiscontinuities,HeldPeakDbfs=initialPeak};
         int size=PowerOfTwo(format.SampleRate*.170);_pitchSize=PowerOfTwo(format.SampleRate*.085);
         _rmsPower=new double[(int)Math.Round(format.SampleRate*.3)];
         _vu=Enumerable.Range(0,Math.Min(format.Channels,2)).Select(_=>new VuDetector(format.SampleRate)).ToArray();
