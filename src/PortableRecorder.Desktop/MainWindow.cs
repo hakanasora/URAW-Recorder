@@ -77,7 +77,9 @@ public sealed class MainWindow : Window
     private bool _devicesDirty,_devicesLoaded;
     private int _deviceVersion;
     private readonly Stopwatch _renderClock=Stopwatch.StartNew();
-    private double _lastRender,_nextRenderDue;
+    private double _lastRender,_nextRenderDue,_nextDisplayProbe;
+    private bool _displayProbePending;
+    private DisplayRefreshInfo _displayRefresh=new("unknown",null,"compositor fallback");
     private int _renderFrames,_drawFrames;
     private double _renderReportTime;
     private double _maxRenderGap;
@@ -421,16 +423,40 @@ public sealed class MainWindow : Window
     {
         if(!_started || _closing || AppWindow.Presenter is OverlappedPresenter{State:OverlappedPresenterState.Minimized})return;
         double now=_renderClock.Elapsed.TotalSeconds;
-        double period=1d/(_settings.AnimationsEnabled?120:60);
-        if(now+.0003<_nextRenderDue)return;
-        _nextRenderDue=Math.Max(_nextRenderDue+period,now);
+        if(now>=_nextDisplayProbe && !_displayProbePending)
+        {
+            _nextDisplayProbe=now+1;_displayProbePending=true;
+            _=ProbeDisplayRefreshAsync(WinRT.Interop.WindowNative.GetWindowHandle(this));
+        }
+        if(_displayRefresh.Hertz is double rate)
+        {
+            double period=1d/rate;
+            if(now+Math.Min(.0003,period*.04)<_nextRenderDue)return;
+            _nextRenderDue=Math.Max(_nextRenderDue+period,now);
+        }
         _maxRenderGap=Math.Max(_maxRenderGap,now-_lastRender);_lastRender=now;
         _state.Refresh();_canvas.Invalidate();_renderFrames++;
         if(now-_renderReportTime>=10)
         {
-            StartupLog.Write($"Monitor render requests: {_renderFrames/(now-_renderReportTime):F1}/s; Draw callbacks: {_drawFrames/(now-_renderReportTime):F1}/s; maximum gap {_maxRenderGap*1000:F1} ms (includes stalls); screen/compositor limited, cap 120");
+            StartupLog.Write($"Monitor render requests: {_renderFrames/(now-_renderReportTime):F1}/s; Draw callbacks: {_drawFrames/(now-_renderReportTime):F1}/s; maximum gap {_maxRenderGap*1000:F1} ms (includes stalls); screen/compositor limited, target {_displayRefresh.Hertz?.ToString("F3")??"compositor"} Hz");
             _renderFrames=0;_drawFrames=0;_maxRenderGap=0;_renderReportTime=now;
         }
+    }
+    private async Task ProbeDisplayRefreshAsync(IntPtr window)
+    {
+        try
+        {
+            // Display topology queries stay off the render/UI thread.
+            var display=await Task.Run(()=>DisplayRefreshRate.Read(window));
+            if(_closing)return;
+            if(display!=_displayRefresh)
+            {
+                _displayRefresh=display;_nextRenderDue=_renderClock.Elapsed.TotalSeconds;
+                StartupLog.Write($"Display refresh: {display.Device}, {display.Hertz?.ToString("F3")??"unknown"} Hz, {display.Source}");
+            }
+        }
+        catch(Exception error){StartupLog.Write("Display refresh query failed: "+error);}
+        finally{_displayProbePending=false;}
     }
     private async Task LoadDevices(bool manual=true)
     {

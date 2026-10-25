@@ -23,6 +23,7 @@ public sealed class MonitorRenderer : IDisposable
     private double _low = 36, _targetLow = 36, _frameDelta,_lastDrawTime,_timeline;
     private readonly Stopwatch _visualClock=Stopwatch.StartNew();
     private readonly MeterMotion _meterMotion=new();
+    private readonly CentsMotion _centsMotion=new();
     private CanvasRenderTarget? _needleGlow;
     private Vector2[] _fromSpectrum=[],_drawSpectrum=[];
     private double _blendStarted;
@@ -309,7 +310,8 @@ public sealed class MonitorRenderer : IDisposable
         for(var n=(int)Math.Ceiling(_low);n<=_low+36;n++)
             if(n%12==0 || (bottom-top>=230 && n%12==7)) Text(ds,$"{(n%12==0?"C":"G")}{n/12-1}",left-22,Y(n),12,Design.Muted);
 
-        Cents(ds,state.Snapshot.Cents,28,CentsTop,200*TextScale);
+        var cents=_centsMotion.Advance(_visualEpoch,state.Snapshot.MidiNote,state.Snapshot.Cents,_frameDelta,ReducedMotion);
+        Cents(ds,cents,28,CentsTop,200*TextScale);
     }
     private void Cents(CanvasDrawingSession ds,double? cents,float x,float y,float width)
     {
