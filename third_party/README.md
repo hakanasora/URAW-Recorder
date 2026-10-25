@@ -1,0 +1,6 @@
+# Third-party sources
+
+- NAudio.Core / NAudio.Wasapi **3.3.0**, MIT, https://github.com/naudio/NAudio/tree/v3.3.0 . Packages are pinned in PortableRecorder.Audio.csproj. License: naudio/LICENSE. Used for CoreAudio COM interfaces, wave formats, float WAV/RF64, Hann and FFT. Capture lifecycle and exclusive event-buffer handling are this application's thin adapter, not a copy of the high-level recorder.
+- Pitchy **v4.1.0**, Copyright 2018–2021 Ian Johnson, MIT, https://github.com/ianprime0509/pitchy/tree/v4.1.0 . Original tagged index.js and LICENSE are retained in pitchy/. PitchDetector.cs ports the McLeod NSDF, key-maximum selection, 0.9 relative threshold and parabolic peak interpolation. NAudio FFT replaces FFT.js, with its normalization explicitly compensated; allocations are reused. Additional application policy: analysis-only DC removal, −80 dBFS gate, 27.5–2093 Hz band (0.1-cent numerical boundary tolerance), clarity gate and upstream channel hysteresis / median. No JavaScript runtime is embedded.
+
+Existing desktop dependencies remain pinned: Windows App SDK 2.5.1 and Win2D 1.4.0. Their package licenses/notices are included by the build's existing dependency distribution. NAudio and Pitchy license texts are copied alongside the release.
