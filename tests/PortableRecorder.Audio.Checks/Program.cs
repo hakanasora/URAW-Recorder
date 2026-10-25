@@ -163,6 +163,21 @@ foreach(double frequency in new[]{27.5,32.7032,110,123.47,440,1000,2093})
     await Until(()=>engine.Status.State==AudioRunState.Faulted,"Disk failure while paused");
     Assert(engine.Status.Partial && !engine.Latest.Valid,"Failed file is partial, no stale data");
 }
+{
+    var factory=new FakeFactory();var engine=new AudioEngine(factory);
+    await engine.SelectDeviceAsync(factory.Device);await engine.StartRecordingAsync(root,RecordingMode.Exclusive);
+    string path=engine.Status.FilePath!;factory.Push(Sine(48000,1200,440,.1));
+    await engine.DisposeAsync();
+    using var file=new WaveFileReader(path);Assert(file.Length==1200*4,"Closing active recording drains final samples and header");
+    Assert(factory.Current!.Closed,"Closing releases exclusive capture");
+}
+{
+    var factory=new FakeFactory();var writer=new FailingWriter{Reject=true};
+    await using var engine=new AudioEngine(factory,writerFactory:(_,_)=>writer);
+    await engine.SelectDeviceAsync(factory.Device);await engine.StartRecordingAsync(root,RecordingMode.Shared);factory.Push(new float[480]);
+    await Until(()=>engine.Status.State==AudioRunState.Faulted,"Recording queue rejects data");
+    Assert(engine.Status.Partial && !engine.Latest.Valid,"Recording overflow stops, never silently drops");
+}
 Console.WriteLine($"Maximum pure-tone pitch error: {maximumPitchError:0.0000} cents");
 Console.WriteLine($"PASS: {checks} targeted assertions. No microphone, desktop, or browser used. Fixtures: {root}");
 
@@ -183,6 +198,7 @@ sealed class FakeFactory:ICaptureFactory
 sealed class FakeCapture(CaptureInfo info,Func<CapturePacket,bool> packet,Action<Exception> fault):IAudioCaptureService
 {
     public CaptureInfo Info=>info;long _frame;bool _closed;
+    public bool Closed=>_closed;
     public void TriggerFault()=>fault(new IOException("Old session fault"));
     public void Push(float[] data,bool gap)
     {
@@ -199,7 +215,8 @@ sealed class FailingWriter:IRecordingWriter
     public string Path=>"injected-disk-failure.wav";
     public long WrittenFrames {get;private set;}
     public Exception? Failure {get;private set;}
-    public bool TryWrite(ReadOnlySpan<float> samples){if(Failure!=null)return false;WrittenFrames+=samples.Length;return true;}
+    public bool Reject;
+    public bool TryWrite(ReadOnlySpan<float> samples){if(Failure!=null || Reject)return false;WrittenFrames+=samples.Length;return true;}
     public void Fail()=>Failure=new IOException("Injected disk failure");
     public Task CompleteAsync()=>Failure==null?Task.CompletedTask:Task.FromException(Failure);
     public ValueTask DisposeAsync()=>new(CompleteAsync());
