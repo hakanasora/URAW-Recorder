@@ -15,3 +15,6 @@ Windows API 依据：https://learn.microsoft.com/en-us/windows/apps/develop/ui/t
 
 
 后续箭头修正：将字体箭头替换为相同 7×4 DIP 几何折线，水平 / 垂直居中；上下两半区之间增加 1 DIP 横分割线。每一半区悬停时出现接近半区大小的 2.5 DIP 圆角矩形（#48484D），按下 #606065，移出还原；保持外框尺寸和 0.1 dB 步进不变。必要编译 / 发布与差异检查，不运行桌面自动化。
+
+
+再次定位箭头偏移：SDK generic.xaml 的 DefaultRepeatButtonStyle 明确设置 HorizontalAlignment=Left / VerticalAlignment=Center。前一版只居中内容，按钮本身按内容宽度靠左而未填满分配的格子；现显式覆盖为双向 Stretch，ContentPresenter 同样填满并双向内容居中。修复同时覆盖几何箭头中心与悬停区域，不使用补偿偏移量。发布构建和差异检查通过，未启动桌面自动化，实际像素结果待用户截图确认。

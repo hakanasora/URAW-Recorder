@@ -74,11 +74,15 @@ public sealed class GainControl : UserControl
             arrow.IsHitTestVisible=false;
             var button=new RepeatButton{Content=arrow,Padding=new Thickness(0),MinWidth=0,MinHeight=0,
                 Background=Design.Brush(Microsoft.UI.Colors.Transparent),BorderThickness=new Thickness(0),IsTabStop=false,
+                // DefaultRepeatButtonStyle is Left/Center: override the button's own slot alignment,
+                // not just its content, so both hit/hover bounds and arrow centers fill each half.
+                HorizontalAlignment=HorizontalAlignment.Stretch,VerticalAlignment=VerticalAlignment.Stretch,
                 HorizontalContentAlignment=HorizontalAlignment.Center,VerticalContentAlignment=VerticalAlignment.Center};
             button.Template=(ControlTemplate)XamlReader.Load("""
                 <ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" TargetType="RepeatButton">
                   <Border Margin="1,0.5" CornerRadius="2.5" Background="{TemplateBinding Background}">
-                    <ContentPresenter Content="{TemplateBinding Content}" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                    <ContentPresenter Content="{TemplateBinding Content}" HorizontalAlignment="Stretch" VerticalAlignment="Stretch"
+                      HorizontalContentAlignment="Center" VerticalContentAlignment="Center"/>
                   </Border>
                 </ControlTemplate>
                 """);
