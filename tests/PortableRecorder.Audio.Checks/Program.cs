@@ -31,6 +31,13 @@ foreach(int bits in new[]{16,24,32})
     var bytes=new byte[8];BinaryPrimitives.WriteInt32LittleEndian(bytes,int.MinValue);BinaryPrimitives.WriteInt32LittleEndian(bytes.AsSpan(4),0x7fffff00);
     var decoded=new float[2];PcmDecoder.Decode(bytes,decoded,new(48000,1,32,24,PcmEncoding.SignedInteger));Near(decoded[0],-1,0,"24-in-32 min");Near(decoded[1],8388607/8388608d,0,"24-in-32 max");
 }
+{
+    using var analyzer=new AudioAnalyzer(new(48000,1,16,16,PcmEncoding.SignedInteger),1,false);
+    analyzer.Process(new float[]{.5f},32767/32768d,1);
+    Assert(analyzer.Latest.InputFullScale && !analyzer.Latest.OutputOverload,"Input rail remains detected after attenuation");
+    analyzer.Process(new float[]{2},.5,2);
+    Assert(!analyzer.Latest.InputFullScale && analyzer.Latest.OutputOverload,"Software output overrange distinct from input clipping");
+}
 foreach(int block in new[]{1,127,1024})
 {
     using var analyzer=new AudioAnalyzer(mono,7,false);var signal=Sine(48000,48000,1000,Math.Pow(10,-18d/20));

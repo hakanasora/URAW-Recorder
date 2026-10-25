@@ -71,7 +71,7 @@ internal sealed class WasapiCaptureSession:IAudioCaptureService
             client.Start();
             _ready.TrySetResult(new(description,format,exclusive,raw,epoch));
             var waits=new WaitHandle[]{signal,_stop.Token.WaitHandle};
-            bool first=true;long previousEnd=0;
+            bool first=true,previousPositionValid=false;long previousEnd=0;
             while(!_stop.IsCancellationRequested)
             {
                 int signaled=WaitHandle.WaitAny(waits,3000);
@@ -84,9 +84,10 @@ internal sealed class WasapiCaptureSession:IAudioCaptureService
                     if(frames==0)break;
                     try
                     {
+                        bool positionValid=(flags&AudioClientBufferFlags.TimestampError)==0;
                         bool discontinuity=!first && ((flags&AudioClientBufferFlags.DataDiscontinuity)!=0 ||
-                            ((flags&AudioClientBufferFlags.TimestampError)==0 && position!=previousEnd));
-                        first=false;previousEnd=position+frames;
+                            (positionValid && previousPositionValid && position!=previousEnd));
+                        first=false;previousEnd=position+frames;previousPositionValid=positionValid;
                         var bytes=ArrayPool<byte>.Shared.Rent(frames*format.BlockAlign);
                         var packet=new CapturePacket(bytes,frames*format.BlockAlign,frames,position,
                             (flags&AudioClientBufferFlags.Silent)!=0,discontinuity);

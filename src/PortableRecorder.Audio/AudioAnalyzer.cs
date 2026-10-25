@@ -127,6 +127,7 @@ public sealed class AudioAnalyzer:IAudioAnalyzer
             {
                 Epoch=_epoch,FramePosition=endFrame,SampleRate=_format.SampleRate,Channels=channels,Valid=true,
                 RmsDbfs=Db(Math.Sqrt(Math.Max(0,_rmsSum/_rmsCount))),SourcePeakDbfs=Db(sourcePeak),OutputPeakDbfs=output,
+                InputFullScale=sourcePeak>=(_format.Encoding==PcmEncoding.Float?1:1-Math.Pow(2,1-_format.ValidBits)),OutputOverload=peak>=1,
                 HeldPeakDbfs=old.HeldPeakDbfs is double held?Math.Max(held,output):output,
                 VuLeft=_vu[0].Vu,VuRight=_vu.Length==1?_vu[0].Vu:_vu[1].Vu
             });

@@ -14,7 +14,7 @@ public sealed record CaptureInfo(AudioDevice Device,AudioFormat Format,bool Excl
 public sealed record SpectrumFrame(double[] FrequenciesHz,float[] Dbfs,int FftSize,long EndFrame);
 public sealed record AudioSnapshot(long Epoch,long FramePosition,int SampleRate,int Channels,bool Valid,
     double RmsDbfs,double SourcePeakDbfs,double OutputPeakDbfs,double? HeldPeakDbfs,
-    double VuLeft,double VuRight,double? FrequencyHz,double PitchClarity,SpectrumFrame? Spectrum,long PitchFramePosition=0)
+    double VuLeft,double VuRight,double? FrequencyHz,double PitchClarity,SpectrumFrame? Spectrum,long PitchFramePosition=0,bool InputFullScale=false,bool OutputOverload=false)
 {
     public double Time=>SampleRate>0?FramePosition/(double)SampleRate:0;
     public static AudioSnapshot Empty(long epoch=0)=>new(epoch,0,0,0,false,double.NaN,double.NaN,double.NaN,null,
