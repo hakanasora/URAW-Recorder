@@ -12,3 +12,6 @@
 设计方法参考已安装的 design-taste-frontend app-screen 章节：中性色调分层、明确控制边界、相邻控件尺寸和语义一致。本轮为已有 Windows 原生窗体的局部调整，用户指定色值与既有产品方向优先；没有重新抽取网页风格、换字体或改变仪表。网页浏览器检查器不适用于这份 C# / WinUI 源码；按既定约定只做源码差异核对和必要 Release 编译 / 发布，没有启动实窗、占用麦克风或操作桌面，输入框操作及实时换色仍待用户实窗确认。
 
 Windows API 依据：https://learn.microsoft.com/en-us/windows/apps/develop/ui/theming 与 https://learn.microsoft.com/en-us/uwp/api/windows.ui.viewmanagement.uisettings.colorvalueschanged 。
+
+
+后续箭头修正：将字体箭头替换为相同 7×4 DIP 几何折线，水平 / 垂直居中；上下两半区之间增加 1 DIP 横分割线。每一半区悬停时出现接近半区大小的 2.5 DIP 圆角矩形（#48484D），按下 #606065，移出还原；保持外框尺寸和 0.1 dB 步进不变。必要编译 / 发布与差异检查，不运行桌面自动化。

@@ -56,12 +56,38 @@ public sealed class GainControl : UserControl
               </Grid>
             </ControlTemplate>
             """);
-        var steps=new Grid();steps.RowDefinitions.Add(new());steps.RowDefinitions.Add(new());
-        RepeatButton Step(string glyph,string name,double direction)
+        var steps=new Grid{UseLayoutRounding=true};
+        steps.RowDefinitions.Add(new(){Height=new GridLength(1,GridUnitType.Star)});
+        steps.RowDefinitions.Add(new(){Height=new GridLength(1)});
+        steps.RowDefinitions.Add(new(){Height=new GridLength(1,GridUnitType.Star)});
+        RepeatButton Step(string name,double direction)
         {
-            var button=new RepeatButton{Content=Design.Icon(glyph,7,Design.White),Padding=new Thickness(0),MinWidth=0,MinHeight=0,
+            // Geometric chevrons share identical bounds; font glyph bearings cannot shift their centers.
+            var arrow=new Polyline();
+            arrow.Points.Add(new Windows.Foundation.Point(0,direction>0?3:0));
+            arrow.Points.Add(new Windows.Foundation.Point(3,direction>0?0:3));
+            arrow.Points.Add(new Windows.Foundation.Point(6,direction>0?3:0));
+            arrow.Width=7;arrow.Height=4;arrow.Stretch=Stretch.Uniform;
+            arrow.Stroke=Design.Brush(Design.White);arrow.StrokeThickness=1;
+            arrow.StrokeStartLineCap=PenLineCap.Round;arrow.StrokeEndLineCap=PenLineCap.Round;arrow.StrokeLineJoin=PenLineJoin.Round;
+            arrow.HorizontalAlignment=HorizontalAlignment.Center;arrow.VerticalAlignment=VerticalAlignment.Center;
+            arrow.IsHitTestVisible=false;
+            var button=new RepeatButton{Content=arrow,Padding=new Thickness(0),MinWidth=0,MinHeight=0,
                 Background=Design.Brush(Microsoft.UI.Colors.Transparent),BorderThickness=new Thickness(0),IsTabStop=false,
                 HorizontalContentAlignment=HorizontalAlignment.Center,VerticalContentAlignment=VerticalAlignment.Center};
+            button.Template=(ControlTemplate)XamlReader.Load("""
+                <ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" TargetType="RepeatButton">
+                  <Border Margin="1,0.5" CornerRadius="2.5" Background="{TemplateBinding Background}">
+                    <ContentPresenter Content="{TemplateBinding Content}" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                  </Border>
+                </ControlTemplate>
+                """);
+            bool hovering=false;
+            button.PointerEntered+=(_,_)=>{hovering=true;button.Background=Design.Brush(Design.Hex("48484D"));};
+            button.PointerExited+=(_,_)=>{hovering=false;button.Background=Design.Brush(Microsoft.UI.Colors.Transparent);};
+            button.PointerPressed+=(_,_)=>button.Background=Design.Brush(Design.Hex("606065"));
+            button.PointerReleased+=(_,_)=>button.Background=Design.Brush(hovering?Design.Hex("48484D"):Microsoft.UI.Colors.Transparent);
+            button.PointerCanceled+=(_,_)=>button.Background=Design.Brush(Microsoft.UI.Colors.Transparent);
             AutomationProperties.SetName(button,name);ToolTipService.SetToolTip(button,name);
             button.Click+=(_,_)=>
             {
@@ -71,8 +97,10 @@ public sealed class GainControl : UserControl
             };
             return button;
         }
-        var up=Step("\uE70E","增加 0.1 dB",1);var down=Step("\uE70D","减少 0.1 dB",-1);
-        steps.Children.Add(up);steps.Children.Add(down);Grid.SetRow(down,1);
+        var up=Step("增加 0.1 dB",1);var down=Step("减少 0.1 dB",-1);
+        var separator=new Border{Height=1,Background=Design.Brush(Design.Hex("48484B")),IsHitTestVisible=false};
+        steps.Children.Add(up);steps.Children.Add(separator);Grid.SetRow(separator,1);
+        steps.Children.Add(down);Grid.SetRow(down,2);
         var stepFrame=new Border{BorderThickness=new Thickness(1,0,0,0),BorderBrush=Design.Brush(Design.Hex("48484B")),Child=steps};
         Grid.SetColumn(stepFrame,1);input.Children.Add(stepFrame);_entry.Child=input;
         AutomationProperties.SetName(_editor,"输入软件增益，单位 dB，范围负 60 至正 24");
