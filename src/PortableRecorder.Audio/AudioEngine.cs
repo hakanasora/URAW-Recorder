@@ -3,7 +3,17 @@ namespace PortableRecorder.Audio;
 public sealed class AudioEngine:IAsyncDisposable
 {
     private readonly ICaptureFactory _factory;
-    private readonly ICalibrationStage _calibration;
+    public CalibrationLibrary Calibrations {get;}
+    private string? _calibrationError; private string? _summaryOwned; private object? _recordingCalibration;
+    public CalibrationStatus Calibration
+    {
+        get
+        {
+            var status=_pipeline?.Calibration??CalibrationStatus.Off();
+            string? warning=_calibrationError??Calibrations.Warning;
+            return warning==null?status:status with{Notice=warning+"\n"+status.Notice};
+        }
+    }
     private readonly Func<string,AudioFormat,IRecordingWriter> _createWriter;
     private readonly SemaphoreSlim _commands=new(1,1);
     private IAudioCaptureService? _capture;
@@ -20,8 +30,8 @@ public sealed class AudioEngine:IAsyncDisposable
     public AudioDevice? SelectedDevice=>_device;
     public event Action<string>? Diagnostic;
     private void Trace(string message){try{Diagnostic?.Invoke(message);}catch{/* Diagnostics cannot stop capture. */}}
-    public AudioEngine(ICaptureFactory? factory=null,ICalibrationStage? calibration=null,Func<string,AudioFormat,IRecordingWriter>? writerFactory=null)
-    {_factory=factory??new WasapiCaptureFactory();_calibration=calibration??new IdentityCalibration();_createWriter=writerFactory??((path,format)=>new FloatWaveWriter(path,format));}
+    public AudioEngine(ICaptureFactory? factory=null,CalibrationLibrary? calibrationLibrary=null,Func<string,AudioFormat,IRecordingWriter>? writerFactory=null)
+    {_factory=factory??new WasapiCaptureFactory();Calibrations=calibrationLibrary??new CalibrationLibrary();_createWriter=writerFactory??((path,format)=>new FloatWaveWriter(path,format));}
     public IReadOnlyList<AudioDevice> EnumerateDevices()=>_factory.Enumerate();
     public AudioStatus Status
     {
@@ -66,12 +76,12 @@ public sealed class AudioEngine:IAsyncDisposable
             if(_writer!=null && current!=null)return;
             bool lostRecording=_writer!=null;
             string? endedPath=_writer?.Path;Exception? endingError=null;
-            if(lostRecording){try{await StopWriter(false);}catch(Exception error){endingError=error;}}
+            if(lostRecording){try{await StopWriter(false,new IOException("录制输入设备已移除。"));}catch(Exception error){endingError=error;}}
             var chosen=(!manualRefresh?added.FirstOrDefault():null)??current??devices.FirstOrDefault(d=>d.IsDefault)??devices.FirstOrDefault();
             bool changed=chosen?.Id!=_device?.Id;
             if(!changed && _capture!=null && !manualRefresh && !lostRecording)return;
             await CloseCapture();
-            if(changed)_normalConsent=false;_device=chosen;RawDecisionPending=false;
+            if(changed){_normalConsent=false;Volatile.Write(ref _previousPeak,double.NaN);}_device=chosen;RawDecisionPending=false;
             if(chosen==null)Set(AudioRunState.Stopped,"没有可用输入设备；插入设备后将自动恢复监看。",endedPath,endingError!=null);
             else
             {
@@ -89,7 +99,7 @@ public sealed class AudioEngine:IAsyncDisposable
         {
             ThrowIfDisposed();if(_writer!=null)throw new InvalidOperationException("录制期间不能更换输入设备。");
             bool changed=_device?.Id!=device.Id;_device=device;if(changed)_normalConsent=false;
-            RawDecisionPending=false;await CloseCapture();await OpenMonitor();
+            RawDecisionPending=false;await CloseCapture();if(changed)Volatile.Write(ref _previousPeak,double.NaN);await OpenMonitor();
         }
         finally{_commands.Release();}
     }
@@ -121,11 +131,22 @@ public sealed class AudioEngine:IAsyncDisposable
     private async Task OpenCapture(bool exclusive,bool raw)
     {
         Set(AudioRunState.Opening,"正在打开输入设备");long epoch=Interlocked.Increment(ref _epoch);
-        var pipe=new ProcessingPipeline(()=>Volatile.Read(ref _gain),_calibration,error=>ReportFault(epoch,error),Trace);
+        var pipe=new ProcessingPipeline(()=>Volatile.Read(ref _gain),error=>ReportFault(epoch,error),Trace);
         try
         {
             var capture=await _factory.OpenAsync(_device!,exclusive,raw,epoch,pipe.Submit,error=>ReportFault(epoch,error));
-            pipe.Configure(capture.Info);_pipeline=pipe;_capture=capture;
+            try
+            {
+                var plan=CalibrationPlan.Identity;_calibrationError=null;
+                string? id=Calibrations.SelectedId(_device!.Id);
+                if(id!=null)
+                {
+                    try{plan=await Task.Run(()=>CalibrationPlan.Prepare(Calibrations.Read(id),capture.Info.Format.SampleRate));}
+                    catch(Exception e){_calibrationError="所选校准不可用，已停用："+e.Message;Trace(_calibrationError);}
+                }
+                pipe.Configure(capture.Info,plan);_pipeline=pipe;_capture=capture;
+            }
+            catch{await capture.DisposeAsync();throw;}
             Trace($"Capture ready: device={_device!.Name}; {capture.Info.Format.Description}; exclusive={exclusive}; RAW={raw}; epoch={epoch}");
         }
         catch{await pipe.DisposeAsync();throw;}
@@ -153,6 +174,7 @@ public sealed class AudioEngine:IAsyncDisposable
                 try{await OpenCapture(exclusive,true);}
                 catch(Exception error){await OpenMonitor();throw new IOException("录制输入打开失败："+Friendly(error),error);}
             }
+            if(_calibrationError!=null)throw new InvalidOperationException(_calibrationError+" 请重新选择校准或明确关闭校准后录制。");
             if(!_capture!.Info.Raw)throw new InvalidOperationException("正式录制必须接受 RAW 请求。");
             Set(AudioRunState.Preparing,"正在准备 WAV 文件");
             directory=string.IsNullOrWhiteSpace(directory)?System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyMusic),"Portable Recorder"):System.IO.Path.GetFullPath(directory);
@@ -164,7 +186,12 @@ public sealed class AudioEngine:IAsyncDisposable
                 try{_writer=_createWriter(path,_capture.Info.Format);break;}
                 catch(IOException) when(File.Exists(path) && suffix<99){}
             }
-            _lastWritten=0;_lastRate=_capture.Info.Format.SampleRate;
+            _lastWritten=0;_lastRate=_capture.Info.Format.SampleRate;_summaryOwned=null;
+            var calibration=Calibration;
+            _recordingCalibration=new{Version=1,Device=_device,Format=_capture.Info.Format,Calibration=calibration,
+                Profile=calibration.ProfileId==null?null:Calibrations.Read(calibration.ProfileId),
+                Processing="raw → frequency correction → software gain → monitoring / float WAV",LinearPhase=true,
+                FftRule="nextpow2(Fs*0.34); taps=7*N/8+1; designFFT=4*N; Hamming",AbsoluteSpl=false};
             await _pipeline!.AttachAsync(_writer);
             Set(AudioRunState.Preparing,"等待首批录音样本",_writer.Path);
         }
@@ -201,7 +228,7 @@ public sealed class AudioEngine:IAsyncDisposable
             string path=_writer.Path;bool exclusive=_capture?.Info.Exclusive==true;
             // Close/drain the owned file before deleting; this cannot touch earlier recordings.
             try{await StopWriter(false);}catch{/* An explicitly discarded partial file may also be removed. */}
-            Exception? failure=null;try{File.Delete(path);}catch(Exception error){failure=error;}
+            Exception? failure=null;try{File.Delete(path);if(_summaryOwned!=null){File.Delete(_summaryOwned);_summaryOwned=null;}}catch(Exception error){failure=error;}
             _lastWritten=0;
             if(exclusive){await CloseCapture();await OpenMonitor();}
             if(failure!=null){Set(AudioRunState.Faulted,"无法丢弃文件："+Friendly(failure),path,true);throw new IOException("文件已关闭但未能丢弃："+path,failure);}
@@ -209,18 +236,84 @@ public sealed class AudioEngine:IAsyncDisposable
         }
         finally{_commands.Release();}
     }
-    private async Task StopWriter(bool restoreMonitor=true)
+    private async Task StopWriter(bool restoreMonitor=true,Exception? interruption=null)
     {
         if(_writer==null)return;
         var writer=_writer;Set(AudioRunState.Finalizing,"正在完成 WAV 文件",writer.Path);
-        Exception? failure=null;
-        try{if(_pipeline!=null)await _pipeline.DetachAsync();}catch(Exception e){failure=e;}
+        Exception? failure=interruption;
+        try{if(_pipeline!=null)await _pipeline.DetachAsync(mathematicalDrain:!restoreMonitor);}
+        catch(Exception e)
+        {
+            failure=e;
+            // A timed-out normal drain must detach before completing the writer.
+            try{if(_pipeline!=null)await _pipeline.DetachAsync(mathematicalDrain:true);}catch{}
+        }
         try{await writer.CompleteAsync();}catch(Exception e){failure=e;}
         Interlocked.Exchange(ref _lastWritten,writer.WrittenFrames);_writer=null;
         bool exclusive=_capture?.Info.Exclusive==true;
         if(exclusive && restoreMonitor){await CloseCapture();await OpenMonitor();}
-        if(failure!=null){Set(AudioRunState.Faulted,"录制结束异常："+Friendly(failure),writer.Path,true);throw failure;}
-        else Set(_capture!=null?AudioRunState.Monitoring:AudioRunState.Stopped,"已保存："+System.IO.Path.GetFileName(writer.Path),writer.Path);
+        string? summaryError=SaveCalibrationSummary(writer,failure);
+        if(failure!=null)
+        {
+            Set(AudioRunState.Faulted,"录制结束异常："+Friendly(failure)+(summaryError==null?"":"；校准摘要写入失败："+summaryError),writer.Path,true);
+            throw failure;
+        }
+        string message="已保存："+System.IO.Path.GetFileName(writer.Path);
+        if(summaryError!=null)message+="；音频已保存，但校准摘要写入失败："+summaryError;
+        Set(_capture!=null?AudioRunState.Monitoring:AudioRunState.Stopped,message,writer.Path);
+    }
+    private string? SaveCalibrationSummary(IRecordingWriter writer,Exception? error)
+    {
+        string? temp=null;
+        try
+        {
+            if(!File.Exists(writer.Path))return null;
+            string sidecar=writer.Path+".calibration.json";
+            temp=sidecar+"."+Guid.NewGuid().ToString("N")+".tmp";
+            using(var file=new FileStream(temp,FileMode.CreateNew,FileAccess.Write,FileShare.None))
+            {
+                System.Text.Json.JsonSerializer.Serialize(file,new{Recording=_recordingCalibration,Frames=writer.WrittenFrames,Completed=error==null,Error=error?.Message});file.Flush(true);
+            }
+            File.Move(temp,sidecar,false);_summaryOwned=sidecar;return null;
+        }
+        catch(Exception e){Trace("Calibration summary failed: "+e);return e.Message;}
+        finally{try{if(temp!=null&&File.Exists(temp))File.Delete(temp);}catch{/* Report the primary summary error. */}}
+    }
+    public async Task SetCalibrationAsync(string? id)
+    {
+        await _commands.WaitAsync();
+        try
+        {
+            ThrowIfDisposed();if(_writer!=null)throw new InvalidOperationException("录制和暂停期间不能更换校准。");
+            if(_device==null)throw new InvalidOperationException("尚未选择输入设备。");
+            var oldId=Calibrations.SelectedId(_device.Id);
+            var plan=id==null?CalibrationPlan.Identity:await Task.Run(()=>CalibrationPlan.Prepare(Calibrations.Read(id),_capture?.Info.Format.SampleRate??48000));
+            // Persist first. A persistence failure cannot silently change the live processor.
+            Calibrations.Bind(_device.Id,id);
+            try{if(_pipeline!=null)await _pipeline.ApplyCalibrationAsync(plan);}
+            catch{Calibrations.Bind(_device.Id,oldId);throw;}
+            _calibrationError=null;Volatile.Write(ref _previousPeak,double.NaN);
+        }
+        finally{_commands.Release();}
+    }
+    public async Task<CalibrationLibrary.Entry> ImportCalibrationAsync(string path)
+    {
+        await _commands.WaitAsync();try{ThrowIfDisposed();if(_writer!=null)throw new InvalidOperationException("录制和暂停期间不能导入校准。");return await Task.Run(()=>Calibrations.Import(path));}finally{_commands.Release();}
+    }
+    public async Task RemoveCalibrationAsync(string id)
+    {
+        await _commands.WaitAsync();
+        try
+        {
+            ThrowIfDisposed();if(_writer!=null)throw new InvalidOperationException("录制和暂停期间不能移除校准。");
+            bool active=_device!=null&&Calibrations.SelectedId(_device.Id)==id;
+            var old=active?_pipeline?.Plan:null;
+            if(active&&_pipeline!=null)await _pipeline.ApplyCalibrationAsync(CalibrationPlan.Identity);
+            try{Calibrations.Remove(id);}
+            catch{if(old!=null&&_pipeline!=null)await _pipeline.ApplyCalibrationAsync(old);throw;}
+            if(active){_calibrationError=null;Volatile.Write(ref _previousPeak,double.NaN);}
+        }
+        finally{_commands.Release();}
     }
     public async Task ResetPeakAsync()
     {
@@ -237,7 +330,7 @@ public sealed class AudioEngine:IAsyncDisposable
             {
                 if(_disposed || epoch!=_capture?.Info.Epoch)return;
                 string? file=_writer?.Path;bool partial=_writer!=null;
-                try{await StopWriter(false);}catch{}
+                try{await StopWriter(false,error);}catch{}
                 await CloseCapture();
                 Trace("Capture fault: "+error);
                 if(partial && error is CaptureGapException)

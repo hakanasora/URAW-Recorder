@@ -14,7 +14,7 @@ public sealed record CaptureInfo(AudioDevice Device,AudioFormat Format,bool Excl
 public sealed record SpectrumFrame(double[] FrequenciesHz,float[] Dbfs,int FftSize,long EndFrame);
 public sealed record AudioSnapshot(long Epoch,long FramePosition,int SampleRate,int Channels,bool Valid,
     double RmsDbfs,double SourcePeakDbfs,double OutputPeakDbfs,double? HeldPeakDbfs,
-    double VuLeft,double VuRight,double? FrequencyHz,double PitchClarity,SpectrumFrame? Spectrum,long PitchFramePosition=0,bool InputFullScale=false,bool OutputOverload=false,int Segment=0,int RecoveredDiscontinuities=0)
+    double VuLeft,double VuRight,double? FrequencyHz,double PitchClarity,SpectrumFrame? Spectrum,long PitchFramePosition=0,bool InputFullScale=false,bool OutputOverload=false,int Segment=0,int RecoveredDiscontinuities=0,long CalibrationRevision=0,int ProcessingDelayFrames=0)
 {
     public double Time=>SampleRate>0?FramePosition/(double)SampleRate:0;
     public static AudioSnapshot Empty(long epoch=0)=>new(epoch,0,0,0,false,double.NaN,double.NaN,double.NaN,null,
@@ -44,8 +44,8 @@ public interface ICaptureFactory
     Task<IAudioCaptureService> OpenAsync(AudioDevice device,bool exclusive,bool raw,long epoch,
         Func<CapturePacket,bool> packet,Action<Exception> fault);
 }
-public interface ICalibrationStage { void Process(Span<float> samples,AudioFormat format); }
-public sealed class IdentityCalibration:ICalibrationStage { public void Process(Span<float> samples,AudioFormat format) { } }
+
+
 public interface IAudioAnalyzer:IDisposable
 {
     AudioSnapshot Latest {get;}

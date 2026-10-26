@@ -300,12 +300,15 @@ foreach(double frequency in new[]{27.5,32.7032,110,123.47,440,1000,2093})
     await engine.PauseAsync(false);factory.Push(new float[240]);await Until(()=>engine.WrittenFrames==720,"resume after pause gap");
     await engine.StopRecordingAsync();using var file=new WaveFileReader(path);Assert(file.Length==720*4,"Pause gap never writes gap or silence to file");
 }
+await CalibrationChecks.Run(root,Assert);
+await CalibrationRobustnessChecks.Run(root,Assert);
 Console.WriteLine($"Maximum pure-tone pitch error: {maximumPitchError:0.0000} cents");
 Console.WriteLine($"PASS: {checks} targeted assertions. No microphone, desktop, or browser used. Fixtures: {root}");
 
 sealed class FakeFactory:ICaptureFactory
 {
     public AudioDevice Device {get;}=new("fake","Deterministic input",true);
+    public AudioFormat Format=new(48000,1,32,32,PcmEncoding.Float);
     public bool DenySharedRaw,DenyExclusive;
     public FakeCapture? Current;
     public IReadOnlyList<AudioDevice> Enumerate()=>[Device];
@@ -313,7 +316,7 @@ sealed class FakeFactory:ICaptureFactory
     {
         if(exclusive && DenyExclusive)throw new IOException("Exclusive denied");
         if(!exclusive && raw && DenySharedRaw)throw new RawUnavailableException("RAW unsupported");
-        Current=new(new(device,new(48000,1,32,32,PcmEncoding.Float),exclusive,raw,epoch),packet,fault);return Task.FromResult<IAudioCaptureService>(Current);
+        Current=new(new(device,Format,exclusive,raw,epoch),packet,fault);return Task.FromResult<IAudioCaptureService>(Current);
     }
     public void Push(float[] samples,bool gap=false)=>Current!.Push(samples,gap);
 }
