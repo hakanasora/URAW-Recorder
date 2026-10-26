@@ -170,7 +170,7 @@ public sealed class MainWindow : Window
             _filePage.Visibility=index==1?Visibility.Visible:Visibility.Collapsed;
         });
         BuildInspector();UpdateSystemAccent();_settings.ColorValuesChanged+=OnSystemColorsChanged;
-        _drawer=new SettingsDrawer(this,_body,_inspector,()=>_settings.AnimationsEnabled,
+        _drawer=new SettingsDrawer(_body,_inspector,()=>_settings.AnimationsEnabled,
             ()=>_paneSelector.FocusSelected(),()=>_settingsButton.Focus(FocusState.Programmatic));
         _canvas.Draw+=(sender,args)=>
         {
@@ -212,7 +212,7 @@ public sealed class MainWindow : Window
         };
         _root.AddHandler(UIElement.PointerPressedEvent,new PointerEventHandler((_,args)=>_gain.CommitIfOutside(args)),true);
         _main.SizeChanged+=(_,_)=>Layout();_root.KeyDown+=OnKeyDown;_timer.Tick+=(_,_)=>Tick();
-        _settings.AnimationsEnabledChanged+=(_,_)=>DispatcherQueue.TryEnqueue(()=>{UpdateTextScale();RefreshSession(false);});
+        _settings.AnimationsEnabledChanged+=(_,_)=>DispatcherQueue.TryEnqueue(()=>{UpdateTextScale();RefreshSession(false);_drawer.ApplyMotionPreference();});
         _settings.TextScaleFactorChanged+=(_,_)=>DispatcherQueue.TryEnqueue(()=>{UpdateTextScale();Layout();});
         AppWindow.Closing+=async(_,args)=>
         {
