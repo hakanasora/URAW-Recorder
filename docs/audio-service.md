@@ -2,11 +2,11 @@
 
 ## 链条、线程与原始性
 
-WASAPI 原始包 / 原生格式 / 设备样本位置 → PCM 解码 → 原始输入峰值 → ICalibrationStage（Identity 直通）→ 软件增益 → 测量分析 / 有界写盘队列 → float32 WAV / RF64。
+WASAPI 原始包 / 原生格式 / 设备样本位置 → PCM 解码 → 原始输入峰值 → ICalibrationStage（所选频响 FIR / 未启用时直通）→ 软件增益 → 测量分析 / 有界写盘队列 → float32 WAV / RF64。
 
 捕获线程为 MTA / MMCSS Pro Audio，持有 CoreAudio 对象，及时 ReleaseBuffer，只复制到池化包并投递，不操作 XAML、不写盘。单消费者处理队列按样本顺序执行增益、峰值重置、暂停与写入分支。FFT / 音高分析在单独任务读取最新环形窗；可以跳过旧显示窗口，不能静默丢录音样本。写盘另有单消费者队列，采集处理和写盘队列各最多约 2 秒 / 64 MiB，先到者为限；超限、非有限样本或磁盘错误会停止并报告。音频包不连续按是否正在向文件写入分别处理，见下文 2026-10-26 更新。会话代号隔离过期错误和结果。
 
-不主动启用 AGC、降噪、回声消除、均衡、归一化、采样率转换或限制器。PCM 到 float32 是保存格式转换；32 位整数最低有效位可能受 float32 精度限制，不能称整数位精确归档。软件增益属于入口之后的显式处理。RAW 和独占不能绕过不可关闭的硬件、固件、驱动或端点 always-on APO，也不承诺绝对硬件直通。RAW 接受只表示 Windows 接受该请求。参见 [Windows RAW 定义](https://learn.microsoft.com/en-us/windows/win32/api/audioclient/ne-audioclient-audclnt_streamoptions)。
+不主动启用 AGC、降噪、回声消除、未选择的均衡、归一化、采样率转换或限制器。用户明确选择的麦克风频响校准在软件增益之前处理真实样本。PCM 到 float32 是保存格式转换；32 位整数最低有效位可能受 float32 精度限制，不能称整数位精确归档。软件增益属于入口之后的显式处理。RAW 和独占不能绕过不可关闭的硬件、固件、驱动或端点 always-on APO，也不承诺绝对硬件直通。RAW 接受只表示 Windows 接受该请求。参见 [Windows RAW 定义](https://learn.microsoft.com/en-us/windows/win32/api/audioclient/ne-audioclient-audclnt_streamoptions)。
 
 ## 模式与异常
 
@@ -69,3 +69,7 @@ WASAPI 原始包 / 原生格式 / 设备样本位置 → PCM 解码 → 原始�
 旧实现对待机 / 暂停 / 正式写盘采用同一个 fatal 分支，驱动只要报告一次 DATA_DISCONTINUITY 或有效帧位置跳变，监看就永久停止。现改为：待机和暂停时保留采集客户端、设备、RAW / 独占状态和历史 PEAK，重建全部分析窗并处理当前真实包；不用虚构静音或旧 FFT / 音高连接缺口，新的分析 Segment 使 UI 清除轨迹和插值。正式写入时不改变严格性：停止该文件、排空已接受样本、尽力完成头，标为可能不完整，再恢复共享监看，绝不自动继续同一录音。
 
 共享缓冲请求由 30 ms 提至 100 ms；独占 30 ms 与对齐重试逻辑不变。新增包原生 flags、设备帧位置差、QPC、包长、格式、会话与是否写盘的诊断；区分数据不连续和物理设备断开。191 项离线断言通过。尚未在用户内置麦克风上运行修复版确认，具体证据与复测步骤见 capture-discontinuity.md。
+
+## 2026-10-27 频响校准接入
+
+校准已从预留改为真实信号处理；解析、NWaves FIR / OLA、源帧区间收尾、设备绑定、本地副本和 WAV 摘要见 [校准模块](calibration.md)。此前直通 / 预留说明为历史阶段记录。全部仪表和写盘统一使用校准后、软件增益后的样本；原始输入满刻度检测仍独立保留，不输出未经验证的 SPL。

@@ -120,7 +120,9 @@ public sealed class AudioEngine:IAsyncDisposable
         try
         {
             await OpenCapture(false,!_normalConsent);
-            Set(AudioRunState.Monitoring,_normalConsent?"共享监看 · 普通输入（仅本次许可）":"共享监看 · RAW 请求已接受");
+            string message=_normalConsent?"共享监看 · 普通输入（仅本次许可）":"共享监看 · RAW 请求已接受";
+            string? calibrationWarning=_calibrationError??Calibrations.Warning;
+            Set(AudioRunState.Monitoring,message+(calibrationWarning==null?"":"；"+calibrationWarning));
         }
         catch(RawUnavailableException error)
         {
@@ -131,10 +133,12 @@ public sealed class AudioEngine:IAsyncDisposable
     private async Task OpenCapture(bool exclusive,bool raw)
     {
         Set(AudioRunState.Opening,"正在打开输入设备");long epoch=Interlocked.Increment(ref _epoch);
-        var pipe=new ProcessingPipeline(()=>Volatile.Read(ref _gain),error=>ReportFault(epoch,error),Trace);
+        Exception? openingFault=null;
+        void OpeningFault(Exception error){Interlocked.CompareExchange(ref openingFault,error,null);ReportFault(epoch,error);}
+        var pipe=new ProcessingPipeline(()=>Volatile.Read(ref _gain),OpeningFault,Trace);
         try
         {
-            var capture=await _factory.OpenAsync(_device!,exclusive,raw,epoch,pipe.Submit,error=>ReportFault(epoch,error));
+            var capture=await _factory.OpenAsync(_device!,exclusive,raw,epoch,pipe.Submit,OpeningFault);
             try
             {
                 var plan=CalibrationPlan.Identity;_calibrationError=null;
@@ -144,7 +148,11 @@ public sealed class AudioEngine:IAsyncDisposable
                     try{plan=await Task.Run(()=>CalibrationPlan.Prepare(Calibrations.Read(id),capture.Info.Format.SampleRate));}
                     catch(Exception e){_calibrationError="所选校准不可用，已停用："+e.Message;Trace(_calibrationError);}
                 }
-                pipe.Configure(capture.Info,plan);_pipeline=pipe;_capture=capture;
+                if(Volatile.Read(ref openingFault) is Exception earlyError)throw new IOException("准备校准时采集已停止："+earlyError.Message,earlyError);
+                pipe.Configure(capture.Info,plan);await pipe.Ready;
+                if(Volatile.Read(ref openingFault) is Exception initializationError)throw new IOException("初始化校准处理失败："+initializationError.Message,initializationError);
+                _pipeline=pipe;_capture=capture;
+                if(Volatile.Read(ref openingFault) is Exception racedError)ReportFault(epoch,racedError);
             }
             catch{await capture.DisposeAsync();throw;}
             Trace($"Capture ready: device={_device!.Name}; {capture.Info.Format.Description}; exclusive={exclusive}; RAW={raw}; epoch={epoch}");
@@ -176,6 +184,8 @@ public sealed class AudioEngine:IAsyncDisposable
             }
             if(_calibrationError!=null)throw new InvalidOperationException(_calibrationError+" 请重新选择校准或明确关闭校准后录制。");
             if(!_capture!.Info.Raw)throw new InvalidOperationException("正式录制必须接受 RAW 请求。");
+            var calibration=Calibration;
+            var summaryProfile=calibration.ProfileId==null?null:await Task.Run(()=>Calibrations.Read(calibration.ProfileId));
             Set(AudioRunState.Preparing,"正在准备 WAV 文件");
             directory=string.IsNullOrWhiteSpace(directory)?System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyMusic),"Portable Recorder"):System.IO.Path.GetFullPath(directory);
             Directory.CreateDirectory(directory);
@@ -187,9 +197,8 @@ public sealed class AudioEngine:IAsyncDisposable
                 catch(IOException) when(File.Exists(path) && suffix<99){}
             }
             _lastWritten=0;_lastRate=_capture.Info.Format.SampleRate;_summaryOwned=null;
-            var calibration=Calibration;
             _recordingCalibration=new{Version=1,Device=_device,Format=_capture.Info.Format,Calibration=calibration,
-                Profile=calibration.ProfileId==null?null:Calibrations.Read(calibration.ProfileId),
+                Profile=summaryProfile,
                 Processing="raw → frequency correction → software gain → monitoring / float WAV",LinearPhase=true,
                 FftRule="nextpow2(Fs*0.34); taps=7*N/8+1; designFFT=4*N; Hamming",AbsoluteSpl=false};
             await _pipeline!.AttachAsync(_writer);
@@ -252,7 +261,7 @@ public sealed class AudioEngine:IAsyncDisposable
         Interlocked.Exchange(ref _lastWritten,writer.WrittenFrames);_writer=null;
         bool exclusive=_capture?.Info.Exclusive==true;
         if(exclusive && restoreMonitor){await CloseCapture();await OpenMonitor();}
-        string? summaryError=SaveCalibrationSummary(writer,failure);
+        string? summaryError=await Task.Run(()=>SaveCalibrationSummary(writer,failure));
         if(failure!=null)
         {
             Set(AudioRunState.Faulted,"录制结束异常："+Friendly(failure)+(summaryError==null?"":"；校准摘要写入失败："+summaryError),writer.Path,true);
@@ -293,6 +302,7 @@ public sealed class AudioEngine:IAsyncDisposable
             try{if(_pipeline!=null)await _pipeline.ApplyCalibrationAsync(plan);}
             catch{Calibrations.Bind(_device.Id,oldId);throw;}
             _calibrationError=null;Volatile.Write(ref _previousPeak,double.NaN);
+            if(_capture!=null)Set(AudioRunState.Monitoring,id==null?"校准已关闭；共享监看":$"已启用频响校准：{plan.Profile!.Name}");
         }
         finally{_commands.Release();}
     }

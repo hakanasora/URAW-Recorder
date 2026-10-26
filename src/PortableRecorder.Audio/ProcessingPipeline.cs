@@ -9,6 +9,8 @@ internal sealed class ProcessingPipeline:IAsyncDisposable
     private sealed record Boundary(long End,bool Detach,TaskCompletionSource Done);
     private readonly Channel<Work> _queue=Channel.CreateBounded<Work>(new BoundedChannelOptions(256){SingleReader=true,FullMode=BoundedChannelFullMode.Wait});
     private readonly TaskCompletionSource<(CaptureInfo Info,CalibrationPlan Plan)> _configured=new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly TaskCompletionSource _ready=new(TaskCreationOptions.RunContinuationsAsynchronously);
+    public Task Ready=>_ready.Task;
     private readonly Task _worker;
     private readonly Func<double> _gain;
     private readonly Action<Exception> _fault;
@@ -49,7 +51,7 @@ internal sealed class ProcessingPipeline:IAsyncDisposable
     {
         try
         {
-            var configured=await _configured.Task;_info=configured.Info;Rebuild(configured.Plan);
+            var configured=await _configured.Task;_info=configured.Info;Rebuild(configured.Plan);_ready.TrySetResult();
             await foreach(var work in _queue.Reader.ReadAllAsync())
             {
                 if(work.Command!=null)
@@ -79,6 +81,7 @@ internal sealed class ProcessingPipeline:IAsyncDisposable
         catch(Exception error){Volatile.Write(ref _failure,error);_queue.Writer.TryComplete(error);_fault(error);}
         finally
         {
+            if(_failure!=null)_ready.TrySetException(_failure);else _ready.TrySetCanceled();
             foreach(var b in _boundaries)b.Done.TrySetException(_failure??new OperationCanceledException());
             while(_queue.Reader.TryRead(out var pending)){pending.Packet?.Dispose();pending.Completion?.TrySetException(_failure??new OperationCanceledException());}
         }
@@ -133,6 +136,7 @@ internal sealed class ProcessingPipeline:IAsyncDisposable
             long end=_paused?(_intervals.LastOrDefault()?.End??_delivered):_frames;
             if(!_paused&&_intervals.Count>0)_intervals[^1].End=end;
             _paused=true;_boundaries.Add(new(end,detach,done));
+            _diagnostic($"Recording source boundary: {(detach?"stop":"pause")}; frame={end}; delivered={_delivered}; delay={_plan.LatencyFrames}");
             if(drain)
             {
                 Drain();
@@ -149,5 +153,5 @@ internal sealed class ProcessingPipeline:IAsyncDisposable
     public Task DetachAsync(bool mathematicalDrain=false)=>BoundaryAsync(true,mathematicalDrain);
     public Task ResetPeakAsync()=>Command(()=>_analyzer!.ResetPeak());
     public async ValueTask DisposeAsync()
-    {_configured.TrySetCanceled();_queue.Writer.TryComplete();await _worker.ConfigureAwait(false);_analyzer?.Dispose();}
+    {_configured.TrySetCanceled();_queue.Writer.TryComplete();await _worker.ConfigureAwait(false);_ = _ready.Task.Exception;_analyzer?.Dispose();}
 }

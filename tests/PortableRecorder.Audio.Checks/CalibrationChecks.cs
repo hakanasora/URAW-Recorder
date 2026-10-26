@@ -5,6 +5,8 @@ static class CalibrationChecks
 {
     public static async Task Run(string root,Action<bool,string> check)
     {
+        async Task Until(Func<bool> predicate)
+        {for(int i=0;i<500;i++){if(predicate())return;await Task.Delay(10);}throw new Exception("Calibration boundary fixture timed out");}
         CalibrationProfile Parse(string text)=>CalibrationProfile.Parse(Encoding.UTF8.GetBytes(text),"fixture.cal");
         void Reject(string text,string match)
         {try{Parse(text);check(false,"Parser should reject "+match);}catch(InvalidDataException e){check(e.Message.Contains(match),e.Message);}}
@@ -49,14 +51,16 @@ static class CalibrationChecks
         File.Delete(original);check(library.Read(item.Id).Points.Length==2,"Original can move / disappear");
         var factory=new FakeFactory();await using(var engine=new AudioEngine(factory,calibrationLibrary:library))
         {
+            int boundaries=0;engine.Diagnostic+=message=>{if(message.StartsWith("Recording source boundary:"))Interlocked.Increment(ref boundaries);};
             await engine.SelectDeviceAsync(factory.Device);check(engine.Calibration.Applied,"Saved calibration restores into capture session");
             await engine.StartRecordingAsync(root,RecordingMode.Shared);string path=engine.Status.FilePath!;
             factory.Push(Enumerable.Repeat(.1f,600).ToArray());await Task.Delay(80);
-            var pause=engine.PauseAsync(true);await Task.Delay(30);factory.Push(Enumerable.Repeat(.2f,12000).ToArray());await pause;
+            var pause=engine.PauseAsync(true);await Until(()=>Volatile.Read(ref boundaries)==1);factory.Push(Enumerable.Repeat(.2f,12000).ToArray());await pause;
+            await Until(()=>engine.WrittenFrames==600);
             check(engine.WrittenFrames==600,"Pause drains short recording but excludes paused source interval");
             bool locked=false;try{await engine.SetCalibrationAsync(null);}catch(InvalidOperationException){locked=true;}check(locked,"Paused calibration lock");
             await engine.PauseAsync(false);factory.Push(Enumerable.Repeat(.3f,333).ToArray());await Task.Delay(30);
-            var stop=engine.StopRecordingAsync();await Task.Delay(30);factory.Push(Enumerable.Repeat(.4f,12000).ToArray());await stop;
+            var stop=engine.StopRecordingAsync();await Until(()=>Volatile.Read(ref boundaries)==2);factory.Push(Enumerable.Repeat(.4f,12000).ToArray());await stop;
             check(engine.WrittenFrames==933,"Start / resume / stop source frame ownership");
             using(var wave=new WaveFileReader(path))check(wave.Length==933*4,"WAV exact sample count");
             check(File.Exists(path+".calibration.json"),"Traceable calibration sidecar");

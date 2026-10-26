@@ -50,7 +50,19 @@ static class CalibrationRobustnessChecks
             check(Math.Abs(engine.Latest.VuLeft-10)<.1,"VU uses same calibrated samples");
             check(Math.Abs(engine.Latest.SourcePeakDbfs+20)<.01,"Raw entry peak remains separate");
             check(engine.Latest.CalibrationRevision>0&&engine.Latest.ProcessingDelayFrames==9215,"Snapshot carries calibration revision and delay");
+            await Until(()=>engine.Latest.Spectrum!=null&&engine.Latest.FrequencyHz.HasValue);
+            var spectrum=engine.Latest.Spectrum!;int bin=Enumerable.Range(0,spectrum.FrequenciesHz.Length).MinBy(k=>Math.Abs(spectrum.FrequenciesHz[k]-1000));
+            check(spectrum.Dbfs[bin]>-9&&spectrum.Dbfs[bin]<-7,"Spectrum receives compensated plus gain samples");
+            check(Math.Abs(1200*Math.Log2(engine.Latest.FrequencyHz!.Value/1000))<5,"Pitch receives the same calibrated waveform");
             await Reject(()=>engine.SetCalibrationAsync(phase.Id),"Nonzero phase fails activation");check(engine.Calibration.ProfileId==boost.Id,"Failed activation retains previous working configuration");
+            string index=Path.Combine(library.Folder,"calibration-library.json"),backup=index+".fixture";
+            File.Move(index,backup);Directory.CreateDirectory(index);
+            try
+            {
+                await Reject(()=>engine.SetCalibrationAsync(attenuate.Id),"Persistence failure cannot change live calibration");
+                check(engine.Calibration.ProfileId==boost.Id&&library.SelectedId("fake")==boost.Id,"Failed atomic index save retains old profile and binding");
+            }
+            finally{Directory.Delete(index);File.Move(backup,index);}
             await engine.SetCalibrationAsync(attenuate.Id);engine.SetGain(0);factory.Push(Enumerable.Repeat(1f,24000).ToArray());
             await Until(()=>engine.Latest.Valid);
             check(engine.Latest.InputFullScale&&!engine.Latest.OutputOverload,"Attenuation cannot conceal original rail detection");
@@ -128,5 +140,11 @@ static class CalibrationRobustnessChecks
         check(damaged.Warning!=null&&damaged.Entries.Count==0,"Corrupt index fails closed without guessing another file");
         File.WriteAllText(Path.Combine(library.Folder,"calibration-library.json"),"{\"Version\":1,\"Files\":[null],\"Devices\":{}}");
         check(new CalibrationLibrary(library.Folder).Warning!=null,"Null catalog entry cannot crash startup");
+        var openingFactory=new FakeFactory{FailDuringOpen=true};
+        await using(var engine=new AudioEngine(openingFactory,calibrationLibrary:new CalibrationLibrary(Path.Combine(root,"opening-failure"))))
+        {
+            await engine.SelectDeviceAsync(openingFactory.Device);
+            check(engine.Status.State==AudioRunState.Faulted&&!engine.Latest.Valid&&openingFactory.Current!.Closed,"Capture fault while preparing calibration cannot disappear before session publication");
+        }
     }
 }

@@ -309,14 +309,16 @@ sealed class FakeFactory:ICaptureFactory
 {
     public AudioDevice Device {get;}=new("fake","Deterministic input",true);
     public AudioFormat Format=new(48000,1,32,32,PcmEncoding.Float);
-    public bool DenySharedRaw,DenyExclusive;
+    public bool DenySharedRaw,DenyExclusive,FailDuringOpen;
     public FakeCapture? Current;
     public IReadOnlyList<AudioDevice> Enumerate()=>[Device];
     public Task<IAudioCaptureService> OpenAsync(AudioDevice device,bool exclusive,bool raw,long epoch,Func<CapturePacket,bool> packet,Action<Exception> fault)
     {
         if(exclusive && DenyExclusive)throw new IOException("Exclusive denied");
         if(!exclusive && raw && DenySharedRaw)throw new RawUnavailableException("RAW unsupported");
-        Current=new(new(device,Format,exclusive,raw,epoch),packet,fault);return Task.FromResult<IAudioCaptureService>(Current);
+        Current=new(new(device,Format,exclusive,raw,epoch),packet,fault);
+        if(FailDuringOpen)fault(new IOException("Capture stopped during preparation"));
+        return Task.FromResult<IAudioCaptureService>(Current);
     }
     public void Push(float[] samples,bool gap=false)=>Current!.Push(samples,gap);
 }

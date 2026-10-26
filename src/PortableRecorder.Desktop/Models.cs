@@ -5,7 +5,7 @@ namespace PortableRecorder.Desktop;
 public enum MonitorMode { Level, Spectrum, Pitch }
 public enum RecordingStage { Ready, Recording, Paused, Stopped }
 public sealed record InputDevice(string Id,string FriendlyName);
-public sealed record CalibrationFile(string Path,string Name);
+public sealed record CalibrationFile(string Path,string Name,string? Id=null);
 public sealed record MonitorSnapshot(bool Valid,double RmsDbfs,double SourcePeakDbfs,double OutputPeakDbfs,
     double VuLeft,double VuRight,double? MidiNote,double? FrequencyHz,double? Cents,SpectrumFrame? Spectrum);
 public readonly record struct PitchPoint(double Time,double? Midi);
@@ -30,7 +30,7 @@ public sealed class ShellViewModel:INotifyPropertyChanged
     public AudioEngine Audio {get;}=new();
     public TransportSession Session {get;}=new();
     public ObservableCollection<InputDevice> Devices {get;}=[];
-    public ObservableCollection<CalibrationFile> Calibrations {get;}=[new("","不使用校准（预留）")];
+    public ObservableCollection<CalibrationFile> Calibrations {get;}=[new("","不使用校准")];
     public InputDevice SelectedInput {get;set;}=new("","未选择输入设备");
     public CalibrationFile SelectedCalibration {get;set;}
     public MonitorMode Mode {get;set;}
@@ -45,7 +45,15 @@ public sealed class ShellViewModel:INotifyPropertyChanged
     public double MonitorTime {get;private set;}
     private long _epoch=-1,_pitchFrame=-1;
     private int _segment=-1;
-    public ShellViewModel()=>SelectedCalibration=Calibrations[0];
+        public ShellViewModel(){SelectedCalibration=Calibrations[0];RefreshCalibrations();}
+    public void RefreshCalibrations()
+    {
+        string? selected=Audio.SelectedDevice is { } device?Audio.Calibrations.SelectedId(device.Id):null;
+        var entries=Audio.Calibrations.Entries;
+        foreach(var old in Calibrations.Where(c=>c.Id!=null&&!entries.Any(e=>e.Id==c.Id)).ToArray())Calibrations.Remove(old);
+        foreach(var entry in entries)if(!Calibrations.Any(c=>c.Id==entry.Id))Calibrations.Add(new(entry.Id,entry.Name,entry.Id));
+        SelectedCalibration=Calibrations.FirstOrDefault(c=>c.Id==selected)??Calibrations[0];
+    }
     public void SetGain(double db)
     {
         if(!double.IsFinite(db))return;

@@ -57,7 +57,9 @@ public sealed class MainWindow : Window
     private readonly List<Control> _configuration=[];
     private readonly SolidColorBrush _linkInk=Design.Brush(Design.Link);
     private Storyboard? _widthAnimation;
-    private bool _firstFrameLogged,_updatingForm,_started;
+    private bool _firstFrameLogged,_updatingForm,_started,_updatingCalibration;
+    private TextBlock? _calibrationDetails;
+    private string? _calibrationUiError;
     private bool _audioBusy,_closing,_closeAllowed,_dialogOpen;
     private AudioRunState? _lastAudioState;
     private long _lastRawDecision;
@@ -276,10 +278,14 @@ public sealed class MainWindow : Window
         _recordModeBox.SelectionChanged+=(_,_)=>SetRecordingMode(_recordModeBox.SelectedIndex==0?RecordingMode.Exclusive:RecordingMode.Shared);
         _inputPage.Children.Add(Group("录制模式","\uE713",_recordModeBox));
         _captureInfo.TextWrapping=TextWrapping.Wrap;_captureInfo.MaxHeight=64;_inputPage.Children.Add(_captureInfo);
-        var calibration=LinkButton("校准（预留）");calibration.Click+=async(_,_)=>await CalibrationSettings();_inputPage.Children.Add(calibration);
+        var calibration=LinkButton("校准");calibration.Click+=async(_,_)=>await CalibrationSettings();_inputPage.Children.Add(calibration);
         StyleField(_calibrationBox);_calibrationBox.ItemsSource=_state.Calibrations;_calibrationBox.DisplayMemberPath="Name";
         _calibrationBox.SelectedItem=_state.SelectedCalibration;
-        _calibrationBox.SelectionChanged+=(_,_)=>{if(_calibrationBox.SelectedItem is CalibrationFile file)_state.SelectedCalibration=file;};
+        _calibrationBox.SelectionChanged+=async(_,_)=>
+        {
+            if(_updatingCalibration||_calibrationBox.SelectedItem is not CalibrationFile file)return;
+            _calibrationUiError=null;await AudioCommand(()=>_state.Audio.SetCalibrationAsync(file.Id));SyncCalibration();
+        };
         StyleField(_path);_path.VerticalContentAlignment=VerticalAlignment.Center;_path.Padding=new Thickness(12,8,12,8);_path.TextChanged+=(_,_)=>{_state.OutputPath=_path.Text;ToolTipService.SetToolTip(_path,_path.Text);};
         var pathRow=new Grid{ColumnSpacing=8};pathRow.ColumnDefinitions.Add(new(){Width=new GridLength(1,GridUnitType.Star)});pathRow.ColumnDefinitions.Add(new(){Width=new GridLength(36)});pathRow.Children.Add(_path);
         var browse=Design.Button(Design.Icon("\uE8B7",16,Design.White),"浏览保存文件夹",Design.Field);browse.Width=36;browse.Height=36;browse.CornerRadius=new(3);browse.Padding=new Thickness(0);Grid.SetColumn(browse,1);pathRow.Children.Add(browse);_configuration.Add(browse);browse.Click+=async(_,_)=>await BrowseFolder();
@@ -333,10 +339,15 @@ public sealed class MainWindow : Window
         if(_state.Session.Active)return;
         try
         {
-            var picker=new FileOpenPicker(AppWindow.Id);picker.FileTypeFilter.Add(".txt");var files=await picker.PickMultipleFilesAsync();if(_state.Session.Active || files is null)return;
-            foreach(var file in files){var existing=_state.Calibrations.FirstOrDefault(c=>string.Equals(c.Path,file.Path,StringComparison.OrdinalIgnoreCase));var item=existing??new CalibrationFile(file.Path,System.IO.Path.GetFileName(file.Path));if(existing==null)_state.Calibrations.Add(item);if(selectAdded)_calibrationBox.SelectedItem=item;}
+            var picker=new FileOpenPicker(AppWindow.Id);picker.FileTypeFilter.Add(".txt");picker.FileTypeFilter.Add(".cal");var files=await picker.PickMultipleFilesAsync();if(_state.Session.Active || files is null)return;
+            foreach(var file in files)
+            {
+                var item=await _state.Audio.ImportCalibrationAsync(file.Path);
+                if(selectAdded)await _state.Audio.SetCalibrationAsync(item.Id);
+                SyncCalibration();
+            }
         }
-        catch{await Message("校准文件","暂时无法打开文件选择器，请稍后再试。");}
+        catch(Exception error){await Message("校准文件",error.Message);}
     }
     private async Task ManageCalibrations()
     {
@@ -348,13 +359,17 @@ public sealed class MainWindow : Window
             void Rebuild()
             {
                 rows.Children.Clear();
+                if(_calibrationUiError!=null)
+                {
+                    var error=Design.Text(_calibrationUiError,12,Design.Muted);error.TextWrapping=TextWrapping.Wrap;rows.Children.Add(error);
+                }
                 foreach(var file in _state.Calibrations.Where(file=>!string.IsNullOrWhiteSpace(file.Path)).ToArray())
                 {
                     var row=new Grid{Height=40,Background=Design.Brush(Colors.Transparent)};
                     row.ColumnDefinitions.Add(new(){Width=new GridLength(1,GridUnitType.Star)});
                     row.ColumnDefinitions.Add(new(){Width=new GridLength(56)});
                     var name=Design.Text(file.Name,13);name.Margin=new Thickness(12,0,8,0);
-                    name.TextTrimming=TextTrimming.CharacterEllipsis;ToolTipService.SetToolTip(name,file.Path);
+                    name.TextTrimming=TextTrimming.CharacterEllipsis;ToolTipService.SetToolTip(name,file.Name+"\nSHA-256: "+file.Id);
                     row.Children.Add(name);
                     var remove=Design.Button(Design.Text("移除",12,Design.Muted),"移除校准文件："+file.Name,Colors.Transparent);
                     remove.Height=32;remove.Padding=new Thickness(6,0,6,0);remove.Opacity=0;
@@ -364,11 +379,10 @@ public sealed class MainWindow : Window
                     row.PointerExited+=(_,_)=>{hovered=false;if(remove.FocusState==FocusState.Unfocused)remove.Opacity=0;};
                     remove.GotFocus+=(_,_)=>remove.Opacity=1;
                     remove.LostFocus+=(_,_)=>{if(!hovered)remove.Opacity=0;};
-                    remove.Click+=(_,_)=>
+                    remove.Click+=async(_,_)=>
                     {
                         if(_state.Session.Active)return;
-                        if(file==_state.SelectedCalibration)_calibrationBox.SelectedItem=_state.Calibrations.First(f=>string.IsNullOrWhiteSpace(f.Path));
-                        _state.Calibrations.Remove(file);Rebuild();
+                        await AudioCommand(()=>_state.Audio.RemoveCalibrationAsync(file.Id!));SyncCalibration();Rebuild();
                     };
                     rows.Children.Add(row);
                 }
@@ -395,8 +409,9 @@ public sealed class MainWindow : Window
         var capture=status.Capture;
         _inputName.SetChannels(capture?.Format.Channels??0);
         _captureInfo.Text=capture==null?(_noCapture?"诊断模式：未打开麦克风":_state.Devices.Count==0?"未找到可用输入设备；接入设备后自动恢复监看。":status.Message):
-            $"{(capture.Exclusive?"独占":"共享")} · {(capture.Raw?"RAW 请求已接受":"普通输入（本次许可）")}\n{capture.Format.Description}\n待机与停止后使用共享监看；校准未应用。";
-        ToolTipService.SetToolTip(_captureInfo,_captureInfo.Text+"\n"+status.Message);
+            $"{(capture.Exclusive?"独占":"共享")} · {(capture.Raw?"RAW 请求已接受":"普通输入（本次许可）")}\n{capture.Format.Description}\n待机与停止后使用共享监看。";
+        ToolTipService.SetToolTip(_captureInfo,_captureInfo.Text+"\n"+status.Message+"\n"+CalibrationDescription());
+        SyncCalibration();
         if(status.Message!=_lastAudioMessage)
         {
             _lastAudioMessage=status.Message;StartupLog.Write("Audio: "+status.State+" / "+status.Message);
@@ -416,7 +431,7 @@ public sealed class MainWindow : Window
         _stopButton.IsEnabled=false;_pauseButton.IsEnabled=false;_discardButton.IsEnabled=false;
         foreach(var control in _configuration)control.IsEnabled=false;
         try{await command();}
-        catch(Exception error){StartupLog.Write("Audio command: "+error);await Message("音频服务",AudioEngine.Friendly(error));}
+        catch(Exception error){StartupLog.Write("Audio command: "+error);if(_dialogOpen&&_calibrationDetails!=null)_calibrationUiError=AudioEngine.Friendly(error);else await Message("音频服务",AudioEngine.Friendly(error));}
         finally{_audioBusy=false;_state.Refresh();RefreshSession(true);RefreshValues();}
     }
     private void SetRecordingMode(RecordingMode mode)
@@ -506,20 +521,37 @@ public sealed class MainWindow : Window
         catch(Exception error){StartupLog.Write("RAW decision: "+error);}
         finally{_dialogOpen=false;}
     }
+    private void SyncCalibration()
+    {
+        _updatingCalibration=true;
+        try{_state.RefreshCalibrations();_calibrationBox.SelectedItem=_state.SelectedCalibration;}
+        finally{_updatingCalibration=false;}
+        if(_calibrationDetails!=null)_calibrationDetails.Text=CalibrationDescription();
+    }
+    private string CalibrationDescription()
+    {
+        var status=_state.Audio.Calibration;
+        string details=status.Applied?$"{status.Name}\n频响补偿已应用于全部 {status.Channels} 声道、全部仪表及 WAV。\n固定处理延迟 {status.LatencyMs:0.0} ms · 拟合误差 {status.MaximumFitErrorDb:0.000} dB":"未应用频响校准。";
+        if(status.Applied)details+=$"\n频段 {status.MinimumHz:0.###}～{status.MaximumHz:0.###} Hz";
+        return (_calibrationUiError==null?"":_calibrationUiError+"\n\n")+details+"\n"+status.Notice+"\n录制和暂停期间配置锁定；文件记录麦克风响应，处理时反向补偿。";
+    }
     private async Task CalibrationSettings()
     {
         if(_dialogOpen)return;_dialogOpen=true;
         try
         {
-            var content=new StackPanel{Spacing=8};content.Children.Add(Design.Text("仅管理文件；当前信号链尚未应用校准。",12,Design.Muted));
+            SyncCalibration();
+            var content=new StackPanel{Spacing=8};
+            _calibrationDetails=Design.Text(CalibrationDescription(),12,Design.Muted);_calibrationDetails.TextWrapping=TextWrapping.Wrap;_calibrationDetails.MaxWidth=420;
+            content.Children.Add(_calibrationDetails);
             content.Children.Add(_calibrationBox);
-            var dialog=new ContentDialog{XamlRoot=_root.XamlRoot,Title="校准（预留）",Content=content,
+            var dialog=new ContentDialog{XamlRoot=_root.XamlRoot,Title="校准",Content=content,
                 PrimaryButtonText="添加校准",SecondaryButtonText="管理已添加的校准",CloseButtonText="关闭",RequestedTheme=ElementTheme.Dark};
             var result=await dialog.ShowAsync();content.Children.Remove(_calibrationBox);
             if(result==ContentDialogResult.Primary)await AddCalibration();
             else if(result==ContentDialogResult.Secondary)await ManageCalibrations();
         }
-        finally{_dialogOpen=false;}
+        finally{_dialogOpen=false;_calibrationDetails=null;}
     }
     private void RefreshValues()
     {
