@@ -6,7 +6,7 @@
 
 - 主客户区始终为 820×416 DIP。264 DIP 菜单覆盖主工作区左侧，不挤压或移动仪表，不延长标题栏。主窗 Mica、VU 外观、菜单内容和音频服务保持不变。
 - 菜单保留 #161617 实色表面。右缘采用 1 DIP、约 7% 白色的淡亮边，区分相近的深灰表面；没有整圈发光描边或大圆角浮卡。
-- 使用 Microsoft.UI.Composition.DropShadow：黑色、BlurRadius=24 DIP、Opacity=0.42、Offset=(8,0,0)。阴影在菜单后方，随整块菜单一起移动；父级窗口内裁切使主要可见投影集中在右侧。
+- 使用 Microsoft.UI.Composition.DropShadow：黑色、BlurRadius=16 DIP、Opacity=0.10、Offset=(3,0,0)。按用户截图反馈，浓度由 42% 大幅降至 10%，同时缩小扩散与偏移，避免右侧黑带。阴影在菜单后方，随整块菜单一起移动；父级窗口内裁切使主要可见投影集中在右侧。
 - 按用户反馈移除背景变暗遮罩及其淡入淡出。背景主界面保持原亮度；保留完全透明的外部点击区域，用于点击菜单外收回，采集、分析和仪表绘制继续运行。
 - 动效回到旧版 WinUI SplitView 的手感：展开 200 ms、收回 100 ms，两方向均使用 cubic-bezier(0,0.35,0.15,1)。参数直接核对当前依赖 Microsoft.WindowsAppSDK.WinUI 2.3.9 的 generic.xaml：SplitViewPaneAnimationOpenDuration、SplitViewPaneAnimationCloseDuration 及 PaneTransform.TranslateX 的 KeySpline。没有弹簧、超调、内容缩放、文字快照或逐项错峰。
 - 位移仍用 WinUI 原生 Vector3KeyFrameAnimation 执行，保留当前 DropShadow 和淡亮边。不再存在遮罩的 ScalarKeyFrameAnimation，没有逐帧 UI 定时器、CompositionTarget.Rendering 窗口操作、SetWindowRgn 或第二个 HWND。

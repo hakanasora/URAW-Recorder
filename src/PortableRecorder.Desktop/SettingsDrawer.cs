@@ -89,8 +89,8 @@ internal sealed class SettingsDrawer : IDisposable
         // Native rectangular DropShadow behind the sheet, not a painted gradient.
         // The parent clip removes shadow beyond the window; only its right edge remains visible.
         _shadow = _compositor.CreateDropShadow();
-        _shadow.Color = Colors.Black; _shadow.BlurRadius = 24;
-        _shadow.Opacity = .42f; _shadow.Offset = new Vector3(8,0,0);
+        _shadow.Color = Colors.Black; _shadow.BlurRadius = 16;
+        _shadow.Opacity = .10f; _shadow.Offset = new Vector3(3,0,0);
         _shadowVisual = _compositor.CreateSpriteVisual();
         _shadowVisual.Shadow = _shadow; _shadowVisual.RelativeSizeAdjustment = Vector2.One;
         ElementCompositionPreview.SetElementChildVisual(_shadowHost,_shadowVisual);
