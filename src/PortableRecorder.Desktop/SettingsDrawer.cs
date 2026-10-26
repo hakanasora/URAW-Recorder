@@ -12,15 +12,14 @@ using Windows.System;
 
 namespace PortableRecorder.Desktop;
 
-/// <summary>One persistent XAML overlay. Motion and shading run on the native compositor.</summary>
+/// <summary>One persistent XAML overlay. Motion runs on the native compositor; the background stays undimmed.</summary>
 internal sealed class SettingsDrawer : IDisposable
 {
     private const float Travel = FixedWindowFrame.PaneWidth + 32;
-    private const float ScrimOpacity = .18f;
     private readonly Grid _parent, _panel;
     private readonly Grid _layer = new() { Visibility = Visibility.Collapsed,
         TabFocusNavigation = KeyboardNavigationMode.Cycle };
-    private readonly Border _scrim = new() { Background = Design.Brush(Colors.Black), Opacity = 0 };
+    private readonly Border _dismissSurface = new() { Background = Design.Brush(Colors.Transparent) };
     private readonly Grid _sheet = new() { Width = FixedWindowFrame.PaneWidth,
         HorizontalAlignment = HorizontalAlignment.Left, Translation = new Vector3(-Travel,0,0) };
     private readonly Grid _shadowHost = new() { IsHitTestVisible = false };
@@ -40,7 +39,7 @@ internal sealed class SettingsDrawer : IDisposable
         _parent = parent; _panel = panel; _animations = animations;
         _focusPane = focusPane; _focusMenu = focusMenu;
         _panel.Margin = new Thickness(0);
-        _layer.Children.Add(_scrim);
+        _layer.Children.Add(_dismissSurface);
         _sheet.Children.Add(_shadowHost);
         _sheet.Children.Add(_panel);
         // One quiet catchlight separates the neutral dark sheet from the instrument surface.
@@ -49,7 +48,7 @@ internal sealed class SettingsDrawer : IDisposable
         _layer.Children.Add(_sheet);
         _parent.Children.Add(_layer); Canvas.SetZIndex(_layer,10);
         AutomationProperties.SetName(_panel,"输入与文件设置");
-        _scrim.PointerPressed += (_, args) => { Close(); args.Handled = true; };
+        _dismissSurface.PointerPressed += (_, args) => { Close(); args.Handled = true; };
         _layer.KeyDown += KeyDown;
         _layer.SizeChanged += (_, _) => UpdateClip();
     }
@@ -69,7 +68,6 @@ internal sealed class SettingsDrawer : IDisposable
         _open = true;
         _layer.Visibility = Visibility.Visible;
         _layer.UpdateLayout(); UpdateClip(); EnsureComposition();
-        _focusPane();
         Animate();
     }
 
@@ -96,7 +94,7 @@ internal sealed class SettingsDrawer : IDisposable
         _shadowVisual = _compositor.CreateSpriteVisual();
         _shadowVisual.Shadow = _shadow; _shadowVisual.RelativeSizeAdjustment = Vector2.One;
         ElementCompositionPreview.SetElementChildVisual(_shadowHost,_shadowVisual);
-        StartupLog.Write("Settings drawer: single-window overlay; native Composition slide/opacity; main bounds unchanged");
+        StartupLog.Write("Settings drawer: single-window overlay; native Composition slide; no dimming; main bounds unchanged");
     }
 
     private void Animate()
@@ -110,20 +108,13 @@ internal sealed class SettingsDrawer : IDisposable
         _batch = batch;
         var slide = compositor.CreateVector3KeyFrameAnimation();
         slide.Target = "Translation";
-        slide.Duration = TimeSpan.FromMilliseconds(_open ? 300 : 220);
+        // Match the installed WinUI SplitView template (Open 200 ms / Close 100 ms).
+        slide.Duration = TimeSpan.FromMilliseconds(_open ? 200 : 100);
         slide.InsertExpressionKeyFrame(0,"this.StartingValue");
-        var ease = _open
-            ? compositor.CreateCubicBezierEasingFunction(new(.2f,0),new(.2f,1))
-            : compositor.CreateCubicBezierEasingFunction(new(.4f,0),new(1,1));
+        var ease = compositor.CreateCubicBezierEasingFunction(new(0,.35f),new(.15f,1));
         slide.InsertKeyFrame(1,new Vector3(_open ? 0 : -Travel,0,0),ease);
         _slide = slide;
         _sheet.StartAnimation(slide);
-        var fade = compositor.CreateScalarKeyFrameAnimation();
-        fade.Duration = TimeSpan.FromMilliseconds(_open ? 220 : 160);
-        fade.InsertExpressionKeyFrame(0,"this.StartingValue");
-        fade.InsertKeyFrame(1,_open ? ScrimOpacity : 0,
-            compositor.CreateCubicBezierEasingFunction(new(.2f,0),new(.2f,1)));
-        ElementCompositionPreview.GetElementVisual(_scrim).StartAnimation("Opacity",fade);
         batch.Completed += (_, _) => _parent.DispatcherQueue.TryEnqueue(() => {
             if (!_disposed && generation == _generation) Finish();
         });
@@ -135,10 +126,9 @@ internal sealed class SettingsDrawer : IDisposable
         // Commit base values before stopping native animation fill, avoiding a one-frame snap.
         _sheet.Translation = new Vector3(_open ? 0 : -Travel,0,0);
         if (_slide != null) { _sheet.StopAnimation(_slide); _slide = null; }
-        var scrimVisual = ElementCompositionPreview.GetElementVisual(_scrim);
-        scrimVisual.StopAnimation("Opacity"); scrimVisual.Opacity = _open ? ScrimOpacity : 0;
         _batch?.Dispose(); _batch = null;
         if (!_open) { _layer.Visibility = Visibility.Collapsed; _focusMenu(); }
+        else _focusPane(); // Do not focus a native selector while its presenter is still offscreen.
     }
 
     private void KeyDown(object sender, KeyRoutedEventArgs args)
@@ -151,7 +141,6 @@ internal sealed class SettingsDrawer : IDisposable
         if (_disposed) return;
         _disposed = true; ++_generation;
         if (_slide != null) _sheet.StopAnimation(_slide);
-        ElementCompositionPreview.GetElementVisual(_scrim).StopAnimation("Opacity");
         _batch?.Dispose();
         ElementCompositionPreview.SetElementChildVisual(_shadowHost,null);
         _shadowVisual?.Dispose(); _shadow?.Dispose();

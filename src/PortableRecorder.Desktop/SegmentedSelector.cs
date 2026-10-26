@@ -43,6 +43,11 @@ public sealed class SegmentedSelector : UserControl
         root.Children.Add(_selector);
         Content = root;
         _inks = labels.Select(_ => Design.Brush(Design.Muted)).ToArray();
+        // Keep every label in a persistent, non-virtualized layer instead of relying on
+        // the item presenter's invalidation after an offscreen drawer entrance. The reported
+        // missing label recovered only after opening another popup, not on pointer hover.
+        // Preserve the native selector for keyboard, pointer input and automation.
+        var textLayer = new Grid { IsHitTestVisible = false };
         for (var i = 0; i < labels.Length; i++)
         {
             var item = new SelectorBarItem
@@ -53,14 +58,22 @@ public sealed class SegmentedSelector : UserControl
             };
             item.Template = (ControlTemplate)XamlReader.Load("""
                 <ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" TargetType="SelectorBarItem">
-                  <Grid Background="Transparent">
-                    <TextBlock Text="{TemplateBinding Text}" Foreground="{TemplateBinding Foreground}"
-                        FontFamily="Microsoft YaHei UI" FontSize="13" HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                  </Grid>
+                  <Grid Background="Transparent"/>
                 </ControlTemplate>
                 """);
             _selector.Items.Add(item);
+            textLayer.ColumnDefinitions.Add(new() { Width = new GridLength(itemWidth + (i == labels.Length - 1 ? 0 : gap)) });
+            var text = new TextBlock { Text = labels[i], Foreground = _inks[i],
+                FontFamily = new FontFamily("Microsoft YaHei UI"), FontSize = 13,
+                HorizontalAlignment = HorizontalAlignment.Stretch, TextAlignment = TextAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(0,0,i == labels.Length - 1 ? 0 : gap,0),
+                IsHitTestVisible = false };
+            Microsoft.UI.Xaml.Automation.AutomationProperties.SetAccessibilityView(text,
+                Microsoft.UI.Xaml.Automation.Peers.AccessibilityView.Raw);
+            Grid.SetColumn(text,i); textLayer.Children.Add(text);
         }
+        root.Children.Add(textLayer);
         _selector.SelectionChanged += (_, _) =>
         {
             var index = SelectedIndex;
