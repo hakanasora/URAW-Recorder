@@ -32,12 +32,7 @@ public sealed class MainWindow : Window
     private readonly Grid _root=new(),_body=new(),_main=new(),_header=new(),_monitor=new(),_transport=new();
     private readonly Grid _inspector=new(){Background=Design.Brush(Design.Inspector),Width=264};
     private readonly CanvasControl _canvas=new(){IsHitTestVisible=false};
-    private readonly SplitView _splitView=new()
-    {
-        DisplayMode=SplitViewDisplayMode.Inline, PanePlacement=SplitViewPanePlacement.Left,
-        OpenPaneLength=FixedWindowFrame.PaneWidth, CompactPaneLength=0,
-        PaneBackground=Design.Brush(Design.Inspector)
-    };
+    private readonly SettingsDrawer _drawer;
     private readonly FixedWindowFrame _frame;
     private readonly Grid _primaryContent=new();
     private readonly NativeFade _monitorFade,_clockFade,_statusFade,_primaryFade,_pauseFade;
@@ -62,7 +57,7 @@ public sealed class MainWindow : Window
     private readonly List<Control> _configuration=[];
     private readonly SolidColorBrush _linkInk=Design.Brush(Design.Link);
     private Storyboard? _widthAnimation;
-    private bool _firstFrameLogged,_paneOpen,_updatingForm,_started;
+    private bool _firstFrameLogged,_updatingForm,_started;
     private bool _audioBusy,_closing,_closeAllowed,_dialogOpen;
     private AudioRunState? _lastAudioState;
     private long _lastRawDecision;
@@ -72,7 +67,6 @@ public sealed class MainWindow : Window
     private readonly bool _noCapture=Environment.GetCommandLineArgs().Contains("--no-capture");
     private int? _displayedNote;
     private readonly SolidColorBrush _normalPeakInk=Design.Brush(Design.White),_overloadPeakInk=Design.Brush(Design.Alert);
-    private static readonly bool OverlayDrawer=false;
     private DeviceTopologyWatcher? _deviceWatcher;
     private readonly DispatcherTimer _deviceRefreshTimer=new(){Interval=TimeSpan.FromMilliseconds(300)};
     private bool _devicesDirty,_devicesLoaded;
@@ -109,7 +103,7 @@ public sealed class MainWindow : Window
         AppWindow.TitleBar.BackgroundColor=Colors.Transparent;AppWindow.TitleBar.ButtonBackgroundColor=Colors.Transparent;
         AppWindow.TitleBar.ButtonForegroundColor=Design.Muted;AppWindow.TitleBar.ButtonInactiveBackgroundColor=Colors.Transparent;
         AppWindow.TitleBar.ButtonHoverBackgroundColor=Design.Selected;
-        _root.Children.Add(_body);Grid.SetRow(_body,1);_body.Children.Add(_splitView);
+        _root.Children.Add(_body);Grid.SetRow(_body,1);
         _main.Width=FixedWindowFrame.MainWidth;_main.Height=384;
         _main.HorizontalAlignment=HorizontalAlignment.Right;
         _main.Clip=new RectangleGeometry{Rect=new Rect(0,0,820,384)};
@@ -120,11 +114,7 @@ public sealed class MainWindow : Window
         _main.Children.Add(displayPanel);Grid.SetRowSpan(displayPanel,2);
         _main.Children.Add(_header);_main.Children.Add(_monitor);Grid.SetRow(_monitor,1);
         _main.Children.Add(_transport);Grid.SetRow(_transport,2);
-        // The main view is a sibling, never a child of the SplitView's animated content grid.
         _body.Children.Add(_main);
-        Canvas.SetZIndex(_main,1);
-        Canvas.SetZIndex(_splitView,OverlayDrawer?2:0);
-        _splitView.DisplayMode=OverlayDrawer?SplitViewDisplayMode.Overlay:SplitViewDisplayMode.Inline;
         _settingsButton=Design.Button(MenuGlyph(),"输入与文件设置",Colors.Transparent);_settingsButton.Width=40;_settingsButton.Height=44;_settingsButton.Padding=new Thickness(0);
         _settingsButton.HorizontalAlignment=HorizontalAlignment.Left;_settingsButton.VerticalAlignment=VerticalAlignment.Center;_settingsButton.Margin=new Thickness(28,0,0,0);_settingsButton.TabIndex=0;
         _settingsButton.Click+=(_,_)=>TogglePane();_header.Children.Add(_settingsButton);
@@ -180,14 +170,8 @@ public sealed class MainWindow : Window
             _filePage.Visibility=index==1?Visibility.Visible:Visibility.Collapsed;
         });
         BuildInspector();UpdateSystemAccent();_settings.ColorValuesChanged+=OnSystemColorsChanged;
-        _splitView.Pane=_inspector;
-        _splitView.PaneClosed+=(_,_)=>
-        {
-            if(_paneOpen)return; // A rapid reopen must not shrink the new opening.
-            if(!OverlayDrawer){_frame.SetExpanded(false);_root.UpdateLayout();}
-            _settingsButton.Focus(FocusState.Programmatic);
-        };
-        _splitView.PaneClosing+=(_,_)=>{if(OverlayDrawer)_paneOpen=false;};
+        _drawer=new SettingsDrawer(this,_body,_inspector,()=>_settings.AnimationsEnabled,
+            ()=>_paneSelector.FocusSelected(),()=>_settingsButton.Focus(FocusState.Programmatic));
         _canvas.Draw+=(sender,args)=>
         {
             if(_closing || _closeAllowed)return;
@@ -233,13 +217,13 @@ public sealed class MainWindow : Window
         AppWindow.Closing+=async(_,args)=>
         {
             if(_closeAllowed)return;
-            args.Cancel=true;if(_closing)return;_closing=true;_deviceRefreshTimer.Stop();_deviceWatcher?.Dispose();_deviceWatcher=null;
+            args.Cancel=true;if(_closing)return;_closing=true;_drawer.Dispose();_deviceRefreshTimer.Stop();_deviceWatcher?.Dispose();_deviceWatcher=null;
             _stopButton.IsEnabled=false;_pauseButton.IsEnabled=false;
             try{await _state.Audio.DisposeAsync();}
             catch(Exception error){StartupLog.Write("Audio close: "+error);await Message("录音收尾异常",AudioEngine.Friendly(error));}
             finally{_closeAllowed=true;Close();}
         };
-        Closed+=(_,_)=>{_settings.ColorValuesChanged-=OnSystemColorsChanged;CompositionTarget.Rendering-=OnRendering;_inputName.ReleaseResources();_timer.Stop();_widthAnimation?.Stop();_monitorFade.Stop();_clockFade.Stop();_statusFade.Stop();_primaryFade.Stop();_pauseFade.Stop();_canvas.RemoveFromVisualTree();_renderer.Dispose();};Content=_root;
+        Closed+=(_,_)=>{_drawer.Dispose();_settings.ColorValuesChanged-=OnSystemColorsChanged;CompositionTarget.Rendering-=OnRendering;_inputName.ReleaseResources();_timer.Stop();_widthAnimation?.Stop();_monitorFade.Stop();_clockFade.Stop();_statusFade.Stop();_primaryFade.Stop();_pauseFade.Stop();_canvas.RemoveFromVisualTree();_renderer.Dispose();};Content=_root;
     }
     private static Grid MenuGlyph()
     {
@@ -721,21 +705,11 @@ public sealed class MainWindow : Window
         StartupLog.Write($"Clock alignment: status center={status.X:F3} DIP, clock center={clock.X:F3} DIP, delta={(status.X-clock.X)*dpi:F3} physical px");
     }
 
-    private void TogglePane()
-    {
-        _paneOpen=!_paneOpen;
-        if(_paneOpen&&!OverlayDrawer)
-        {
-            _frame.SetExpanded(true);
-            _root.UpdateLayout();
-        }
-        _splitView.IsPaneOpen=_paneOpen;
-        if(_paneOpen)_paneSelector.FocusSelected();
-    }
+    private void TogglePane() => _drawer.Toggle();
 
     private void OnKeyDown(object sender,KeyRoutedEventArgs e)
     {
-        if(e.Key==VirtualKey.Escape&&_paneOpen){TogglePane();e.Handled=true;}
+        if(e.Key==VirtualKey.Escape&&_drawer.IsOpen){_drawer.Close();e.Handled=true;}
         var ctrl=(InputKeyboardSource.GetKeyStateForCurrentThread(VirtualKey.Control)&Windows.UI.Core.CoreVirtualKeyStates.Down)!=0;var alt=(InputKeyboardSource.GetKeyStateForCurrentThread(VirtualKey.Menu)&Windows.UI.Core.CoreVirtualKeyStates.Down)!=0;
         if(e.Key==VirtualKey.T&&ctrl&&alt){e.Handled=true;var family=_number.FontFamily.Source=="Bahnschrift"?"Segoe UI Variable":"Bahnschrift";foreach(var text in new[]{_number,_note,_frequency,_clock})text.FontFamily=new FontFamily(family);}
     }
