@@ -11,6 +11,7 @@ public sealed record AudioFormat(int SampleRate,int Channels,int Bits,int ValidB
     public string Description=>$"{SampleRate/1000d:0.###} kHz \u00b7 {ValidBits} bit{(Encoding==PcmEncoding.Float?" float":"")} \u00b7 {Channels} \u58f0\u9053";
 }
 public sealed record CaptureInfo(AudioDevice Device,AudioFormat Format,bool Exclusive,bool Raw,long Epoch);
+public sealed record InputFormatOptions(AudioFormat Shared,IReadOnlyList<AudioFormat> Exclusive);
 public sealed record SpectrumFrame(double[] FrequenciesHz,float[] Dbfs,int FftSize,long EndFrame);
 public sealed record AudioSnapshot(long Epoch,long FramePosition,int SampleRate,int Channels,bool Valid,
     double RmsDbfs,double SourcePeakDbfs,double OutputPeakDbfs,double? HeldPeakDbfs,
@@ -42,7 +43,8 @@ public interface ICaptureFactory
 {
     IReadOnlyList<AudioDevice> Enumerate();
     Task<IAudioCaptureService> OpenAsync(AudioDevice device,bool exclusive,bool raw,long epoch,
-        Func<CapturePacket,bool> packet,Action<Exception> fault);
+        Func<CapturePacket,bool> packet,Action<Exception> fault,AudioFormat? preferredFormat=null);
+    Task<InputFormatOptions> QueryFormatsAsync(AudioDevice device);
 }
 
 

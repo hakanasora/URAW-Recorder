@@ -302,6 +302,7 @@ foreach(double frequency in new[]{27.5,32.7032,110,123.47,440,1000,2093})
 }
 await CalibrationChecks.Run(root,Assert);
 await CalibrationRobustnessChecks.Run(root,Assert);
+await InputSettingsChecks.Run(root,Assert);
 Console.WriteLine($"Maximum pure-tone pitch error: {maximumPitchError:0.0000} cents");
 Console.WriteLine($"PASS: {checks} targeted assertions. No microphone, desktop, or browser used. Fixtures: {root}");
 
@@ -312,11 +313,17 @@ sealed class FakeFactory:ICaptureFactory
     public bool DenySharedRaw,DenyExclusive,FailDuringOpen;
     public FakeCapture? Current;
     public IReadOnlyList<AudioDevice> Enumerate()=>[Device];
-    public Task<IAudioCaptureService> OpenAsync(AudioDevice device,bool exclusive,bool raw,long epoch,Func<CapturePacket,bool> packet,Action<Exception> fault)
+    public AudioFormat? LastRequestedFormat;
+    public bool RejectPreferred;
+    public Task<InputFormatOptions> QueryFormatsAsync(AudioDevice device)=>Task.FromResult(new InputFormatOptions(Format,
+        new[]{Format,new AudioFormat(96000,Format.Channels,24,24,PcmEncoding.SignedInteger)}));
+    public Task<IAudioCaptureService> OpenAsync(AudioDevice device,bool exclusive,bool raw,long epoch,Func<CapturePacket,bool> packet,Action<Exception> fault,AudioFormat? preferredFormat=null)
     {
         if(exclusive && DenyExclusive)throw new IOException("Exclusive denied");
         if(!exclusive && raw && DenySharedRaw)throw new RawUnavailableException("RAW unsupported");
-        Current=new(new(device,Format,exclusive,raw,epoch),packet,fault);
+        LastRequestedFormat=preferredFormat;
+        if(preferredFormat!=null&&RejectPreferred)throw new NotSupportedException("Requested format unavailable");
+        Current=new(new(device,preferredFormat??Format,exclusive,raw,epoch),packet,fault);
         if(FailDuringOpen)fault(new IOException("Capture stopped during preparation"));
         return Task.FromResult<IAudioCaptureService>(Current);
     }
@@ -330,8 +337,18 @@ sealed class FakeCapture(CaptureInfo info,Func<CapturePacket,bool> packet,Action
     public void Push(float[] data,bool gap)
     {
         if(_closed)throw new InvalidOperationException("Closed capture");
-        var bytes=ArrayPool<byte>.Shared.Rent(data.Length*4);MemoryMarshal.AsBytes(data.AsSpan()).CopyTo(bytes);
-        var block=new CapturePacket(bytes,data.Length*4,data.Length/info.Format.Channels,_frame,false,gap);_frame+=block.Frames;
+        int width=info.Format.Bits/8;var bytes=ArrayPool<byte>.Shared.Rent(data.Length*width);
+        if(info.Format.Encoding==PcmEncoding.Float)MemoryMarshal.AsBytes(data.AsSpan()).CopyTo(bytes);
+        else for(int i=0;i<data.Length;i++)
+        {
+            long scale=1L<<(info.Format.ValidBits-1);
+            int code=(int)(Math.Clamp((long)Math.Round(data[i]*scale),-scale,scale-1)<<(info.Format.Bits-info.Format.ValidBits));
+            var target=bytes.AsSpan(i*width,width);
+            if(width==2)BinaryPrimitives.WriteInt16LittleEndian(target,(short)code);
+            else if(width==3){target[0]=(byte)code;target[1]=(byte)(code>>8);target[2]=(byte)(code>>16);}
+            else BinaryPrimitives.WriteInt32LittleEndian(target,code);
+        }
+        var block=new CapturePacket(bytes,data.Length*width,data.Length/info.Format.Channels,_frame,false,gap);_frame+=block.Frames;
         if(!packet(block)){block.Dispose();fault(new IOException("queue overflow"));}
     }
     public ValueTask DisposeAsync(){_closed=true;return ValueTask.CompletedTask;}

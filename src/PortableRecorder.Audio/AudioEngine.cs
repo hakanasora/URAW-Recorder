@@ -4,6 +4,10 @@ public sealed class AudioEngine:IAsyncDisposable
 {
     private readonly ICaptureFactory _factory;
     public CalibrationLibrary Calibrations {get;}
+    public InputFormatPreferences InputFormats {get;}
+    public CalibrationLibrary.Selection CalibrationSelection=>_device==null?new(false,null):Calibrations.GetSelection(_device.Id);
+    public bool CalibrationReadyToRecord=>!CalibrationSelection.Enabled||Calibration.Applied&&_calibrationError==null;
+    public AudioFormat? PreferredInputFormat=>_device==null?null:InputFormats.Get(_device.Id);
     private string? _calibrationError; private string? _summaryOwned; private object? _recordingCalibration;
     public CalibrationStatus Calibration
     {
@@ -30,8 +34,8 @@ public sealed class AudioEngine:IAsyncDisposable
     public AudioDevice? SelectedDevice=>_device;
     public event Action<string>? Diagnostic;
     private void Trace(string message){try{Diagnostic?.Invoke(message);}catch{/* Diagnostics cannot stop capture. */}}
-    public AudioEngine(ICaptureFactory? factory=null,CalibrationLibrary? calibrationLibrary=null,Func<string,AudioFormat,IRecordingWriter>? writerFactory=null)
-    {_factory=factory??new WasapiCaptureFactory();Calibrations=calibrationLibrary??new CalibrationLibrary();_createWriter=writerFactory??((path,format)=>new FloatWaveWriter(path,format));}
+    public AudioEngine(ICaptureFactory? factory=null,CalibrationLibrary? calibrationLibrary=null,Func<string,AudioFormat,IRecordingWriter>? writerFactory=null,InputFormatPreferences? inputFormats=null)
+    {_factory=factory??new WasapiCaptureFactory();Calibrations=calibrationLibrary??new CalibrationLibrary();InputFormats=inputFormats??new InputFormatPreferences();_createWriter=writerFactory??((path,format)=>new FloatWaveWriter(path,format));}
     public IReadOnlyList<AudioDevice> EnumerateDevices()=>_factory.Enumerate();
     public AudioStatus Status
     {
@@ -138,11 +142,15 @@ public sealed class AudioEngine:IAsyncDisposable
         var pipe=new ProcessingPipeline(()=>Volatile.Read(ref _gain),OpeningFault,Trace);
         try
         {
-            var capture=await _factory.OpenAsync(_device!,exclusive,raw,epoch,pipe.Submit,OpeningFault);
+            var preferred=exclusive?PreferredInputFormat:null;
+            var capture=await _factory.OpenAsync(_device!,exclusive,raw,epoch,pipe.Submit,OpeningFault,preferred);
             try
             {
+                if(preferred!=null&&capture.Info.Format!=preferred)throw new NotSupportedException("采集实际格式与所选独占格式不一致，已拒绝录制。");
                 var plan=CalibrationPlan.Identity;_calibrationError=null;
-                string? id=Calibrations.SelectedId(_device!.Id);
+                var selection=Calibrations.GetSelection(_device!.Id);
+                string? id=selection.Enabled?selection.ProfileId:null;
+                if(selection.Enabled&&id==null)_calibrationError="校准尚未生效：请选择校准文件，或禁用校准后录制。";
                 if(id!=null)
                 {
                     try{plan=await Task.Run(()=>CalibrationPlan.Prepare(Calibrations.Read(id),capture.Info.Format.SampleRate));}
@@ -295,14 +303,52 @@ public sealed class AudioEngine:IAsyncDisposable
         {
             ThrowIfDisposed();if(_writer!=null)throw new InvalidOperationException("录制和暂停期间不能更换校准。");
             if(_device==null)throw new InvalidOperationException("尚未选择输入设备。");
-            var oldId=Calibrations.SelectedId(_device.Id);
-            var plan=id==null?CalibrationPlan.Identity:await Task.Run(()=>CalibrationPlan.Prepare(Calibrations.Read(id),_capture?.Info.Format.SampleRate??48000));
-            // Persist first. A persistence failure cannot silently change the live processor.
-            Calibrations.Bind(_device.Id,id);
-            try{if(_pipeline!=null)await _pipeline.ApplyCalibrationAsync(plan);}
-            catch{Calibrations.Bind(_device.Id,oldId);throw;}
-            _calibrationError=null;Volatile.Write(ref _previousPeak,double.NaN);
-            if(_capture!=null)Set(AudioRunState.Monitoring,id==null?"校准已关闭；共享监看":$"已启用频响校准：{plan.Profile!.Name}");
+            var old=CalibrationSelection;
+            await ChangeCalibration(new(id!=null,id??old.ProfileId),false);
+        }
+        finally{_commands.Release();}
+    }
+    public async Task SetCalibrationEnabledAsync(bool enabled)
+    {
+        await _commands.WaitAsync();
+        try
+        {
+            ThrowIfDisposed();if(_writer!=null)throw new InvalidOperationException("录制和暂停期间不能更换校准。");
+            if(_device==null)throw new InvalidOperationException("尚未选择输入设备。");
+            await ChangeCalibration(CalibrationSelection with{Enabled=enabled},true);
+        }
+        finally{_commands.Release();}
+    }
+    private async Task ChangeCalibration(CalibrationLibrary.Selection choice,bool allowUnavailable)
+    {
+        var old=CalibrationSelection;var plan=CalibrationPlan.Identity;string? error=null;
+        if(choice.Enabled)
+        {
+            if(choice.ProfileId==null)error="校准尚未生效：请选择校准文件，或禁用校准后录制。";
+            else try{plan=await Task.Run(()=>CalibrationPlan.Prepare(Calibrations.Read(choice.ProfileId),_capture?.Info.Format.SampleRate??48000));}
+            catch(Exception e) when(allowUnavailable){error="所选校准不可用，未应用："+e.Message;}
+        }
+        Calibrations.Configure(_device!.Id,choice);
+        try{if(_pipeline!=null)await _pipeline.ApplyCalibrationAsync(plan);}
+        catch{Calibrations.Configure(_device.Id,old);throw;}
+        _calibrationError=error;Volatile.Write(ref _previousPeak,double.NaN);
+        if(_capture!=null)Set(AudioRunState.Monitoring,error??(choice.Enabled?$"已启用频响校准：{plan.Profile!.Name}":"校准已禁用；共享监看"));
+    }
+    public async Task<InputFormatOptions> QueryInputFormatsAsync()
+    {
+        await _commands.WaitAsync();
+        try{ThrowIfDisposed();if(_device==null)throw new InvalidOperationException("尚未选择输入设备。");return await _factory.QueryFormatsAsync(_device);}
+        finally{_commands.Release();}
+    }
+    public async Task SetInputFormatAsync(AudioFormat? format)
+    {
+        await _commands.WaitAsync();
+        try
+        {
+            ThrowIfDisposed();if(_writer!=null)throw new InvalidOperationException("录制和暂停期间不能更换输入格式。");
+            if(_device==null)throw new InvalidOperationException("尚未选择输入设备。");
+            if(format!=null&&!(await _factory.QueryFormatsAsync(_device)).Exclusive.Contains(format))throw new NotSupportedException("设备当前不支持此独占输入格式。");
+            InputFormats.Set(_device.Id,format);
         }
         finally{_commands.Release();}
     }
@@ -321,7 +367,11 @@ public sealed class AudioEngine:IAsyncDisposable
             if(active&&_pipeline!=null)await _pipeline.ApplyCalibrationAsync(CalibrationPlan.Identity);
             try{Calibrations.Remove(id);}
             catch{if(old!=null&&_pipeline!=null)await _pipeline.ApplyCalibrationAsync(old);throw;}
-            if(active){_calibrationError=null;Volatile.Write(ref _previousPeak,double.NaN);}
+            if(active)
+            {
+                _calibrationError=null;Volatile.Write(ref _previousPeak,double.NaN);
+                if(_capture!=null)Set(AudioRunState.Monitoring,"已移除当前校准；共享监看未应用校准。");
+            }
         }
         finally{_commands.Release();}
     }

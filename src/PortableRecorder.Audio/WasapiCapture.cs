@@ -18,12 +18,22 @@ public sealed class WasapiCaptureFactory:ICaptureFactory
         return result.OrderByDescending(d=>d.IsDefault).ToArray();
     }
     public async Task<IAudioCaptureService> OpenAsync(AudioDevice device,bool exclusive,bool raw,long epoch,
-        Func<CapturePacket,bool> packet,Action<Exception> fault)
+        Func<CapturePacket,bool> packet,Action<Exception> fault,AudioFormat? preferredFormat=null)
     {
-        var capture=new WasapiCaptureSession(device,exclusive,raw,epoch,packet,fault);
+        var capture=new WasapiCaptureSession(device,exclusive,raw,epoch,packet,fault,preferredFormat);
         try{await capture.Ready.ConfigureAwait(false);return capture;}
         catch{await capture.DisposeAsync();throw;}
     }
+    public Task<InputFormatOptions> QueryFormatsAsync(AudioDevice description)=>Task.Run(()=>
+    {
+        // Capability queries do not initialize/start a stream or take exclusive ownership.
+        using var enumerator=new MMDeviceEnumerator();using var device=enumerator.GetDevice(description.Id);
+        using var client=device.CreateAudioClient();var mix=client.MixFormat;
+        var formats=WasapiCaptureSession.Candidates(mix)
+            .Where(w=>client.IsFormatSupported(AudioClientShareMode.Exclusive,w))
+            .Select(WasapiCaptureSession.Describe).Distinct().ToArray();
+        return new InputFormatOptions(WasapiCaptureSession.Describe(mix),formats);
+    });
 }
 internal sealed class WasapiCaptureSession:IAudioCaptureService
 {
@@ -32,12 +42,12 @@ internal sealed class WasapiCaptureSession:IAudioCaptureService
     private readonly TaskCompletionSource _done=new(TaskCreationOptions.RunContinuationsAsynchronously);
     public Task<CaptureInfo> Ready=>_ready.Task;
     public CaptureInfo Info=>_ready.Task.GetAwaiter().GetResult();
-    public WasapiCaptureSession(AudioDevice device,bool exclusive,bool raw,long epoch,Func<CapturePacket,bool> submit,Action<Exception> fault)
+    public WasapiCaptureSession(AudioDevice device,bool exclusive,bool raw,long epoch,Func<CapturePacket,bool> submit,Action<Exception> fault,AudioFormat? preferredFormat)
     {
-        var thread=new Thread(()=>Run(device,exclusive,raw,epoch,submit,fault)){IsBackground=true,Name="Portable Recorder WASAPI"};
+        var thread=new Thread(()=>Run(device,exclusive,raw,epoch,submit,fault,preferredFormat)){IsBackground=true,Name="Portable Recorder WASAPI"};
         thread.SetApartmentState(ApartmentState.MTA);thread.Start();
     }
-    private void Run(AudioDevice description,bool exclusive,bool raw,long epoch,Func<CapturePacket,bool> submit,Action<Exception> fault)
+    private void Run(AudioDevice description,bool exclusive,bool raw,long epoch,Func<CapturePacket,bool> submit,Action<Exception> fault,AudioFormat? preferredFormat)
     {
         AudioClient? client=null;IntPtr mmcss=IntPtr.Zero;
         try
@@ -48,7 +58,7 @@ internal sealed class WasapiCaptureSession:IAudioCaptureService
             var mode=exclusive?AudioClientShareMode.Exclusive:AudioClientShareMode.Shared;
             if(raw)RequestRaw(client);
             var mix=client.MixFormat;
-            var wave=exclusive?FindFormat(client,mix):mix;
+            var wave=exclusive?FindFormat(client,mix,preferredFormat):mix;
             var format=Describe(wave);
             using var signal=new EventWaitHandle(false,EventResetMode.AutoReset);
             // Shared monitoring benefits from scheduling headroom; event cadence remains engine-driven.
@@ -116,9 +126,15 @@ internal sealed class WasapiCaptureSession:IAudioCaptureService
             e.HResult==unchecked((int)0x80004002) || e.HResult==unchecked((int)0x88890027))
         {throw new RawUnavailableException("设备不支持 RAW 请求。",e);}
     }
-    private static WaveFormat FindFormat(AudioClient client,WaveFormat mix)
+    private static WaveFormat FindFormat(AudioClient client,WaveFormat mix,AudioFormat? preferred)
     {
-        if(client.IsFormatSupported(AudioClientShareMode.Exclusive,mix)){Describe(mix);return mix;}
+        foreach(var candidate in Candidates(mix))
+            if((preferred==null||Describe(candidate)==preferred)&&client.IsFormatSupported(AudioClientShareMode.Exclusive,candidate))return candidate;
+        throw new NotSupportedException(preferred==null?"设备没有可用的独占 PCM 格式，请检查驱动或选择共享录制。":"设备当前不支持所选独占输入格式，请重新选择或明确改用自动格式。");
+    }
+    internal static IEnumerable<WaveFormat> Candidates(WaveFormat mix)
+    {
+        Describe(mix);yield return mix;
         var original=Describe(mix);
         int mask=mix is WaveFormatExtensible extensible?extensible.ChannelMask:0;
         foreach(var rate in new[]{mix.SampleRate,48000,44100,96000,88200,192000,176400}.Distinct())
@@ -128,16 +144,15 @@ internal sealed class WasapiCaptureSession:IAudioCaptureService
                 new WaveFormatExtensible(rate,32,mix.Channels,false,24,mask),
                 WaveFormat.CreateIeeeFloatWaveFormat(rate,mix.Channels),new WaveFormat(rate,32,mix.Channels),new WaveFormat(rate,16,mix.Channels)})
             {
-                if(client.IsFormatSupported(AudioClientShareMode.Exclusive,candidate))return candidate;
+                yield return candidate;
                 // Some drivers only accept extensible descriptors (especially >2 channels).
                 var normal=Describe(candidate);
                 var ext=new WaveFormatExtensible(rate,normal.Bits,mix.Channels,normal.Encoding==PcmEncoding.Float,normal.ValidBits,mask);
-                if(client.IsFormatSupported(AudioClientShareMode.Exclusive,ext))return ext;
+                yield return ext;
             }
         }
-        throw new NotSupportedException("设备没有可用的独占 PCM 格式，请检查驱动或选择不独占录制。");
     }
-    private static AudioFormat Describe(WaveFormat wave)
+    internal static AudioFormat Describe(WaveFormat wave)
     {
         var standard=wave.AsStandardWaveFormat();
         int valid=wave is WaveFormatExtensible ext?ext.ValidBitsPerSample:wave.BitsPerSample;
