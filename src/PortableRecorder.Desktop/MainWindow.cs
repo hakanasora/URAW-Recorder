@@ -56,6 +56,8 @@ public sealed class MainWindow : Window
     private readonly Grid _calibrationHeading=new(){Height=24};
     private readonly Border _calibrationFileRow=new();
     private readonly Grid _inputFormatGroup=new();
+    private readonly TextBlock _inputFormatHint=Design.Text("当录制模式为共享时，该选项不可用",11,Design.Muted);
+    private readonly ScrollViewer _inputHost=new(),_fileHost=new();
     private InputFormatOptions? _inputFormats;
     private string? _formatsDeviceId,_inputFormatViewKey,_formatError;
     private int _formatQueryVersion;
@@ -176,8 +178,8 @@ public sealed class MainWindow : Window
         _serviceNotice.Margin=new Thickness(0,0,28,0);_header.Children.Add(_serviceNotice);
         _paneSelector=Design.Selector(["输入","文件"],84,8,index=>
         {
-            _inputPage.Visibility=index==0?Visibility.Visible:Visibility.Collapsed;
-            _filePage.Visibility=index==1?Visibility.Visible:Visibility.Collapsed;
+            _inputHost.Visibility=index==0?Visibility.Visible:Visibility.Collapsed;
+            _fileHost.Visibility=index==1?Visibility.Visible:Visibility.Collapsed;
         });
         BuildInspector();UpdateSystemAccent();_settings.ColorValuesChanged+=OnSystemColorsChanged;
         _drawer=new SettingsDrawer(_body,_inspector,()=>_settings.AnimationsEnabled,
@@ -268,12 +270,25 @@ public sealed class MainWindow : Window
         Grid.SetColumn(close,1);close.Click+=(_,_)=>TogglePane();top.Children.Add(close);
         _inspector.Children.Add(top);
         var pages=new Grid{Padding=new Thickness(24,12,24,12)};
-        pages.Children.Add(_inputPage);pages.Children.Add(_filePage);_filePage.Visibility=Visibility.Collapsed;
+        foreach(var host in new[]{_inputHost,_fileHost})
+        {
+            host.VerticalScrollBarVisibility=ScrollBarVisibility.Auto;host.VerticalScrollMode=ScrollMode.Auto;
+            host.HorizontalScrollBarVisibility=ScrollBarVisibility.Disabled;host.HorizontalScrollMode=ScrollMode.Disabled;
+            host.IsTabStop=false;host.Padding=new Thickness(0);host.BorderThickness=new Thickness(0);
+            host.Background=Design.Brush(Colors.Transparent);pages.Children.Add(host);
+        }
+        _inputHost.Content=_inputPage;_fileHost.Content=_filePage;_fileHost.Visibility=Visibility.Collapsed;
         _inspector.Children.Add(pages);Grid.SetRow(pages,1);
-        // 384 DIP drawer: 48 header + 12 top padding + 312 DIP content box + 12 bottom padding.
-        // The current input page uses 308 of the 312 DIP box; headings own their action links,
-        // and every selector occupies its own full-width row instead of sharing the label row.
-        _inputPage.Spacing=6;
+        // 384 DIP drawer: 48 header + 12 top padding + 312 DIP content viewport + 12 bottom padding.
+        // Primary modules use 16 DIP breathing room; 8 and 4 DIP separate the format sub-field
+        // and its label. The page scrolls only when the conditional calibration file row pushes
+        // content past the fixed viewport instead of clipping it.
+        _inputPage.Spacing=16;
+        StyleField(_recordModeBox);_recordModeBox.ItemsSource=new[]{"独占","共享"};
+        _recordModeBox.SelectedIndex=_state.RecordMode==RecordingMode.Exclusive?0:1;
+        _recordModeBox.SelectionChanged+=(_,_)=>{SetRecordingMode(_recordModeBox.SelectedIndex==0?RecordingMode.Exclusive:RecordingMode.Shared);_inputFormatViewKey=null;SyncInputFormat();};
+        AutomationProperties.SetName(_recordModeBox,"录制模式");
+        _inputPage.Children.Add(Group("录制模式","\uE713",_recordModeBox,4));
         StyleField(_deviceBox);_deviceBox.ItemsSource=_state.Devices;_deviceBox.DisplayMemberPath="FriendlyName";
         AutomationProperties.SetName(_deviceBox,"输入设备");
         _deviceBox.SelectionChanged+=async(_,_)=>
@@ -288,12 +303,18 @@ public sealed class MainWindow : Window
         var refresh=LinkButton("刷新");refresh.HorizontalAlignment=HorizontalAlignment.Right;
         ToolTipService.SetToolTip(refresh,"刷新输入设备并重新连接监看");refresh.Click+=async(_,_)=>await LoadDevices();deviceHeading.Children.Add(refresh);
         deviceGroup.Children.Add(deviceHeading);
-        _deviceBox.Margin=new Thickness(0,6,0,0);deviceGroup.Children.Add(_deviceBox);
-        var formatTitle=Design.Text("输入格式",12,Design.Label);formatTitle.Height=16;formatTitle.Margin=new Thickness(0,8,0,0);deviceGroup.Children.Add(formatTitle);
+        _deviceBox.Margin=new Thickness(0,4,0,0);deviceGroup.Children.Add(_deviceBox);
+        var formatTitle=Design.Text("输入格式",12,Design.Muted);formatTitle.Height=16;formatTitle.Margin=new Thickness(0,8,0,0);deviceGroup.Children.Add(formatTitle);
         StyleField(_inputFormatBox);_inputFormatBox.PlaceholderText="正在读取格式";
         AutomationProperties.SetName(_inputFormatBox,"输入格式");
-        _inputFormatBox.Resources["ComboBoxForegroundDisabled"]=Design.Brush(Design.White);
+        _inputFormatBox.Resources["ComboBoxForegroundDisabled"]=Design.Brush(Design.Label);
+        _inputFormatBox.Resources["ComboBoxBackgroundDisabled"]=Design.Brush(Design.Grid);
+        _inputFormatBox.Resources["ComboBoxBorderBrushDisabled"]=Design.Brush(Colors.Transparent);
+        _inputFormatBox.Resources["ComboBoxDropDownGlyphForegroundDisabled"]=Design.Brush(Design.Muted);
         _inputFormatBox.Margin=new Thickness(0,4,0,0);_inputFormatGroup.Children.Add(_inputFormatBox);deviceGroup.Children.Add(_inputFormatGroup);
+        _inputFormatHint.TextWrapping=TextWrapping.Wrap;_inputFormatHint.Margin=new Thickness(0,4,0,0);
+        _inputFormatHint.Visibility=_state.RecordMode==RecordingMode.Shared?Visibility.Visible:Visibility.Collapsed;
+        deviceGroup.Children.Add(_inputFormatHint);
         _inputFormatBox.SelectionChanged+=async(_,_)=>
         {
             if(_updatingInputFormat||_audioBusy||_state.RecordMode!=RecordingMode.Exclusive||_inputFormatBox.SelectedItem is not ComboBoxItem item||!item.IsEnabled)return;
@@ -301,11 +322,6 @@ public sealed class MainWindow : Window
             _inputFormatViewKey=null;SyncInputFormat();
         };
         _inputPage.Children.Add(deviceGroup);
-        StyleField(_recordModeBox);_recordModeBox.ItemsSource=new[]{"独占","共享"};
-        _recordModeBox.SelectedIndex=_state.RecordMode==RecordingMode.Exclusive?0:1;
-        _recordModeBox.SelectionChanged+=(_,_)=>{SetRecordingMode(_recordModeBox.SelectedIndex==0?RecordingMode.Exclusive:RecordingMode.Shared);_inputFormatViewKey=null;SyncInputFormat();};
-        AutomationProperties.SetName(_recordModeBox,"录制模式");
-        _inputPage.Children.Add(Group("录制模式","\uE713",_recordModeBox,4));
         StyleField(_calibrationEnabledBox);_calibrationEnabledBox.ItemsSource=new[]{"启用","禁用"};
         var calibrationLabel=Label("校准","\uE9E9");calibrationLabel.VerticalAlignment=VerticalAlignment.Center;_calibrationHeading.Children.Add(calibrationLabel);
         var manage=LinkButton("管理校准");manage.HorizontalAlignment=HorizontalAlignment.Right;manage.VerticalAlignment=VerticalAlignment.Center;
@@ -314,7 +330,7 @@ public sealed class MainWindow : Window
         _calibrationSection.Children.Add(_calibrationHeading);
         _calibrationSection.Children.Add(_calibrationEnabledBox);
         StyleField(_calibrationBox);_calibrationBox.ItemsSource=_state.Calibrations;_calibrationBox.DisplayMemberPath="Name";
-        _calibrationBox.PlaceholderText="请选择校准文件";_calibrationFileRow.Child=_calibrationBox;_calibrationFileRow.Margin=new Thickness(0,2,0,0);_calibrationFileRow.Visibility=Visibility.Collapsed;
+        _calibrationBox.PlaceholderText="请选择校准文件";_calibrationFileRow.Child=_calibrationBox;_calibrationFileRow.Margin=new Thickness(0,4,0,0);_calibrationFileRow.Visibility=Visibility.Collapsed;
         _calibrationSection.Children.Add(_calibrationFileRow);
         AutomationProperties.SetName(_calibrationBox,"校准文件");
         _inputPage.Children.Add(_calibrationSection);
@@ -592,7 +608,11 @@ public sealed class MainWindow : Window
             _calibrationEnabledBox.SelectedIndex=choice.Enabled?0:1;
             _calibrationBox.SelectedItem=_state.SelectedCalibration;
             _calibrationBox.PlaceholderText=_state.Calibrations.Count==0?"请先添加校准文件":"请选择校准文件";
-            _calibrationFileRow.Visibility=choice.Enabled?Visibility.Visible:Visibility.Collapsed;
+            bool showFileRow=choice.Enabled;
+            bool wasVisible=_calibrationFileRow.Visibility==Visibility.Visible;
+            _calibrationFileRow.Visibility=showFileRow?Visibility.Visible:Visibility.Collapsed;
+            if(showFileRow&&!wasVisible&&_calibrationFileRow.IsLoaded)
+                DispatcherQueue.TryEnqueue(()=>_calibrationFileRow.StartBringIntoView(new BringIntoViewOptions{AnimationDesired=_settings.AnimationsEnabled}));
             _calibrationBox.IsEnabled=choice.Enabled&&_state.Calibrations.Count>0&&!_state.Session.Active&&!_audioBusy;
         }
         finally{_updatingCalibration=false;}
@@ -627,6 +647,8 @@ public sealed class MainWindow : Window
     private void SyncInputFormat()
     {
         var audio=_state.Audio;bool shared=_state.RecordMode==RecordingMode.Shared;
+        var hintVisibility=shared?Visibility.Visible:Visibility.Collapsed;
+        if(_inputFormatHint.Visibility!=hintVisibility)_inputFormatHint.Visibility=hintVisibility;
         var actual=audio.Status.Capture;
         var live=actual is{Exclusive:false}?actual.Format:_inputFormats?.Shared;
         var preferred=audio.PreferredInputFormat;
