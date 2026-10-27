@@ -434,14 +434,9 @@ public sealed class MainWindow : Window
                         row.ColumnDefinitions.Add(new(){Width=new GridLength(64)});
                         var name=Design.Text(file.Name,13);name.TextTrimming=TextTrimming.CharacterEllipsis;
                         ToolTipService.SetToolTip(name,file.Path);row.Children.Add(name);
-                        var remove=new Button{Content="移除",Height=32,MinHeight=0,MinWidth=0,Padding=new Thickness(14,0,14,0),
-                            CornerRadius=new CornerRadius(5),Foreground=Design.Brush(Design.White),Background=Design.Brush(Colors.Transparent),
-                            BorderThickness=new Thickness(1),BorderBrush=Design.Brush(Design.Hex("4A4A4E")),FontSize=13,
-                            VerticalAlignment=VerticalAlignment.Center,HorizontalAlignment=HorizontalAlignment.Stretch,Opacity=0,IsHitTestVisible=false};
-                        remove.Resources["ButtonBackgroundPointerOver"]=Design.Brush(Design.Hex("3F3F43"));
-                        remove.Resources["ButtonBackgroundPressed"]=Design.Brush(Design.Hex("29292C"));
-                        remove.Resources["ButtonBorderBrushPointerOver"]=Design.Brush(Design.Hex("5A5A5F"));
-                        remove.Resources["ButtonBorderBrushPressed"]=Design.Brush(Design.Hex("4A4A4E"));
+                        var remove=new Button{Content="移除",Height=34,MinHeight=0,MinWidth=0,Padding=new Thickness(12,0,12,0),
+                            FontSize=13,VerticalAlignment=VerticalAlignment.Center,HorizontalAlignment=HorizontalAlignment.Stretch,
+                            Opacity=0,IsHitTestVisible=false};
                         ToolTipService.SetToolTip(remove,"移除校准文件");AutomationProperties.SetName(remove,"移除校准文件："+file.Name);
                         Grid.SetColumn(remove,1);row.Children.Add(remove);
                         var item=new ListViewItem{Content=rowSurface,Padding=new Thickness(0),MinHeight=40,CornerRadius=new CornerRadius(4),HorizontalContentAlignment=HorizontalAlignment.Stretch};
@@ -452,9 +447,8 @@ public sealed class MainWindow : Window
                         void ShowRemove(bool show){remove.Opacity=show?1:0;remove.IsHitTestVisible=show;}
                         void ShowHover(bool show)=>rowSurface.Background=Design.Brush(show?Design.Selected:Colors.Transparent);
                         item.PointerEntered+=(_,_)=>{hovered=true;ShowRemove(true);ShowHover(true);};
-                        item.PointerExited+=(_,_)=>{hovered=false;if(remove.FocusState==FocusState.Unfocused&&item.FocusState==FocusState.Unfocused)ShowRemove(false);ShowHover(false);};
-                        item.GotFocus+=(_,_)=>ShowRemove(true);
-                        item.LostFocus+=(_,_)=>{if(!hovered&&remove.FocusState==FocusState.Unfocused&&item.FocusState==FocusState.Unfocused)ShowRemove(false);};
+                        item.PointerExited+=(_,_)=>{hovered=false;if(remove.FocusState==FocusState.Unfocused)ShowRemove(false);ShowHover(false);};
+                        item.LostFocus+=(_,_)=>{if(!hovered&&remove.FocusState==FocusState.Unfocused)ShowRemove(false);};
                         remove.GotFocus+=(_,_)=>ShowRemove(true);
                         remove.LostFocus+=(_,_)=>{if(!hovered)ShowRemove(false);};
                         remove.Click+=async(_,_)=>
