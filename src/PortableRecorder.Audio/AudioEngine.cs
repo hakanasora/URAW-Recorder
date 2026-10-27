@@ -175,7 +175,7 @@ public sealed class AudioEngine:IAsyncDisposable
         if(_capture!=null){var old=_capture;_capture=null;await old.DisposeAsync();}
         if(_pipeline!=null){var old=_pipeline;_pipeline=null;await old.DisposeAsync();}
     }
-    public async Task StartRecordingAsync(string directory,RecordingMode mode)
+    public async Task StartRecordingAsync(string directory,RecordingMode mode,RecordingEncoding? encoding=null)
     {
         await _commands.WaitAsync();
         try
@@ -194,20 +194,21 @@ public sealed class AudioEngine:IAsyncDisposable
             if(!_capture!.Info.Raw)throw new InvalidOperationException("正式录制必须接受 RAW 请求。");
             var calibration=Calibration;
             var summaryProfile=calibration.ProfileId==null?null:await Task.Run(()=>Calibrations.Read(calibration.ProfileId));
-            Set(AudioRunState.Preparing,"正在准备 WAV 文件");
+            encoding??=new();encoding.Validate(_capture.Info.Format);
+            Set(AudioRunState.Preparing,"正在准备录音文件");
             directory=string.IsNullOrWhiteSpace(directory)?System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyMusic),"Portable Recorder"):System.IO.Path.GetFullPath(directory);
             Directory.CreateDirectory(directory);
             string stamp=DateTime.Now.ToString("yyyyMMdd-HHmmss-fff");
             for(int suffix=0;;suffix++)
             {
-                var path=System.IO.Path.Combine(directory,$"Recording-{stamp}{(suffix==0?"":"-"+suffix)}.wav");
-                try{_writer=_createWriter(path,_capture.Info.Format);break;}
+                var path=System.IO.Path.Combine(directory,$"Recording-{stamp}{(suffix==0?"":"-"+suffix)}.{encoding.Extension}");
+                try{_writer=encoding.Codec==RecordingCodec.Wav?_createWriter(path,_capture.Info.Format):encoding.CreateWriter(path,_capture.Info.Format);break;}
                 catch(IOException) when(File.Exists(path) && suffix<99){}
             }
             _lastWritten=0;_lastRate=_capture.Info.Format.SampleRate;_summaryOwned=null;
-            _recordingCalibration=new{Version=1,Device=_device,Format=_capture.Info.Format,Calibration=calibration,
+            _recordingCalibration=new{Version=2,Device=_device,Format=_capture.Info.Format,Encoding=encoding,Calibration=calibration,
                 Profile=summaryProfile,
-                Processing="raw → frequency correction → software gain → monitoring / float WAV",LinearPhase=true,
+                Processing="raw → frequency correction → software gain → monitoring / selected encoder",LinearPhase=true,
                 FftRule="nextpow2(Fs*0.34); taps=7*N/8+1; designFFT=4*N; Hamming",AbsoluteSpl=false};
             await _pipeline!.AttachAsync(_writer);
             Set(AudioRunState.Preparing,"等待首批录音样本",_writer.Path);
@@ -242,10 +243,10 @@ public sealed class AudioEngine:IAsyncDisposable
         {
             ThrowIfDisposed();
             if(_writer==null || Status.State!=AudioRunState.Paused)throw new InvalidOperationException("请先暂停，再丢弃本次录音。");
-            string path=_writer.Path;bool exclusive=_capture?.Info.Exclusive==true;
+            string path=_writer.Path;var auxiliary=_writer.AuxiliaryPaths;bool exclusive=_capture?.Info.Exclusive==true;
             // Close/drain the owned file before deleting; this cannot touch earlier recordings.
             try{await StopWriter(false);}catch{/* An explicitly discarded partial file may also be removed. */}
-            Exception? failure=null;try{File.Delete(path);if(_summaryOwned!=null){File.Delete(_summaryOwned);_summaryOwned=null;}}catch(Exception error){failure=error;}
+            Exception? failure=null;try{File.Delete(path);foreach(var owned in auxiliary)File.Delete(owned);if(_summaryOwned!=null){File.Delete(_summaryOwned);_summaryOwned=null;}}catch(Exception error){failure=error;}
             _lastWritten=0;
             if(exclusive){await CloseCapture();await OpenMonitor();}
             if(failure!=null){Set(AudioRunState.Faulted,"无法丢弃文件："+Friendly(failure),path,true);throw new IOException("文件已关闭但未能丢弃："+path,failure);}
@@ -256,7 +257,7 @@ public sealed class AudioEngine:IAsyncDisposable
     private async Task StopWriter(bool restoreMonitor=true,Exception? interruption=null)
     {
         if(_writer==null)return;
-        var writer=_writer;Set(AudioRunState.Finalizing,"正在完成 WAV 文件",writer.Path);
+        var writer=_writer;Set(AudioRunState.Finalizing,"正在完成录音文件",writer.Path);
         Exception? failure=interruption;
         try{if(_pipeline!=null)await _pipeline.DetachAsync(mathematicalDrain:!restoreMonitor);}
         catch(Exception e)

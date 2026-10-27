@@ -303,6 +303,7 @@ foreach(double frequency in new[]{27.5,32.7032,110,123.47,440,1000,2093})
 await CalibrationChecks.Run(root,Assert);
 await CalibrationRobustnessChecks.Run(root,Assert);
 await InputSettingsChecks.Run(root,Assert);
+await EncodingChecks.Run(root,Assert);
 Console.WriteLine($"Maximum pure-tone pitch error: {maximumPitchError:0.0000} cents");
 Console.WriteLine($"PASS: {checks} targeted assertions. No microphone, desktop, or browser used. Fixtures: {root}");
 

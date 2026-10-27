@@ -66,6 +66,10 @@ public sealed class MainWindow : Window
     private readonly ComboBox _deviceBox=new(),_calibrationBox=new(),_formatBox=new(),_qualityBox=new();
     private readonly TextBox _path=new(){PlaceholderText="选择文件夹",MinWidth=0};
     private readonly StackPanel _qualityGroup=new(){Spacing=8};
+    private EncodingPreferences _encodingPreferences=EncodingPreferences.Load();
+    private RecordingCodec? _qualityCodec;
+    private bool _updatingQuality;
+    private readonly TextBlock _qualityTitle=Design.Text("压缩等级",13,Design.Label);
     private readonly List<Control> _configuration=[];
     private readonly SolidColorBrush _linkInk=Design.Brush(Design.Link);
     private Storyboard? _widthAnimation;
@@ -163,7 +167,7 @@ public sealed class MainWindow : Window
         _stopButton.Click+=async(_,_)=>await AudioCommand(async()=>
         {
             if(_state.Session.Active)await _state.Audio.StopRecordingAsync();
-            else await _state.Audio.StartRecordingAsync(_state.OutputPath,_state.RecordMode);
+            else await _state.Audio.StartRecordingAsync(_state.OutputPath,_state.RecordMode,_state.Encoding);
         });
         _activeButtons.Visibility=Visibility.Visible;_activeButtons.Spacing=0;
         _discardButton=Design.Button(Design.Icon("\uE74D",16,Design.White),"丢弃",Design.TransportAction);
@@ -353,9 +357,19 @@ public sealed class MainWindow : Window
         var browse=Design.Button(Design.Icon("\uE8B7",16,Design.White),"浏览保存文件夹",Design.Field);browse.Width=36;browse.Height=36;browse.CornerRadius=new(3);browse.Padding=new Thickness(0);Grid.SetColumn(browse,1);pathRow.Children.Add(browse);_configuration.Add(browse);browse.Click+=async(_,_)=>await BrowseFolder();
         var pathGroup=Group("保存路径","\uE8B7",pathRow);_pathError.TextWrapping=TextWrapping.Wrap;_pathError.Visibility=Visibility.Collapsed;pathGroup.Children.Add(_pathError);_filePage.Children.Add(pathGroup);
         StyleField(_formatBox);_formatBox.Items.Add(new ComboBoxItem{Content="WAV · 32 位浮点",Tag="WAV"});
-        _formatBox.Items.Add(new ComboBoxItem{Content="FLAC（尚未接入）",IsEnabled=false});
-        _formatBox.Items.Add(new ComboBoxItem{Content="MP3（尚未接入）",IsEnabled=false});_formatBox.SelectedIndex=0;_formatBox.SelectionChanged+=(_,_)=>UpdateQuality();_filePage.Children.Add(Group("录制格式","\uE8A5",_formatBox));
-        StyleField(_qualityBox);_qualityGroup.Children.Add(Label("压缩品质","\uE713"));_qualityGroup.Children.Add(_qualityBox);_filePage.Children.Add(_qualityGroup);
+        _formatBox.Items.Add(new ComboBoxItem{Content="FLAC · 24 位 PCM",Tag="FLAC"});
+        _formatBox.Items.Add(new ComboBoxItem{Content="MP3 · LAME VBR",Tag="MP3"});_formatBox.SelectedIndex=(int)_encodingPreferences.Codec;
+        _formatBox.SelectionChanged+=(_,_)=>{if(_formatBox.SelectedIndex<0)return;_encodingPreferences=_encodingPreferences with{Codec=(RecordingCodec)_formatBox.SelectedIndex};SaveEncoding();UpdateQuality();};
+        _filePage.Children.Add(Group("录制格式","\uE8A5",_formatBox));
+        StyleField(_qualityBox);var qualityHeading=Label("压缩等级","\uE713");qualityHeading.Children.RemoveAt(1);qualityHeading.Children.Add(_qualityTitle);
+        _qualityGroup.Children.Add(qualityHeading);_qualityGroup.Children.Add(_qualityBox);_filePage.Children.Add(_qualityGroup);
+        _qualityBox.SelectionChanged+=(_,_)=>
+        {
+            if(_updatingQuality||_qualityBox.SelectedItem is not ComboBoxItem item||item.Tag is not int value)return;
+            _encodingPreferences=_encodingPreferences.Codec==RecordingCodec.Flac?_encodingPreferences with{FlacLevel=value}:_encodingPreferences with{Mp3Quality=value};SaveEncoding();
+        };
+        _filePage.Spacing=18;
+        if(_settings.AnimationsEnabled)_qualityGroup.Transitions=new TransitionCollection{new EntranceThemeTransition()};
 
         _fileHint.TextWrapping=TextWrapping.Wrap;_filePage.Children.Add(_fileHint);UpdateQuality();
     }
@@ -387,8 +401,38 @@ public sealed class MainWindow : Window
     }
     private void UpdateQuality()
     {
-        _state.Format="WAV";_qualityGroup.Visibility=Visibility.Collapsed;
-        _fileHint.Text="32 位浮点 WAV / RF64；采样率、声道数沿用实际输入。\n未设置路径时保存到‘音乐\\Portable Recorder’。";
+        var codec=_encodingPreferences.Codec;_state.Encoding=_encodingPreferences.Encoding;
+        _qualityGroup.Visibility=codec==RecordingCodec.Wav?Visibility.Collapsed:Visibility.Visible;
+        _qualityTitle.Text=codec==RecordingCodec.Mp3?"压缩品质":"压缩等级";
+        if(codec!=RecordingCodec.Wav&&_qualityCodec!=codec)
+        {
+            _updatingQuality=true;
+            try
+            {
+                _qualityBox.Items.Clear();
+                for(int value=0;value<=(codec==RecordingCodec.Flac?8:9);value++)
+                {
+                    string label=codec==RecordingCodec.Flac?$"等级 {value}"+(value==0?" · 最快":value==5?" · 标准":value==8?" · 最小体积":"")
+                        :$"V{value}"+(value==0?" · 最高品质":value==2?" · 推荐":value==9?" · 最小体积":"");
+                    var item=new ComboBoxItem{Content=label,Tag=value};_qualityBox.Items.Add(item);
+                    if(value==(codec==RecordingCodec.Flac?_encodingPreferences.FlacLevel:_encodingPreferences.Mp3Quality))_qualityBox.SelectedItem=item;
+                }
+            }
+            finally{_updatingQuality=false;}
+        }
+        _qualityCodec=codec;
+        _fileHint.Text=codec switch
+        {
+            RecordingCodec.Flac=>"等级影响体积与编码耗时，音质相同。\n浮点量化至 24 位；超限会停止录制。",
+            RecordingCodec.Mp3=>"有损 VBR；V 值越小，品质越高。\n限单／双声道、标准 8–48 kHz 输入。\n超限停止，不自动混音或重采样。",
+            _=>"32 位浮点 WAV / RF64，保留超限数值。\n采样率、声道数沿用实际输入。"
+        };
+        ToolTipService.SetToolTip(_fileHint,"未设置路径时保存到‘音乐\\Portable Recorder’。\n压缩格式会在停止时完成编码和文件收尾；保存成功前请等待。\nFLAC 对量化后的 24 位 PCM 无损；MP3 有损，监看仍基于编码前信号。");
+    }
+    private void SaveEncoding()
+    {
+        _state.Encoding=_encodingPreferences.Encoding;
+        try{_encodingPreferences.Save();}catch(Exception error){_serviceNotice.Text="录制格式偏好未保存："+error.Message;}
     }
     private async Task BrowseFolder()
     {

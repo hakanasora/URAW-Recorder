@@ -15,8 +15,13 @@ $env:DOTNET_CLI_TELEMETRY_OPTOUT = '1'
 $originalLocation = Get-Location
 try {
     Set-Location -LiteralPath $repoRoot
+    & (Join-Path $PSScriptRoot 'prepare-encoders.ps1')
     & $dotnetExecutable publish src/PortableRecorder.Desktop/PortableRecorder.Desktop.csproj -c Release -p:Platform=x64 -r win-x64 --self-contained true -p:PublishSingleFile=false -o artifacts/native-preview --nologo
     if ($LASTEXITCODE -ne 0) { throw "Native build failed with exit code $LASTEXITCODE" }
+    $encoderOutput = Join-Path $repoRoot 'artifacts/native-preview/encoders'
+    New-Item -ItemType Directory -Force $encoderOutput | Out-Null
+    Copy-Item -LiteralPath (Join-Path $repoRoot 'artifacts/encoders/ffmpeg.exe') -Destination $encoderOutput -Force
+    Copy-Item -LiteralPath (Join-Path $repoRoot 'artifacts/encoders/LICENSE.txt') -Destination $encoderOutput -Force
     # A successful compile alone does not guarantee a runnable WinUI publish.
     # Compiled XAML may be embedded in the PRI; a loose App.xbf is not required.
     foreach ($asset in @('PortableRecorder.Desktop.exe', 'PortableRecorder.Desktop.pri')) {

@@ -38,7 +38,7 @@ public sealed class ShellViewModel:INotifyPropertyChanged
     public double GainDb {get;private set;}
     public double? HeldPeak {get;private set;}
     public string OutputPath {get;set;}="";
-    public string Format {get;set;}="WAV";
+    public RecordingEncoding Encoding {get;set;}=EncodingPreferences.Load().Encoding;
     public MonitorSnapshot Snapshot {get;private set;}=new(false,double.NaN,double.NaN,double.NaN,
         double.NegativeInfinity,double.NegativeInfinity,null,null,null,null);
     public Queue<PitchPoint> PitchHistory {get;}=new();

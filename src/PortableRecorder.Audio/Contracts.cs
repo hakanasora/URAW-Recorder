@@ -56,6 +56,7 @@ public interface IAudioAnalyzer:IDisposable
 }
 public interface IRecordingWriter:IAsyncDisposable
 {
+    IReadOnlyList<string> AuxiliaryPaths=>Array.Empty<string>();
     string Path {get;}
     long WrittenFrames {get;}
     Exception? Failure {get;}
