@@ -260,7 +260,7 @@ public sealed class MainWindow : Window
     private void BuildInspector()
     {
         _inspector.RowDefinitions.Add(new(){Height=new GridLength(48)});_inspector.RowDefinitions.Add(new(){Height=new GridLength(1,GridUnitType.Star)});
-        var top=new Grid{Padding=new Thickness(20,0,16,0),ColumnSpacing=12};
+        var top=new Grid{Padding=new Thickness(24,0,24,0),ColumnSpacing=8};
         top.ColumnDefinitions.Add(new(){Width=new GridLength(1,GridUnitType.Star)});
         top.ColumnDefinitions.Add(new(){Width=new GridLength(32)});
         _paneSelector.HorizontalAlignment=HorizontalAlignment.Left;
@@ -269,7 +269,9 @@ public sealed class MainWindow : Window
         close.Width=32;close.Height=32;close.Padding=new Thickness(0);
         Grid.SetColumn(close,1);close.Click+=(_,_)=>TogglePane();top.Children.Add(close);
         _inspector.Children.Add(top);
-        var pages=new Grid{Padding=new Thickness(24,12,24,12)};
+        var headerRule=new Border{Height=1,Background=Design.Brush(MaterialSurface.Tint(Colors.White,14)),VerticalAlignment=VerticalAlignment.Bottom,IsHitTestVisible=false};
+        _inspector.Children.Add(headerRule);Grid.SetRow(headerRule,0);
+        var pages=new Grid{Padding=new Thickness(24,12,8,12)};
         foreach(var host in new[]{_inputHost,_fileHost})
         {
             host.VerticalScrollBarVisibility=ScrollBarVisibility.Auto;host.VerticalScrollMode=ScrollMode.Auto;
@@ -277,6 +279,7 @@ public sealed class MainWindow : Window
             host.IsTabStop=false;host.Padding=new Thickness(0);host.BorderThickness=new Thickness(0);
             host.Background=Design.Brush(Colors.Transparent);pages.Children.Add(host);
         }
+        _inputPage.Margin=new Thickness(0,0,16,0);_filePage.Margin=new Thickness(0,0,16,0);
         _inputHost.Content=_inputPage;_fileHost.Content=_filePage;_fileHost.Visibility=Visibility.Collapsed;
         _inspector.Children.Add(pages);Grid.SetRow(pages,1);
         // 384 DIP drawer: 48 header + 12 top padding + 312 DIP content viewport + 12 bottom padding.
@@ -426,6 +429,7 @@ public sealed class MainWindow : Window
                     foreach(var file in _state.Calibrations.ToArray())
                     {
                         var row=new Grid{Height=40,ColumnSpacing=8,Padding=new Thickness(12,0,8,0)};
+                        var rowSurface=new Border{CornerRadius=new CornerRadius(4),Background=Design.Brush(Colors.Transparent),Child=row};
                         row.ColumnDefinitions.Add(new(){Width=new GridLength(1,GridUnitType.Star)});
                         row.ColumnDefinitions.Add(new(){Width=new GridLength(56)});
                         var name=Design.Text(file.Name,13);name.TextTrimming=TextTrimming.CharacterEllipsis;
@@ -438,12 +442,12 @@ public sealed class MainWindow : Window
                         remove.Resources["ButtonBackgroundPressed"]=Design.Brush(Design.Hex("303033"));
                         ToolTipService.SetToolTip(remove,"移除校准文件");AutomationProperties.SetName(remove,"移除校准文件："+file.Name);
                         Grid.SetColumn(remove,1);row.Children.Add(remove);
-                        var item=new ListViewItem{Content=row,Padding=new Thickness(0),MinHeight=40,CornerRadius=new CornerRadius(4),HorizontalContentAlignment=HorizontalAlignment.Stretch};
-                        item.Resources["ListViewItemBackgroundPointerOver"]=Design.Brush(Design.Selected);
-                        item.Resources["ListViewItemBackgroundSelected"]=Design.Brush(Design.Selected);
-                        item.Resources["ListViewItemBackgroundSelectedPointerOver"]=Design.Brush(Design.Selected);
+                        var item=new ListViewItem{Content=rowSurface,Padding=new Thickness(0),MinHeight=40,CornerRadius=new CornerRadius(4),HorizontalContentAlignment=HorizontalAlignment.Stretch};
+                        item.Resources["ListViewItemBackgroundPointerOver"]=Design.Brush(Colors.Transparent);
+                        item.Resources["ListViewItemBackgroundSelected"]=Design.Brush(Colors.Transparent);
+                        item.Resources["ListViewItemBackgroundSelectedPointerOver"]=Design.Brush(Colors.Transparent);
                         bool hovered=false;
-                        void ShowRemove(bool show){remove.Opacity=show?1:0;remove.IsHitTestVisible=show;}
+                        void ShowRemove(bool show){remove.Opacity=show?1:0;remove.IsHitTestVisible=show;rowSurface.Background=Design.Brush(show?Design.Selected:Colors.Transparent);}
                         item.PointerEntered+=(_,_)=>{hovered=true;ShowRemove(true);};
                         item.PointerExited+=(_,_)=>{hovered=false;if(remove.FocusState==FocusState.Unfocused&&item.FocusState==FocusState.Unfocused)ShowRemove(false);};
                         item.GotFocus+=(_,_)=>ShowRemove(true);
