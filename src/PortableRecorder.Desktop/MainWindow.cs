@@ -431,11 +431,11 @@ public sealed class MainWindow : Window
                         var row=new Grid{Height=40,ColumnSpacing=8,Padding=new Thickness(12,0,8,0)};
                         var rowSurface=new Border{CornerRadius=new CornerRadius(4),Background=Design.Brush(Colors.Transparent),Child=row};
                         row.ColumnDefinitions.Add(new(){Width=new GridLength(1,GridUnitType.Star)});
-                        row.ColumnDefinitions.Add(new(){Width=new GridLength(64)});
+                        row.ColumnDefinitions.Add(new(){Width=new GridLength(52)});
                         var name=Design.Text(file.Name,13);name.TextTrimming=TextTrimming.CharacterEllipsis;
                         ToolTipService.SetToolTip(name,file.Path);row.Children.Add(name);
-                        var remove=new Button{Content="移除",Height=34,MinHeight=0,MinWidth=0,Padding=new Thickness(12,0,12,0),
-                            FontSize=13,VerticalAlignment=VerticalAlignment.Center,HorizontalAlignment=HorizontalAlignment.Stretch,
+                        var remove=new Button{Content="移除",Width=52,Height=28,MinHeight=0,MinWidth=0,Padding=new Thickness(10,0,10,0),
+                            FontSize=12,VerticalAlignment=VerticalAlignment.Center,HorizontalAlignment=HorizontalAlignment.Right,
                             Opacity=0,IsHitTestVisible=false};
                         ToolTipService.SetToolTip(remove,"移除校准文件");AutomationProperties.SetName(remove,"移除校准文件："+file.Name);
                         Grid.SetColumn(remove,1);row.Children.Add(remove);
