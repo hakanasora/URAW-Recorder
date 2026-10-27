@@ -52,7 +52,8 @@ public sealed class MainWindow : Window
     private readonly SegmentedSelector _modeSelector,_paneSelector;
     private readonly ComboBox _recordModeBox=new();
     private readonly ComboBox _inputFormatBox=new(),_calibrationEnabledBox=new();
-    private readonly StackPanel _calibrationSection=new(){Spacing=8};
+    private readonly StackPanel _calibrationSection=new(){Spacing=4};
+    private readonly Grid _calibrationHeading=new(){Height=24};
     private readonly Border _calibrationFileRow=new();
     private readonly Grid _inputFormatGroup=new();
     private InputFormatOptions? _inputFormats;
@@ -269,10 +270,12 @@ public sealed class MainWindow : Window
         var pages=new Grid{Padding=new Thickness(24,12,24,12)};
         pages.Children.Add(_inputPage);pages.Children.Add(_filePage);_filePage.Visibility=Visibility.Collapsed;
         _inspector.Children.Add(pages);Grid.SetRow(pages,1);
-        // 384 DIP drawer = 48 header + 12 top + 306 settings + 18 bottom.
-        // Controls retain 36 DIP; short mode/enable choices share their label row.
-        _inputPage.Spacing=14;
+        // 384 DIP drawer: 48 header + 12 top padding + 312 DIP content box + 12 bottom padding.
+        // The current input page uses 308 of the 312 DIP box; headings own their action links,
+        // and every selector occupies its own full-width row instead of sharing the label row.
+        _inputPage.Spacing=6;
         StyleField(_deviceBox);_deviceBox.ItemsSource=_state.Devices;_deviceBox.DisplayMemberPath="FriendlyName";
+        AutomationProperties.SetName(_deviceBox,"输入设备");
         _deviceBox.SelectionChanged+=async(_,_)=>
         {
             if(_updatingForm || _audioBusy || _deviceBox.SelectedItem is not InputDevice device)return;
@@ -288,6 +291,7 @@ public sealed class MainWindow : Window
         _deviceBox.Margin=new Thickness(0,6,0,0);deviceGroup.Children.Add(_deviceBox);
         var formatTitle=Design.Text("输入格式",12,Design.Label);formatTitle.Height=16;formatTitle.Margin=new Thickness(0,8,0,0);deviceGroup.Children.Add(formatTitle);
         StyleField(_inputFormatBox);_inputFormatBox.PlaceholderText="正在读取格式";
+        AutomationProperties.SetName(_inputFormatBox,"输入格式");
         _inputFormatBox.Resources["ComboBoxForegroundDisabled"]=Design.Brush(Design.White);
         _inputFormatBox.Margin=new Thickness(0,4,0,0);_inputFormatGroup.Children.Add(_inputFormatBox);deviceGroup.Children.Add(_inputFormatGroup);
         _inputFormatBox.SelectionChanged+=async(_,_)=>
@@ -300,13 +304,19 @@ public sealed class MainWindow : Window
         StyleField(_recordModeBox);_recordModeBox.ItemsSource=new[]{"独占","共享"};
         _recordModeBox.SelectedIndex=_state.RecordMode==RecordingMode.Exclusive?0:1;
         _recordModeBox.SelectionChanged+=(_,_)=>{SetRecordingMode(_recordModeBox.SelectedIndex==0?RecordingMode.Exclusive:RecordingMode.Shared);_inputFormatViewKey=null;SyncInputFormat();};
-        _inputPage.Children.Add(CompactSetting("录制模式","\uE713",_recordModeBox));
+        AutomationProperties.SetName(_recordModeBox,"录制模式");
+        _inputPage.Children.Add(Group("录制模式","\uE713",_recordModeBox,4));
         StyleField(_calibrationEnabledBox);_calibrationEnabledBox.ItemsSource=new[]{"启用","禁用"};
-        _calibrationSection.Children.Add(CompactSetting("校准","\uE9E9",_calibrationEnabledBox));
+        var calibrationLabel=Label("校准","\uE9E9");calibrationLabel.VerticalAlignment=VerticalAlignment.Center;_calibrationHeading.Children.Add(calibrationLabel);
+        var manage=LinkButton("管理校准");manage.HorizontalAlignment=HorizontalAlignment.Right;manage.VerticalAlignment=VerticalAlignment.Center;
+        ToolTipService.SetToolTip(manage,"管理已添加的校准文件");manage.Click+=async(_,_)=>await ManageCalibrations();_calibrationHeading.Children.Add(manage);
+        AutomationProperties.SetName(_calibrationEnabledBox,"校准");
+        _calibrationSection.Children.Add(_calibrationHeading);
+        _calibrationSection.Children.Add(_calibrationEnabledBox);
         StyleField(_calibrationBox);_calibrationBox.ItemsSource=_state.Calibrations;_calibrationBox.DisplayMemberPath="Name";
-        _calibrationBox.PlaceholderText="请选择校准文件";_calibrationFileRow.Child=_calibrationBox;_calibrationFileRow.Visibility=Visibility.Collapsed;
+        _calibrationBox.PlaceholderText="请选择校准文件";_calibrationFileRow.Child=_calibrationBox;_calibrationFileRow.Margin=new Thickness(0,2,0,0);_calibrationFileRow.Visibility=Visibility.Collapsed;
         _calibrationSection.Children.Add(_calibrationFileRow);
-        var manage=LinkButton("管理校准");manage.Click+=async(_,_)=>await ManageCalibrations();_calibrationSection.Children.Add(manage);
+        AutomationProperties.SetName(_calibrationBox,"校准文件");
         _inputPage.Children.Add(_calibrationSection);
         _calibrationEnabledBox.SelectionChanged+=async(_,_)=>
         {
@@ -331,14 +341,7 @@ public sealed class MainWindow : Window
         _fileHint.TextWrapping=TextWrapping.Wrap;_filePage.Children.Add(_fileHint);UpdateQuality();
     }
     private static StackPanel Label(string text,string glyph){var row=new StackPanel{Orientation=Orientation.Horizontal,Spacing=8,Height=20};row.Children.Add(Design.Icon(glyph,16,Design.Label));row.Children.Add(Design.Text(text,13,Design.Label));return row;}
-    private static StackPanel Group(string title,string glyph,UIElement field){var panel=new StackPanel{Spacing=8};panel.Children.Add(Label(title,glyph));panel.Children.Add(field);return panel;}
-    private static Grid CompactSetting(string title,string glyph,Control field)
-    {
-        var row=new Grid{Height=36,ColumnSpacing=12};
-        row.ColumnDefinitions.Add(new(){Width=new GridLength(76)});
-        row.ColumnDefinitions.Add(new(){Width=new GridLength(1,GridUnitType.Star)});
-        var label=Label(title,glyph);label.VerticalAlignment=VerticalAlignment.Center;row.Children.Add(label);Grid.SetColumn(field,1);row.Children.Add(field);return row;
-    }
+    private static StackPanel Group(string title,string glyph,UIElement field,double spacing=8){var panel=new StackPanel{Spacing=spacing};panel.Children.Add(Label(title,glyph));panel.Children.Add(field);return panel;}
     private Button LinkButton(string text)
     {
         var label=Design.Text(text,13);label.Foreground=_linkInk;
@@ -594,7 +597,7 @@ public sealed class MainWindow : Window
         }
         finally{_updatingCalibration=false;}
         ToolTipService.SetToolTip(_calibrationEnabledBox,CalibrationDescription());
-        ToolTipService.SetToolTip(_calibrationSection.Children[0],CalibrationDescription());
+        ToolTipService.SetToolTip(_calibrationHeading,CalibrationDescription());
     }
     private string CalibrationDescription()
     {
