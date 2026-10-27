@@ -51,6 +51,15 @@ public sealed class MainWindow : Window
     private readonly Grid _clockSlot=new(){HorizontalAlignment=HorizontalAlignment.Center,VerticalAlignment=VerticalAlignment.Center,Visibility=Visibility.Collapsed};
     private readonly SegmentedSelector _modeSelector,_paneSelector;
     private readonly ComboBox _recordModeBox=new();
+    private readonly ComboBox _inputFormatBox=new(),_calibrationEnabledBox=new();
+    private readonly StackPanel _calibrationSection=new(){Spacing=8};
+    private readonly Border _calibrationFileRow=new();
+    private readonly Grid _inputFormatGroup=new();
+    private InputFormatOptions? _inputFormats;
+    private string? _formatsDeviceId,_inputFormatViewKey,_formatError;
+    private int _formatQueryVersion;
+    private bool _updatingInputFormat,_formatsBusy;
+    private bool? _calibrationMotionEnabled;
     private readonly ComboBox _deviceBox=new(),_calibrationBox=new(),_formatBox=new(),_qualityBox=new();
     private readonly TextBox _path=new(){PlaceholderText="选择文件夹",MinWidth=0};
     private readonly StackPanel _qualityGroup=new(){Spacing=8};
@@ -58,13 +67,11 @@ public sealed class MainWindow : Window
     private readonly SolidColorBrush _linkInk=Design.Brush(Design.Link);
     private Storyboard? _widthAnimation;
     private bool _firstFrameLogged,_updatingForm,_started,_updatingCalibration;
-    private TextBlock? _calibrationDetails;
-    private string? _calibrationUiError;
+    private TextBlock? _managerError;
     private bool _audioBusy,_closing,_closeAllowed,_dialogOpen;
     private AudioRunState? _lastAudioState;
     private long _lastRawDecision;
     private string _lastAudioMessage="";
-    private readonly TextBlock _captureInfo=Design.Text("正在准备音频服务",11,Design.Muted);
     private readonly TextBlock _serviceNotice=Design.Text("",11,Design.Muted);
     private readonly bool _noCapture=Environment.GetCommandLineArgs().Contains("--no-capture");
     private int? _displayedNote;
@@ -200,7 +207,7 @@ public sealed class MainWindow : Window
                     catch(Exception error){StartupLog.Write("Device watcher unavailable: "+error);}
                     await LoadDevices(manual:false);
                 }
-                else _captureInfo.Text="诊断模式：未打开麦克风";
+                else StartupLog.Write("诊断模式：未打开麦克风");
                 CompositionTarget.Rendering+=OnRendering;
             }
             catch(Exception error){StartupLog.Write("Loaded failed: "+error);throw;}
@@ -259,33 +266,59 @@ public sealed class MainWindow : Window
         close.Width=32;close.Height=32;close.Padding=new Thickness(0);
         Grid.SetColumn(close,1);close.Click+=(_,_)=>TogglePane();top.Children.Add(close);
         _inspector.Children.Add(top);
-        var pages=new Grid{Padding=new Thickness(24,16,24,24)};
+        var pages=new Grid{Padding=new Thickness(24,12,24,12)};
         pages.Children.Add(_inputPage);pages.Children.Add(_filePage);_filePage.Visibility=Visibility.Collapsed;
         _inspector.Children.Add(pages);Grid.SetRow(pages,1);
-        _inputPage.Spacing=12;
+        // 384 DIP drawer = 48 header + 12 top + 306 settings + 18 bottom.
+        // Controls retain 36 DIP; short mode/enable choices share their label row.
+        _inputPage.Spacing=14;
         StyleField(_deviceBox);_deviceBox.ItemsSource=_state.Devices;_deviceBox.DisplayMemberPath="FriendlyName";
         _deviceBox.SelectionChanged+=async(_,_)=>
         {
             if(_updatingForm || _audioBusy || _deviceBox.SelectedItem is not InputDevice device)return;
             _state.SelectedInput=device;
             await AudioCommand(()=>_state.Audio.SelectDeviceAsync(new(device.Id,device.FriendlyName)));
+            await LoadInputFormats();
         };
-        var deviceGroup=Group("输入设备","\uE720",_deviceBox);
-        var refresh=LinkButton("刷新");ToolTipService.SetToolTip(refresh,"刷新输入设备并重新连接监看");refresh.Click+=async(_,_)=>await LoadDevices();deviceGroup.Children.Add(refresh);_inputPage.Children.Add(deviceGroup);
-        StyleField(_recordModeBox);
-        _recordModeBox.ItemsSource=new[]{"独占","不独占"};
+        var deviceGroup=new StackPanel{Spacing=0};
+        var deviceHeading=new Grid{Height=24};var deviceLabel=Label("输入设备","\uE720");deviceLabel.VerticalAlignment=VerticalAlignment.Center;deviceHeading.Children.Add(deviceLabel);
+        var refresh=LinkButton("刷新");refresh.HorizontalAlignment=HorizontalAlignment.Right;
+        ToolTipService.SetToolTip(refresh,"刷新输入设备并重新连接监看");refresh.Click+=async(_,_)=>await LoadDevices();deviceHeading.Children.Add(refresh);
+        deviceGroup.Children.Add(deviceHeading);
+        _deviceBox.Margin=new Thickness(0,6,0,0);deviceGroup.Children.Add(_deviceBox);
+        var formatTitle=Design.Text("输入格式",12,Design.Label);formatTitle.Height=16;formatTitle.Margin=new Thickness(0,8,0,0);deviceGroup.Children.Add(formatTitle);
+        StyleField(_inputFormatBox);_inputFormatBox.PlaceholderText="正在读取格式";
+        _inputFormatBox.Resources["ComboBoxForegroundDisabled"]=Design.Brush(Design.White);
+        _inputFormatBox.Margin=new Thickness(0,4,0,0);_inputFormatGroup.Children.Add(_inputFormatBox);deviceGroup.Children.Add(_inputFormatGroup);
+        _inputFormatBox.SelectionChanged+=async(_,_)=>
+        {
+            if(_updatingInputFormat||_audioBusy||_state.RecordMode!=RecordingMode.Exclusive||_inputFormatBox.SelectedItem is not ComboBoxItem item||!item.IsEnabled)return;
+            await AudioCommand(()=>_state.Audio.SetInputFormatAsync(item.Tag as AudioFormat));
+            _inputFormatViewKey=null;SyncInputFormat();
+        };
+        _inputPage.Children.Add(deviceGroup);
+        StyleField(_recordModeBox);_recordModeBox.ItemsSource=new[]{"独占","共享"};
         _recordModeBox.SelectedIndex=_state.RecordMode==RecordingMode.Exclusive?0:1;
-        _recordModeBox.SelectionChanged+=(_,_)=>SetRecordingMode(_recordModeBox.SelectedIndex==0?RecordingMode.Exclusive:RecordingMode.Shared);
-        _inputPage.Children.Add(Group("录制模式","\uE713",_recordModeBox));
-        _captureInfo.TextWrapping=TextWrapping.Wrap;_captureInfo.MaxHeight=64;_inputPage.Children.Add(_captureInfo);
-        var calibration=LinkButton("校准");calibration.Click+=async(_,_)=>await CalibrationSettings();_inputPage.Children.Add(calibration);
+        _recordModeBox.SelectionChanged+=(_,_)=>{SetRecordingMode(_recordModeBox.SelectedIndex==0?RecordingMode.Exclusive:RecordingMode.Shared);_inputFormatViewKey=null;SyncInputFormat();};
+        _inputPage.Children.Add(CompactSetting("录制模式","\uE713",_recordModeBox));
+        StyleField(_calibrationEnabledBox);_calibrationEnabledBox.ItemsSource=new[]{"启用","禁用"};
+        _calibrationSection.Children.Add(CompactSetting("校准","\uE9E9",_calibrationEnabledBox));
         StyleField(_calibrationBox);_calibrationBox.ItemsSource=_state.Calibrations;_calibrationBox.DisplayMemberPath="Name";
-        _calibrationBox.SelectedItem=_state.SelectedCalibration;
+        _calibrationBox.PlaceholderText="请选择校准文件";_calibrationFileRow.Child=_calibrationBox;_calibrationFileRow.Visibility=Visibility.Collapsed;
+        _calibrationSection.Children.Add(_calibrationFileRow);
+        var manage=LinkButton("管理校准");manage.Click+=async(_,_)=>await ManageCalibrations();_calibrationSection.Children.Add(manage);
+        _inputPage.Children.Add(_calibrationSection);
+        _calibrationEnabledBox.SelectionChanged+=async(_,_)=>
+        {
+            if(_updatingCalibration||_audioBusy)return;
+            await AudioCommand(()=>_state.Audio.SetCalibrationEnabledAsync(_calibrationEnabledBox.SelectedIndex==0));SyncCalibration();
+        };
         _calibrationBox.SelectionChanged+=async(_,_)=>
         {
-            if(_updatingCalibration||_calibrationBox.SelectedItem is not CalibrationFile file)return;
-            _calibrationUiError=null;await AudioCommand(()=>_state.Audio.SetCalibrationAsync(file.Id));SyncCalibration();
+            if(_updatingCalibration||_audioBusy||_calibrationBox.SelectedItem is not CalibrationFile file)return;
+            await AudioCommand(()=>_state.Audio.SetCalibrationAsync(file.Id));SyncCalibration();
         };
+        SyncCalibration();
         StyleField(_path);_path.VerticalContentAlignment=VerticalAlignment.Center;_path.Padding=new Thickness(12,8,12,8);_path.TextChanged+=(_,_)=>{_state.OutputPath=_path.Text;ToolTipService.SetToolTip(_path,_path.Text);};
         var pathRow=new Grid{ColumnSpacing=8};pathRow.ColumnDefinitions.Add(new(){Width=new GridLength(1,GridUnitType.Star)});pathRow.ColumnDefinitions.Add(new(){Width=new GridLength(36)});pathRow.Children.Add(_path);
         var browse=Design.Button(Design.Icon("\uE8B7",16,Design.White),"浏览保存文件夹",Design.Field);browse.Width=36;browse.Height=36;browse.CornerRadius=new(3);browse.Padding=new Thickness(0);Grid.SetColumn(browse,1);pathRow.Children.Add(browse);_configuration.Add(browse);browse.Click+=async(_,_)=>await BrowseFolder();
@@ -299,6 +332,13 @@ public sealed class MainWindow : Window
     }
     private static StackPanel Label(string text,string glyph){var row=new StackPanel{Orientation=Orientation.Horizontal,Spacing=8,Height=20};row.Children.Add(Design.Icon(glyph,16,Design.Label));row.Children.Add(Design.Text(text,13,Design.Label));return row;}
     private static StackPanel Group(string title,string glyph,UIElement field){var panel=new StackPanel{Spacing=8};panel.Children.Add(Label(title,glyph));panel.Children.Add(field);return panel;}
+    private static Grid CompactSetting(string title,string glyph,Control field)
+    {
+        var row=new Grid{Height=36,ColumnSpacing=12};
+        row.ColumnDefinitions.Add(new(){Width=new GridLength(76)});
+        row.ColumnDefinitions.Add(new(){Width=new GridLength(1,GridUnitType.Star)});
+        var label=Label(title,glyph);label.VerticalAlignment=VerticalAlignment.Center;row.Children.Add(label);Grid.SetColumn(field,1);row.Children.Add(field);return row;
+    }
     private Button LinkButton(string text)
     {
         var label=Design.Text(text,13);label.Foreground=_linkInk;
@@ -351,50 +391,64 @@ public sealed class MainWindow : Window
     }
     private async Task ManageCalibrations()
     {
-        if(_state.Session.Active)return;
-        // Management has no selection action; the input ComboBox owns the active calibration.
-        while(!_state.Session.Active)
+        if(_state.Session.Active||_dialogOpen)return;_dialogOpen=true;
+        try
         {
-            var rows=new StackPanel{Spacing=4};
-            void Rebuild()
+            while(!_state.Session.Active)
             {
-                rows.Children.Clear();
-                if(_calibrationUiError!=null)
+                _managerError=Design.Text("",12,Design.Alert);_managerError.TextWrapping=TextWrapping.Wrap;_managerError.Visibility=Visibility.Collapsed;
+                var list=new ListView{Height=160,SelectionMode=ListViewSelectionMode.None,IsItemClickEnabled=false,
+                    HorizontalContentAlignment=HorizontalAlignment.Stretch,Padding=new Thickness(0)};
+                ScrollViewer.SetHorizontalScrollBarVisibility(list,ScrollBarVisibility.Disabled);
+                ScrollViewer.SetVerticalScrollBarVisibility(list,ScrollBarVisibility.Auto);
+                void Rebuild()
                 {
-                    var error=Design.Text(_calibrationUiError,12,Design.Muted);error.TextWrapping=TextWrapping.Wrap;rows.Children.Add(error);
-                }
-                foreach(var file in _state.Calibrations.Where(file=>!string.IsNullOrWhiteSpace(file.Path)).ToArray())
-                {
-                    var row=new Grid{Height=40,Background=Design.Brush(Colors.Transparent)};
-                    row.ColumnDefinitions.Add(new(){Width=new GridLength(1,GridUnitType.Star)});
-                    row.ColumnDefinitions.Add(new(){Width=new GridLength(56)});
-                    var name=Design.Text(file.Name,13);name.Margin=new Thickness(12,0,8,0);
-                    name.TextTrimming=TextTrimming.CharacterEllipsis;ToolTipService.SetToolTip(name,file.Name+"\nSHA-256: "+file.Id);
-                    row.Children.Add(name);
-                    var remove=Design.Button(Design.Text("移除",12,Design.Muted),"移除校准文件："+file.Name,Colors.Transparent);
-                    remove.Height=32;remove.Padding=new Thickness(6,0,6,0);remove.Opacity=0;
-                    Grid.SetColumn(remove,1);row.Children.Add(remove);
-                    var hovered=false;
-                    row.PointerEntered+=(_,_)=>{hovered=true;remove.Opacity=1;};
-                    row.PointerExited+=(_,_)=>{hovered=false;if(remove.FocusState==FocusState.Unfocused)remove.Opacity=0;};
-                    remove.GotFocus+=(_,_)=>remove.Opacity=1;
-                    remove.LostFocus+=(_,_)=>{if(!hovered)remove.Opacity=0;};
-                    remove.Click+=async(_,_)=>
+                    list.Items.Clear();
+                    foreach(var file in _state.Calibrations.ToArray())
                     {
-                        if(_state.Session.Active)return;
-                        await AudioCommand(()=>_state.Audio.RemoveCalibrationAsync(file.Id!));SyncCalibration();Rebuild();
-                    };
-                    rows.Children.Add(row);
+                        var row=new Grid{Height=40,ColumnSpacing=8,Padding=new Thickness(12,0,8,0)};
+                        row.ColumnDefinitions.Add(new(){Width=new GridLength(1,GridUnitType.Star)});
+                        row.ColumnDefinitions.Add(new(){Width=new GridLength(56)});
+                        var name=Design.Text(file.Name,13);name.TextTrimming=TextTrimming.CharacterEllipsis;
+                        ToolTipService.SetToolTip(name,file.Path);row.Children.Add(name);
+                        var remove=new Button{Content="移除",Height=28,MinHeight=0,MinWidth=0,Padding=new Thickness(8,0,8,0),
+                            CornerRadius=new CornerRadius(4),Foreground=Design.Brush(Design.White),Background=Design.Brush(Design.Hex("3A3A3D")),
+                            BorderThickness=new Thickness(1),BorderBrush=Design.Brush(Design.Hex("555559")),FontSize=12,
+                            VerticalAlignment=VerticalAlignment.Center,HorizontalAlignment=HorizontalAlignment.Stretch,Opacity=0,IsHitTestVisible=false};
+                        remove.Resources["ButtonBackgroundPointerOver"]=Design.Brush(Design.Field);
+                        remove.Resources["ButtonBackgroundPressed"]=Design.Brush(Design.Hex("303033"));
+                        ToolTipService.SetToolTip(remove,"移除校准文件");AutomationProperties.SetName(remove,"移除校准文件："+file.Name);
+                        Grid.SetColumn(remove,1);row.Children.Add(remove);
+                        var item=new ListViewItem{Content=row,Padding=new Thickness(0),MinHeight=40,CornerRadius=new CornerRadius(4),HorizontalContentAlignment=HorizontalAlignment.Stretch};
+                        item.Resources["ListViewItemBackgroundPointerOver"]=Design.Brush(Design.Selected);
+                        item.Resources["ListViewItemBackgroundSelected"]=Design.Brush(Design.Selected);
+                        item.Resources["ListViewItemBackgroundSelectedPointerOver"]=Design.Brush(Design.Selected);
+                        bool hovered=false;
+                        void ShowRemove(bool show){remove.Opacity=show?1:0;remove.IsHitTestVisible=show;}
+                        item.PointerEntered+=(_,_)=>{hovered=true;ShowRemove(true);};
+                        item.PointerExited+=(_,_)=>{hovered=false;if(remove.FocusState==FocusState.Unfocused&&item.FocusState==FocusState.Unfocused)ShowRemove(false);};
+                        item.GotFocus+=(_,_)=>ShowRemove(true);
+                        item.LostFocus+=(_,_)=>{if(!hovered&&remove.FocusState==FocusState.Unfocused&&item.FocusState==FocusState.Unfocused)ShowRemove(false);};
+                        remove.GotFocus+=(_,_)=>ShowRemove(true);
+                        remove.LostFocus+=(_,_)=>{if(!hovered)ShowRemove(false);};
+                        remove.Click+=async(_,_)=>
+                        {
+                            if(_state.Session.Active||_audioBusy)return;
+                            _managerError.Visibility=Visibility.Collapsed;
+                            await AudioCommand(()=>_state.Audio.RemoveCalibrationAsync(file.Id!));SyncCalibration();Rebuild();
+                        };
+                        list.Items.Add(item);
+                    }
+                    if(list.Items.Count==0)list.Items.Add(new ListViewItem{Content=Design.Text("尚未添加校准文件",13,Design.Muted),IsEnabled=false});
                 }
-                if(rows.Children.Count==0)rows.Children.Add(Design.Text("尚未添加校准文件",13,Design.Muted));
+                SyncCalibration();Rebuild();var content=new StackPanel{Spacing=8};content.Children.Add(_managerError);content.Children.Add(list);
+                var dialog=new ContentDialog{XamlRoot=_root.XamlRoot,Title="已添加的校准",Content=content,
+                    PrimaryButtonText="添加校准",CloseButtonText="关闭",RequestedTheme=ElementTheme.Dark};
+                if(await dialog.ShowAsync()!=ContentDialogResult.Primary)return;
+                _managerError=null;await AddCalibration(selectAdded:false);
             }
-            Rebuild();
-            var list=new ScrollViewer{Content=rows,Height=160,HorizontalScrollBarVisibility=ScrollBarVisibility.Disabled,VerticalScrollBarVisibility=ScrollBarVisibility.Auto};
-            var dialog=new ContentDialog{XamlRoot=_root.XamlRoot,Title="已添加的校准",Content=list,PrimaryButtonText="添加校准",CloseButtonText="关闭",RequestedTheme=ElementTheme.Dark};
-            if(await dialog.ShowAsync()!=ContentDialogResult.Primary)return;
-            // Close the modal before invoking the native picker; restore management afterwards.
-            await AddCalibration(selectAdded:false);
         }
+        finally{_dialogOpen=false;_managerError=null;}
     }
     private async Task Message(string title,string text){await new ContentDialog{XamlRoot=_root.XamlRoot,Title=title,Content=text,CloseButtonText="关闭",RequestedTheme=ElementTheme.Dark}.ShowAsync();}
     private void Tick()
@@ -403,22 +457,20 @@ public sealed class MainWindow : Window
         var status=_state.Audio.Status;
         if(status.State!=_lastAudioState){_lastAudioState=status.State;RefreshSession(true);}
         RefreshValues();_clock.Text=_state.Session.DisplayTime;
-        _stopButton.IsEnabled=!_audioBusy && status.State is AudioRunState.Monitoring or AudioRunState.Preparing or AudioRunState.Recording or AudioRunState.Paused;
+        _stopButton.IsEnabled=!_audioBusy && (status.State is AudioRunState.Preparing or AudioRunState.Recording or AudioRunState.Paused || status.State==AudioRunState.Monitoring&&_state.Audio.CalibrationReadyToRecord);
         _discardButton.IsEnabled=!_audioBusy && status.State==AudioRunState.Paused;
         _pauseButton.IsEnabled=!_audioBusy && status.State is AudioRunState.Recording or AudioRunState.Paused;
         var capture=status.Capture;
         _inputName.SetChannels(capture?.Format.Channels??0);
-        _captureInfo.Text=capture==null?(_noCapture?"诊断模式：未打开麦克风":_state.Devices.Count==0?"未找到可用输入设备；接入设备后自动恢复监看。":status.Message):
-            $"{(capture.Exclusive?"独占":"共享")} · {(capture.Raw?"RAW 请求已接受":"普通输入（本次许可）")}\n{capture.Format.Description}\n待机与停止后使用共享监看。";
-        ToolTipService.SetToolTip(_captureInfo,_captureInfo.Text+"\n"+status.Message+"\n"+CalibrationDescription());
-        SyncCalibration();
+        SyncCalibration();SyncInputFormat();
         if(status.Message!=_lastAudioMessage)
         {
             _lastAudioMessage=status.Message;StartupLog.Write("Audio: "+status.State+" / "+status.Message);
-            _serviceNotice.Text=status.State is AudioRunState.Faulted or AudioRunState.Stopped || status.FilePath!=null && ! _state.Session.Active
+            _serviceNotice.Text=status.State==AudioRunState.Monitoring&&!_state.Audio.CalibrationReadyToRecord
+                ?"校准尚未生效，请选择有效文件或禁用校准。":status.State is AudioRunState.Faulted or AudioRunState.Stopped || status.FilePath!=null && ! _state.Session.Active
                 ?status.Message:status.State==AudioRunState.Monitoring && _state.Audio.Latest.RecoveredDiscontinuities>0
                 ?$"监看已恢复（短暂不连续 {_state.Audio.Latest.RecoveredDiscontinuities} 次）":"";
-            ToolTipService.SetToolTip(_serviceNotice,status.Message+(status.FilePath==null?"":"\n"+status.FilePath));
+            ToolTipService.SetToolTip(_serviceNotice,status.Message+(status.FilePath==null?"":"\n"+status.FilePath)+(_state.Audio.CalibrationReadyToRecord?"":"\n"+CalibrationDescription()));
         }
         _=CheckRawDecision();
         bool minimized=AppWindow.Presenter is OverlappedPresenter{State:OverlappedPresenterState.Minimized};
@@ -431,8 +483,8 @@ public sealed class MainWindow : Window
         _stopButton.IsEnabled=false;_pauseButton.IsEnabled=false;_discardButton.IsEnabled=false;
         foreach(var control in _configuration)control.IsEnabled=false;
         try{await command();}
-        catch(Exception error){StartupLog.Write("Audio command: "+error);if(_dialogOpen&&_calibrationDetails!=null)_calibrationUiError=AudioEngine.Friendly(error);else await Message("音频服务",AudioEngine.Friendly(error));}
-        finally{_audioBusy=false;_state.Refresh();RefreshSession(true);RefreshValues();}
+        catch(Exception error){StartupLog.Write("Audio command: "+error);if(_dialogOpen&&_managerError!=null){_managerError.Text=AudioEngine.Friendly(error);_managerError.Visibility=Visibility.Visible;}else await Message("音频服务",AudioEngine.Friendly(error));}
+        finally{_audioBusy=false;_state.Refresh();RefreshSession(true);RefreshValues();SyncCalibration();SyncInputFormat();}
     }
     private void SetRecordingMode(RecordingMode mode)
     {
@@ -506,6 +558,7 @@ public sealed class MainWindow : Window
             finally{_updatingForm=false;}
             _state.SelectedInput=selected==null?new("","未选择输入设备"):new(selected.Id,selected.Name);
         });
+        if(!_state.Session.Active&&(manual||_formatsDeviceId!=_state.Audio.SelectedDevice?.Id||_inputFormats==null))await LoadInputFormats();
     }
     private async Task CheckRawDecision()
     {
@@ -523,35 +576,89 @@ public sealed class MainWindow : Window
     }
     private void SyncCalibration()
     {
+        if(_calibrationMotionEnabled!=_settings.AnimationsEnabled)
+        {
+            _calibrationMotionEnabled=_settings.AnimationsEnabled;
+            _calibrationSection.ChildrenTransitions=_settings.AnimationsEnabled?new TransitionCollection{new RepositionThemeTransition()}:new TransitionCollection();
+            _calibrationFileRow.Transitions=_settings.AnimationsEnabled?new TransitionCollection{new EntranceThemeTransition{IsStaggeringEnabled=false}}:new TransitionCollection();
+        }
         _updatingCalibration=true;
-        try{_state.RefreshCalibrations();_calibrationBox.SelectedItem=_state.SelectedCalibration;}
+        try
+        {
+            _state.RefreshCalibrations();var choice=_state.Audio.CalibrationSelection;
+            _calibrationEnabledBox.SelectedIndex=choice.Enabled?0:1;
+            _calibrationBox.SelectedItem=_state.SelectedCalibration;
+            _calibrationBox.PlaceholderText=_state.Calibrations.Count==0?"请先添加校准文件":"请选择校准文件";
+            _calibrationFileRow.Visibility=choice.Enabled?Visibility.Visible:Visibility.Collapsed;
+            _calibrationBox.IsEnabled=choice.Enabled&&_state.Calibrations.Count>0&&!_state.Session.Active&&!_audioBusy;
+        }
         finally{_updatingCalibration=false;}
-        if(_calibrationDetails!=null)_calibrationDetails.Text=CalibrationDescription();
+        ToolTipService.SetToolTip(_calibrationEnabledBox,CalibrationDescription());
+        ToolTipService.SetToolTip(_calibrationSection.Children[0],CalibrationDescription());
     }
     private string CalibrationDescription()
     {
-        var status=_state.Audio.Calibration;
-        string details=status.Applied?$"{status.Name}\n频响补偿已应用于全部 {status.Channels} 声道、全部仪表及 WAV。\n固定处理延迟 {status.LatencyMs:0.0} ms · 拟合误差 {status.MaximumFitErrorDb:0.000} dB":"未应用频响校准。";
+        var status=_state.Audio.Calibration;var choice=_state.Audio.CalibrationSelection;
+        string details=status.Applied?$"{status.Name}\n频响补偿已应用于全部 {status.Channels} 声道、全部仪表及 WAV。\n固定处理延迟 {status.LatencyMs:0.0} ms · 拟合误差 {status.MaximumFitErrorDb:0.000} dB":choice.Enabled?"校准尚未生效，请选择有效文件。":"校准已禁用；保留上次文件选择。";
         if(status.Applied)details+=$"\n频段 {status.MinimumHz:0.###}～{status.MaximumHz:0.###} Hz";
-        return (_calibrationUiError==null?"":_calibrationUiError+"\n\n")+details+"\n"+status.Notice+"\n录制和暂停期间配置锁定；文件记录麦克风响应，处理时反向补偿。";
+        return details+"\n"+status.Notice+"\n录制和暂停期间配置锁定；文件记录麦克风响应，处理时反向补偿。";
     }
-    private async Task CalibrationSettings()
+    private async Task LoadInputFormats()
     {
-        if(_dialogOpen)return;_dialogOpen=true;
+        int version=++_formatQueryVersion;var device=_state.Audio.SelectedDevice;
+        _formatsDeviceId=device?.Id;_inputFormats=null;_formatError=null;_formatsBusy=device!=null;_inputFormatViewKey=null;SyncInputFormat();
+        if(device==null||_noCapture){_formatsBusy=false;SyncInputFormat();return;}
         try
         {
-            SyncCalibration();
-            var content=new StackPanel{Spacing=8};
-            _calibrationDetails=Design.Text(CalibrationDescription(),12,Design.Muted);_calibrationDetails.TextWrapping=TextWrapping.Wrap;_calibrationDetails.MaxWidth=420;
-            content.Children.Add(_calibrationDetails);
-            content.Children.Add(_calibrationBox);
-            var dialog=new ContentDialog{XamlRoot=_root.XamlRoot,Title="校准",Content=content,
-                PrimaryButtonText="添加校准",SecondaryButtonText="管理已添加的校准",CloseButtonText="关闭",RequestedTheme=ElementTheme.Dark};
-            var result=await dialog.ShowAsync();content.Children.Remove(_calibrationBox);
-            if(result==ContentDialogResult.Primary)await AddCalibration();
-            else if(result==ContentDialogResult.Secondary)await ManageCalibrations();
+            var options=await _state.Audio.QueryInputFormatsAsync();
+            if(version==_formatQueryVersion&&device.Id==_state.Audio.SelectedDevice?.Id)_inputFormats=options;
         }
-        finally{_dialogOpen=false;_calibrationDetails=null;}
+        catch(Exception e)
+        {
+            StartupLog.Write("Input format query: "+e);
+            if(version==_formatQueryVersion)_formatError="输入格式读取失败："+AudioEngine.Friendly(e);
+        }
+        finally{if(version==_formatQueryVersion){_formatsBusy=false;_inputFormatViewKey=null;SyncInputFormat();}}
+    }
+    private static string FormatName(AudioFormat format)=>$"{format.Channels} 声道 · {(format.Encoding==PcmEncoding.Float?"float32":format.ValidBits==format.Bits?$"{format.ValidBits} bit":$"{format.ValidBits}/{format.Bits} bit")} · {format.SampleRate/1000d:0.###} kHz";
+    private void SyncInputFormat()
+    {
+        var audio=_state.Audio;bool shared=_state.RecordMode==RecordingMode.Shared;
+        var actual=audio.Status.Capture;
+        var live=actual is{Exclusive:false}?actual.Format:_inputFormats?.Shared;
+        var preferred=audio.PreferredInputFormat;
+        string key=$"{shared}|{_formatsDeviceId}|{_formatsBusy}|{_inputFormats?.GetHashCode()}|{live}|{preferred}|{actual?.Exclusive}|{actual?.Raw}|{_formatError}";
+        bool available=audio.SelectedDevice!=null&&!_formatsBusy;
+        _inputFormatBox.IsEnabled=!shared&&available&&_inputFormats!=null&&!_audioBusy&&!_state.Session.Active;
+        if(key==_inputFormatViewKey)return;_inputFormatViewKey=key;_updatingInputFormat=true;
+        try
+        {
+            _inputFormatBox.Items.Clear();_inputFormatBox.PlaceholderText=_formatsBusy?"正在读取格式":"无法读取输入格式";
+            if(shared)
+            {
+                if(live!=null){_inputFormatBox.Items.Add(new ComboBoxItem{Content=FormatName(live)});_inputFormatBox.SelectedIndex=0;}
+            }
+            else if(_inputFormats!=null)
+            {
+                var auto=new ComboBoxItem{Content="自动（设备推荐）"};_inputFormatBox.Items.Add(auto);ComboBoxItem selected=auto;
+                foreach(var format in _inputFormats.Exclusive)
+                {
+                    var item=new ComboBoxItem{Content=FormatName(format),Tag=format};ToolTipService.SetToolTip(item,format.Description);_inputFormatBox.Items.Add(item);
+                    if(preferred==format)selected=item;
+                }
+                if(preferred!=null&&!_inputFormats.Exclusive.Contains(preferred))
+                {selected=new ComboBoxItem{Content="所选格式已不可用",Tag=preferred,IsEnabled=false};_inputFormatBox.Items.Add(selected);}
+                _inputFormatBox.SelectedItem=selected;
+            }
+        }
+        finally{_updatingInputFormat=false;}
+        string explanation=shared?"共享模式沿用 Windows 当前格式；请在 Windows 设置中更改系统格式。":"此处选择独占录制的目标格式；待机和停止后仍为共享监看。自动以外的选择不会静默改用其他格式。";
+        if(!shared)explanation+="\n独占录制设置："+(preferred?.Description??"自动（设备推荐）");
+        if(actual!=null)explanation+=$"\n当前实际{(actual.Exclusive?"独占":"共享")} · {actual.Format.Description} · {(actual.Raw?"RAW 请求已接受":"普通输入（仅本次许可）")}";
+        else explanation+="\n当前没有有效监看输入；若显示格式，它是最近查询的系统格式，不代表正在采集。";
+        if(audio.InputFormats.Warning!=null)explanation+="\n"+audio.InputFormats.Warning;
+        if(_formatError!=null)explanation+="\n"+_formatError;
+        ToolTipService.SetToolTip(_inputFormatGroup,explanation);ToolTipService.SetToolTip(_inputFormatBox,explanation);
     }
     private void RefreshValues()
     {
@@ -608,7 +715,7 @@ public sealed class MainWindow : Window
         _inputName.SetRecording(active,animate);
         if(active)DispatcherQueue.TryEnqueue(LogClockCenters);
         foreach(var control in _configuration)control.IsEnabled=!active && !_audioBusy;
-        UpdateQuality();
+        SyncCalibration();SyncInputFormat();UpdateQuality();
         _stopButton.CornerRadius=active?new CornerRadius(0,5,5,0):new CornerRadius(5);
         AutomationProperties.SetName(_stopButton,active?"停止录制":"开始录制");
         ToolTipService.SetToolTip(_stopButton,active?"停止录制":"开始录制");

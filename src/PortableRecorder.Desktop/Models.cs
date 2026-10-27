@@ -30,9 +30,9 @@ public sealed class ShellViewModel:INotifyPropertyChanged
     public AudioEngine Audio {get;}=new();
     public TransportSession Session {get;}=new();
     public ObservableCollection<InputDevice> Devices {get;}=[];
-    public ObservableCollection<CalibrationFile> Calibrations {get;}=[new("","不使用校准")];
+    public ObservableCollection<CalibrationFile> Calibrations {get;}=[];
     public InputDevice SelectedInput {get;set;}=new("","未选择输入设备");
-    public CalibrationFile SelectedCalibration {get;set;}
+    public CalibrationFile? SelectedCalibration {get;set;}
     public MonitorMode Mode {get;set;}
     public RecordingMode RecordMode {get;set;}=RecordingPreferences.Load();
     public double GainDb {get;private set;}
@@ -45,14 +45,14 @@ public sealed class ShellViewModel:INotifyPropertyChanged
     public double MonitorTime {get;private set;}
     private long _epoch=-1,_pitchFrame=-1;
     private int _segment=-1;
-        public ShellViewModel(){SelectedCalibration=Calibrations[0];RefreshCalibrations();}
+    public ShellViewModel()=>RefreshCalibrations();
     public void RefreshCalibrations()
     {
-        string? selected=Audio.SelectedDevice is { } device?Audio.Calibrations.SelectedId(device.Id):null;
+        string? selected=Audio.CalibrationSelection.ProfileId;
         var entries=Audio.Calibrations.Entries;
         foreach(var old in Calibrations.Where(c=>c.Id!=null&&!entries.Any(e=>e.Id==c.Id)).ToArray())Calibrations.Remove(old);
-        foreach(var entry in entries)if(!Calibrations.Any(c=>c.Id==entry.Id))Calibrations.Add(new(entry.Id,entry.Name,entry.Id));
-        SelectedCalibration=Calibrations.FirstOrDefault(c=>c.Id==selected)??Calibrations[0];
+        foreach(var entry in entries)if(!Calibrations.Any(c=>c.Id==entry.Id))Calibrations.Add(new(Audio.Calibrations.GetLocalPath(entry.Id),entry.Name,entry.Id));
+        SelectedCalibration=Calibrations.FirstOrDefault(c=>c.Id==selected);
     }
     public void SetGain(double db)
     {
