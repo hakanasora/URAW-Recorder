@@ -65,11 +65,11 @@ public sealed class MainWindow : Window
     private bool? _calibrationMotionEnabled;
     private readonly ComboBox _deviceBox=new(),_calibrationBox=new(),_formatBox=new(),_qualityBox=new();
     private readonly TextBox _path=new(){PlaceholderText="选择文件夹",MinWidth=0};
-    private readonly StackPanel _qualityGroup=new(){Spacing=8};
+    private readonly StackPanel _qualityGroup=new(){Spacing=0};
     private EncodingPreferences _encodingPreferences=EncodingPreferences.Load();
     private RecordingCodec? _qualityCodec;
     private bool _updatingQuality;
-    private readonly TextBlock _qualityTitle=Design.Text("压缩等级",13,Design.Label);
+    private readonly TextBlock _qualityTitle=Design.Text("压缩等级",12,Design.Muted);
     private readonly List<Control> _configuration=[];
     private readonly SolidColorBrush _linkInk=Design.Brush(Design.Link);
     private Storyboard? _widthAnimation;
@@ -360,9 +360,9 @@ public sealed class MainWindow : Window
         _formatBox.Items.Add(new ComboBoxItem{Content="FLAC · 24 位 PCM",Tag="FLAC"});
         _formatBox.Items.Add(new ComboBoxItem{Content="MP3 · LAME VBR",Tag="MP3"});_formatBox.SelectedIndex=(int)_encodingPreferences.Codec;
         _formatBox.SelectionChanged+=(_,_)=>{if(_formatBox.SelectedIndex<0)return;_encodingPreferences=_encodingPreferences with{Codec=(RecordingCodec)_formatBox.SelectedIndex};SaveEncoding();UpdateQuality();};
-        _filePage.Children.Add(Group("录制格式","\uE8A5",_formatBox));
-        StyleField(_qualityBox);var qualityHeading=Label("压缩等级","\uE713");qualityHeading.Children.RemoveAt(1);qualityHeading.Children.Add(_qualityTitle);
-        _qualityGroup.Children.Add(qualityHeading);_qualityGroup.Children.Add(_qualityBox);_filePage.Children.Add(_qualityGroup);
+        var recordingFormatGroup=Group("录制格式","\uE8A5",_formatBox);_filePage.Children.Add(recordingFormatGroup);
+        StyleField(_qualityBox);_qualityTitle.Height=16;_qualityBox.Margin=new Thickness(0,4,0,0);
+        _qualityGroup.Children.Add(_qualityTitle);_qualityGroup.Children.Add(_qualityBox);recordingFormatGroup.Children.Add(_qualityGroup);
         _qualityBox.SelectionChanged+=(_,_)=>
         {
             if(_updatingQuality||_qualityBox.SelectedItem is not ComboBoxItem item||item.Tag is not int value)return;
@@ -404,6 +404,7 @@ public sealed class MainWindow : Window
         var codec=_encodingPreferences.Codec;_state.Encoding=_encodingPreferences.Encoding;
         _qualityGroup.Visibility=codec==RecordingCodec.Wav?Visibility.Collapsed:Visibility.Visible;
         _qualityTitle.Text=codec==RecordingCodec.Mp3?"压缩品质":"压缩等级";
+        AutomationProperties.SetName(_qualityBox,_qualityTitle.Text);
         if(codec!=RecordingCodec.Wav&&_qualityCodec!=codec)
         {
             _updatingQuality=true;
