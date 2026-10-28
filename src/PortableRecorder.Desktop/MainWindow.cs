@@ -260,7 +260,9 @@ public sealed class MainWindow : Window
     }
     private void BuildReadouts()
     {
-        _level.RenderTransform=new TranslateTransform{Y=-14};
+        // Match the whole pitch block (note + Hz + cents ruler) optical center, not the monitor center:
+        // the pitch composition centers near 114.5 DIP; the 142 DIP level block centers there at -4.
+        _level.RenderTransform=new TranslateTransform{Y=-4};
         _level.Width=200;_level.Margin=new Thickness(28,0,0,0);_level.HorizontalAlignment=HorizontalAlignment.Left;_level.VerticalAlignment=VerticalAlignment.Center;
         var row=new StackPanel{Orientation=Orientation.Horizontal,Spacing=4,Height=72};_number.FontWeight=FontWeights.Bold;_number.CharacterSpacing=-20;row.Children.Add(_minus);row.Children.Add(_number);_level.Children.Add(row);
         var units=Design.Text("dBFS · RMS",12,Design.Muted);units.Height=16;units.Margin=new Thickness(0,10,0,0);_level.Children.Add(units);
