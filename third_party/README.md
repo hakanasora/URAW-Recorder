@@ -9,3 +9,7 @@ Existing desktop dependencies remain pinned: Windows App SDK 2.5.1 and Win2D 1.4
 - Calibration file semantics follow the public REW documentation: https://www.roomeqwizard.com/betahelp/help/html/calfiles.html . No REW source code copied. GSonic Reference public workflow was reviewed (https://github.com/ObsessiveCompulsiveAudiophile/GSonic); its proprietary license is incompatible with treating it as a reusable DSP module, so no GSonic code or binary is included.
 
 - FFmpeg / LAME: pinned LGPL Windows encoder executable, isolated child process, FLAC and MP3 recording. Version, SHA256, sources, license texts and exact build configuration are in [ffmpeg/README.md](ffmpeg/README.md). No application FFT or measurement path is replaced.
+
+## 数字字体研究资源（2026-10-28）
+
+原生样张中的 IBM Plex Sans 和 Barlow SemiBold 按 SIL OFL 1.1 分发；字体与完整许可证在 `src/PortableRecorder.Desktop/Assets/TypeStudy/`，发布时一并复制。Bahnschrift 和 Segoe 仅引用 Windows 已有字体，不分发系统字体。来源与用途见 `docs/design/typography/README.md`。

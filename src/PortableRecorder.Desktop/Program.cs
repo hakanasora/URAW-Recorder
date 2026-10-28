@@ -35,7 +35,7 @@ public sealed partial class RecorderApp : Application
     protected override void OnLaunched(LaunchActivatedEventArgs args)
     {
         StartupLog.Write("OnLaunched");
-        try { _window = new MainWindow(); StartupLog.Write("Window constructed"); _window.Activate(); StartupLog.Write("Window activated"); }
+        try { _window = Environment.GetCommandLineArgs().Contains("--type-study") ? new TypeStudyWindow() : new MainWindow(); StartupLog.Write("Window constructed"); _window.Activate(); StartupLog.Write("Window activated"); }
         catch(Exception error){StartupLog.Write("Window failed: "+error);throw;}
     }
 }
