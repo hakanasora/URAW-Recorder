@@ -5,6 +5,8 @@ using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Automation.Peers;
 using Microsoft.UI.Xaml.Automation.Provider;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Documents;
+using Microsoft.UI.Text;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Markup;
@@ -34,7 +36,13 @@ public sealed class GainControl : UserControl
     private double _lastGain=double.NaN;
     public GainControl(ShellViewModel state)
     {
-        _state=state; Width=96; Height=44; IsTabStop=true; TabIndex=4;
+        _state=state;
+        var figures=new FontFamily("ms-appx:///Assets/TypeStudy/Barlow-SemiBold.ttf#Barlow SemiBold");
+        _number.FontFamily=figures;_number.FontWeight=FontWeights.SemiBold;
+        _editor.FontFamily=figures;_editor.FontWeight=FontWeights.SemiBold;
+        Typography.SetNumeralAlignment(_number,FontNumeralAlignment.Tabular);
+        Typography.SetNumeralAlignment(_editor,FontNumeralAlignment.Tabular);
+        Width=96; Height=44; IsTabStop=true; TabIndex=4;
         AutomationProperties.SetName(this,"软件增益");
         ToolTipService.SetToolTip(this,"单击数字输入；旋钮上拖增加、下拖衰减；Shift 精调；双击旋钮归零");
         var root=new Grid{Background=Design.Brush(Microsoft.UI.Colors.Transparent)};

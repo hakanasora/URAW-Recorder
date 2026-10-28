@@ -974,7 +974,7 @@ public sealed class MainWindow : Window
     private void ApplyTypography(bool alternate)
     {
         _alternateTypography=alternate;
-        var level=new FontFamily(alternate?"Bahnschrift":"ms-appx:///Assets/TypeStudy/IBMPlexSans.ttf#IBM Plex Sans");
+        var level=new FontFamily(alternate?"Bahnschrift":"ms-appx:///Assets/TypeStudy/Barlow-SemiBold.ttf#Barlow SemiBold");
         var pitch=new FontFamily(alternate?"Bahnschrift":"ms-appx:///Assets/TypeStudy/Barlow-SemiBold.ttf#Barlow SemiBold");
         _number.FontFamily=level;_peak.FontFamily=level;
         _note.FontFamily=pitch;_frequency.FontFamily=pitch;_clock.FontFamily=pitch;
