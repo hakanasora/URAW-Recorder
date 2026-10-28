@@ -217,7 +217,7 @@ public sealed class MonitorRenderer : IDisposable
                 var f=freqs[i];ink.DrawLine(X(f),top,X(f),bottom,A(Design.Line,.78),.8f);
                 Text(ink,f>=1000?$"{f/1000}k":$"{f}",X(f)+(i==0?5:i==freqs.Length-1?-6:0),bottom+21,12,Design.Muted);
             }
-            Text(ink,"dBFS · 非线性",left+44,top-14,11,Design.Muted);
+            Text(ink,"dBFS",left+15,top-14,11,Design.Muted);
         }
         ds.DrawImage(_spectrumGrid);
         var frame=state.Snapshot.Spectrum;

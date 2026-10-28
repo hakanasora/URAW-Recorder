@@ -977,7 +977,7 @@ public sealed class MainWindow : Window
         var level=new FontFamily(alternate?"Bahnschrift":"ms-appx:///Assets/TypeStudy/Barlow-SemiBold.ttf#Barlow SemiBold");
         var pitch=new FontFamily(alternate?"Bahnschrift":"ms-appx:///Assets/TypeStudy/Barlow-SemiBold.ttf#Barlow SemiBold");
         _number.FontFamily=level;_peak.FontFamily=level;
-        _note.FontFamily=pitch;_frequency.FontFamily=pitch;_clock.FontFamily=pitch;
+        _note.FontFamily=pitch;_frequency.FontFamily=pitch;_clock.FontFamily=new FontFamily("Bahnschrift");
         foreach(var text in new[]{_number,_peak,_note,_frequency,_clock})
             Typography.SetNumeralAlignment(text,FontNumeralAlignment.Tabular);
     }
