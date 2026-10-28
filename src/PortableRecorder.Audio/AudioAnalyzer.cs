@@ -29,21 +29,21 @@ public sealed class SpectrumEstimator
 {
     private readonly Complex[] _fft;
     private readonly float[] _window;
-    private readonly double[] _smoothed;
+    private readonly double[] _smoothed,_powers;
     private readonly double _coherentGain;
     private bool _initialized;
     public int Size {get;}
     public double[] Frequencies {get;}
     public SpectrumEstimator(int size,int rate)
     {
-        Size=size;_fft=new Complex[size];_window=new float[size];_smoothed=new double[size/2+1];
+        Size=size;_fft=new Complex[size];_window=new float[size];_smoothed=new double[size/2+1];_powers=new double[size/2+1];
         for(int i=0;i<size;i++)_window[i]=(float)FastFourierTransform.HannWindow(i,size);
         _coherentGain=_window.Sum(x=>(double)x)/size;
         Frequencies=Enumerable.Range(0,size/2+1).Select(k=>k*(double)rate/size).ToArray();
     }
     public float[] Analyze(float[][] channels,double dt,bool smooth=true)
     {
-        var powers=new double[Size/2+1];
+        var powers=_powers;Array.Clear(powers);
         foreach(var input in channels)
         {
             for(int i=0;i<Size;i++){_fft[i].X=input[i]*_window[i];_fft[i].Y=0;}
@@ -55,12 +55,13 @@ public sealed class SpectrumEstimator
             }
         }
         var db=new float[powers.Length];
+        double rise=Math.Exp(-dt/.020),fall=Math.Exp(-dt/.250);
         for(int k=0;k<db.Length;k++)
         {
             double p=powers[k];
             if(smooth && _initialized)
             {
-                double coefficient=Math.Exp(-dt/(p>_smoothed[k]?.020:.250));
+                double coefficient=p>_smoothed[k]?rise:fall;
                 p=coefficient*_smoothed[k]+(1-coefficient)*p;
             }
             _smoothed[k]=p;db[k]=p>0?(float)(10*Math.Log10(p)):float.NegativeInfinity;
@@ -83,6 +84,7 @@ public sealed class AudioAnalyzer:IDisposable
     private readonly SpectrumEstimator _spectrum;
     private readonly PitchDetector _pitch;
     private readonly int _pitchSize;
+    private readonly double[] _channelEnergies;
     private readonly CancellationTokenSource _stop=new();
     private readonly Task _analysisTask;
     private readonly Queue<double> _pitchMedian=new();
@@ -98,6 +100,7 @@ public sealed class AudioAnalyzer:IDisposable
         _vu=Enumerable.Range(0,Math.Min(format.Channels,2)).Select(_=>new VuDetector(format.SampleRate)).ToArray();
         _ring=Enumerable.Range(0,format.Channels).Select(_=>new float[size]).ToArray();
         _work=Enumerable.Range(0,format.Channels).Select(_=>new float[size]).ToArray();
+        _channelEnergies=new double[format.Channels];
         _spectrum=new(size,format.SampleRate);_pitch=new(_pitchSize);
         _analysisTask=background?Task.Run(Loop):Task.CompletedTask;
     }
@@ -152,9 +155,12 @@ public sealed class AudioAnalyzer:IDisposable
             if(frame==0 || frame-_lastSpectrum<_format.SampleRate/60)return;
             for(int c=0;c<_work.Length;c++)
             {
-                Array.Clear(_work[c]);int length=Math.Min(count,_spectrum.Size);
+                int length=Math.Min(count,_spectrum.Size),padding=_spectrum.Size-length;
+                _work[c].AsSpan(0,padding).Clear();
                 int start=(_write-length+_spectrum.Size)%_spectrum.Size;
-                for(int i=0;i<length;i++)_work[c][_spectrum.Size-length+i]=_ring[c][(start+i)%_spectrum.Size];
+                int first=Math.Min(length,_spectrum.Size-start);
+                _ring[c].AsSpan(start,first).CopyTo(_work[c].AsSpan(padding));
+                _ring[c].AsSpan(0,length-first).CopyTo(_work[c].AsSpan(padding+first));
             }
         }
         SpectrumFrame? spectrum=null;double? frequency=Latest.FrequencyHz;double clarity=Latest.PitchClarity;long pitchFrame=Latest.PitchFramePosition;
@@ -163,7 +169,13 @@ public sealed class AudioAnalyzer:IDisposable
         _lastSpectrum=frame;
         if(count>=_pitchSize && frame-_lastPitch>=_format.SampleRate*.020)
         {
-            var energies=_work.Select(a=>a.AsSpan(a.Length-_pitchSize).ToArray().Sum(x=>(double)x*x)).ToArray();
+            var energies=_channelEnergies;
+            for(int c=0;c<_work.Length;c++)
+            {
+                double energy=0;
+                foreach(float x in _work[c].AsSpan(_spectrum.Size-_pitchSize))energy+=(double)x*x;
+                energies[c]=energy;
+            }
             int strongest=Array.IndexOf(energies,energies.Max());
             if(strongest!=_pitchChannel && energies[strongest]>energies[_pitchChannel]*Math.Pow(10,.3))
             {

@@ -56,6 +56,11 @@ static class MeasurementChecks
             var estimator=new SpectrumEstimator(n,48000);var db=estimator.Analyze([signal],1,false);
             Near(db[171],20*Math.Log10(peak),.05,"FFT coherent gain");Near(estimator.Frequencies[171],frequency,1e-10,"FFT Hz");
             var opposite=signal.Select(x=>-x).ToArray();var stereo=new SpectrumEstimator(n,48000).Analyze([signal,opposite],1,false);Near(stereo[171],db[171],.001,"Antiphase energy average");
+            var retained=db.ToArray();
+            var quiet=estimator.Analyze([new float[n]],1d/60);
+            Assert(db.SequenceEqual(retained),"Published spectrum remains immutable after scratch-buffer reuse");
+            double expected=10*Math.Log10(Math.Pow(10,retained[171]/10)*Math.Exp(-(1d/60)/.250));
+            Near(quiet[171],expected,.001,"Cached smoothing coefficient preserves power-domain release");
             var nonBin=Sine(48000,n,1000,.25);var off=new SpectrumEstimator(n,48000).Analyze([nonBin],1,false);var highest=Array.IndexOf(off,off.Max());Near(estimator.Frequencies[highest],1000,48000d/n,"Non-bin frequency");
             var twin=signal.Zip(Sine(48000,n,500*48000d/n,.125),(a,b)=>a+b).ToArray();var dual=new SpectrumEstimator(n,48000).Analyze([twin],1,false);Near(dual[171],20*Math.Log10(.25),.05,"Dual tone first");Near(dual[500],20*Math.Log10(.125),.05,"Dual tone second");
             var noise=new Random(123);var white=Enumerable.Range(0,n).Select(_=>(float)((noise.NextDouble()*2-1)*.1)).ToArray();Assert(new SpectrumEstimator(n,48000).Analyze([white],1,false).All(float.IsFinite),"Noise spectrum finite");

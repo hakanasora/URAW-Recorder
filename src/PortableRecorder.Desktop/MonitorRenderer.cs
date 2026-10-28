@@ -26,7 +26,12 @@ public sealed class MonitorRenderer : IDisposable
     private readonly CentsMotion _centsMotion=new();
     private CanvasRenderTarget? _needleGlow;
     private Vector2[] _fromSpectrum=[],_drawSpectrum=[];
-    private double _blendStarted;
+    private double _blendStarted,_blendDuration=.020;
+    private double[]? _projectionFrequencies;
+    private SpectrumBucket[] _buckets=[];
+    private readonly record struct SpectrumBucket(int First,int Stop,int Index,double Mix);
+    private float _bucketWidth;
+    private float _bucketHeight;
     private long _visualEpoch=-1;
     private int _visualSegment=-1;
     private bool _disposed;
@@ -74,7 +79,7 @@ public sealed class MonitorRenderer : IDisposable
         using var brush=new CanvasRadialGradientBrush(ds,stops){Center=center,RadiusX=rx,RadiusY=ry};
         ds.FillEllipse(center,rx,ry,brush);
     }
-    private CanvasRenderTarget Face(CanvasControl sender)
+    private CanvasRenderTarget Face(CanvasSwapChain sender)
     {
         if(_face!=null && _faceDpi==sender.Dpi) return _face;
         _face?.Dispose();_needleGlow?.Dispose();_needleGlow=null; _faceDpi=sender.Dpi;
@@ -141,7 +146,7 @@ public sealed class MonitorRenderer : IDisposable
         ds.DrawImage(dial);
         return _face;
     }
-    private void Vu(CanvasControl sender,CanvasDrawingSession ds,float x,float y,double value,string caption)
+    private void Vu(CanvasSwapChain sender,CanvasDrawingSession ds,float x,float y,double value,string caption)
     {
         ds.DrawImage(Face(sender),x,y);
         var a=Angle(Math.Clamp(value,-20,3));
@@ -163,7 +168,7 @@ public sealed class MonitorRenderer : IDisposable
             {Center=start-new Vector2(1.8f,2.2f),RadiusX=8,RadiusY=8}) ds.FillCircle(start,5.3f,hub);
         Text(ds,caption,x+130,y+175,12,Design.Muted);
     }
-    public void Draw(CanvasControl sender,CanvasDrawEventArgs args,ShellViewModel state)
+    public void Draw(CanvasSwapChain sender,CanvasDrawingSession ds,ShellViewModel state)
     {
         if(_disposed)return;
         double now=_visualClock.Elapsed.TotalSeconds;
@@ -175,8 +180,7 @@ public sealed class MonitorRenderer : IDisposable
         }
         _meterMotion.Push(sample,now);var vu=_meterMotion.Read(now,ReducedMotion);
         _timeline=_meterMotion.Timeline(now);
-        var ds=args.DrawingSession;
-        var width=(float)sender.ActualWidth; var height=(float)sender.ActualHeight;
+        var width=(float)sender.Size.Width; var height=(float)sender.Size.Height;
         ds.TextAntialiasing=CanvasTextAntialiasing.Grayscale;
         if(state.Mode==MonitorMode.Level)
         {
@@ -188,7 +192,7 @@ public sealed class MonitorRenderer : IDisposable
         else Pitch(sender,ds,state,width,height);
 
     }
-    private void Spectrum(CanvasControl sender,CanvasDrawingSession ds,ShellViewModel state,float w,float h)
+    private void Spectrum(CanvasSwapChain sender,CanvasDrawingSession ds,ShellViewModel state,float w,float h)
     {
         float left=288,right=w-28,top=24,bottom=h-40;
         float Y(double db)=>top+(float)SpectrumScale.LevelPosition(Math.Clamp(db,-96,0))*(bottom-top);
@@ -218,11 +222,13 @@ public sealed class MonitorRenderer : IDisposable
         ds.DrawImage(_spectrumGrid);
         var frame=state.Snapshot.Spectrum;
         if(!state.Snapshot.Valid || frame==null)return;
-        if(_projectedFrame!=frame || _projectionWidth!=w)
+        var hz=frame.FrequenciesHz;var levels=frame.Dbfs;
+        // The log-frequency projection depends on format and bounds, not signal level.
+        // Cache searches and powers instead of repeating them for every audio snapshot.
+        if(!ReferenceEquals(_projectionFrequencies,hz)||_bucketWidth!=w||_bucketHeight!=h)
         {
-            _projectedFrame=frame;_projectionWidth=w;
-            var points=new List<Vector2>();var hz=frame.FrequenciesHz;var db=frame.Dbfs;
-            int last=hz.Length-1;
+            _projectionFrequencies=hz;_bucketWidth=w;_bucketHeight=h;
+            var buckets=new List<SpectrumBucket>();int last=hz.Length-1;
             for(int pixel=0;pixel<=right-left;pixel++)
             {
                 double f=20*Math.Pow(1000,pixel/(double)(right-left));
@@ -231,24 +237,37 @@ public sealed class MonitorRenderer : IDisposable
                 double end=20*Math.Pow(1000,Math.Min(right-left,pixel+.5)/(right-left));
                 int first=Array.BinarySearch(hz,start);if(first<0)first=~first;
                 int stop=Array.BinarySearch(hz,end);if(stop<0)stop=~stop;
-                double level=double.NegativeInfinity;
-                if(stop>first)for(int k=first;k<Math.Min(stop,hz.Length);k++)level=Math.Max(level,db[k]);
+                int index=Array.BinarySearch(hz,f);if(index<0)index=~index;
+                index=Math.Clamp(index,1,last);
+                buckets.Add(new(first,Math.Min(stop,hz.Length),index,(f-hz[index-1])/(hz[index]-hz[index-1])));
+            }
+            _buckets=buckets.ToArray();_projectedFrame=null;
+        }
+        if(_projectedFrame!=frame || _projectionWidth!=w)
+        {
+            if(_projectedFrame is { } previous && frame.EndFrame>previous.EndFrame)
+                _blendDuration=Math.Clamp((frame.EndFrame-previous.EndFrame)/(hz[1]*frame.FftSize),.012,.060);
+            bool resize=_spectrumPoints.Length!=_buckets.Length;
+            if(resize){_spectrumPoints=new Vector2[_buckets.Length];_fromSpectrum=new Vector2[_buckets.Length];_drawSpectrum=new Vector2[_buckets.Length];}
+            else _drawSpectrum.CopyTo(_fromSpectrum,0);
+            for(int pixel=0;pixel<_buckets.Length;pixel++)
+            {
+                var bucket=_buckets[pixel];double level=double.NegativeInfinity;
+                if(bucket.Stop>bucket.First)
+                    for(int k=bucket.First;k<bucket.Stop;k++)level=Math.Max(level,levels[k]);
                 else
                 {
-                    int index=Array.BinarySearch(hz,f);if(index<0)index=~index;
-                    index=Math.Clamp(index,1,last);
                     // Power interpolation between real FFT points: no spline overshoot.
-                    double mix=(f-hz[index-1])/(hz[index]-hz[index-1]);
-                    double power=(1-mix)*Math.Pow(10,db[index-1]/10d)+mix*Math.Pow(10,db[index]/10d);
+                    double power=(1-bucket.Mix)*Math.Pow(10,levels[bucket.Index-1]/10d)+bucket.Mix*Math.Pow(10,levels[bucket.Index]/10d);
                     level=power>0?10*Math.Log10(power):double.NegativeInfinity;
                 }
-                points.Add(new(left+pixel,Y(level)));
+                _spectrumPoints[pixel]=new(left+pixel,Y(level));
             }
-            _fromSpectrum=_drawSpectrum.Length==points.Count?_drawSpectrum.ToArray():points.ToArray();
-            _spectrumPoints=points.ToArray();_drawSpectrum=new Vector2[points.Count];_blendStarted=_visualClock.Elapsed.TotalSeconds;
+            if(resize)_spectrumPoints.CopyTo(_fromSpectrum,0);
+            _projectedFrame=frame;_projectionWidth=w;_blendStarted=_visualClock.Elapsed.TotalSeconds;
         }
         if(_spectrumPoints.Length<2)return;
-        float blend=ReducedMotion?1:(float)Math.Clamp((_visualClock.Elapsed.TotalSeconds-_blendStarted)/.020,0,1);
+        float blend=ReducedMotion?1:(float)Math.Clamp((_visualClock.Elapsed.TotalSeconds-_blendStarted)/_blendDuration,0,1);
         for(int i=0;i<_drawSpectrum.Length;i++)_drawSpectrum[i]=Vector2.Lerp(_fromSpectrum[i],_spectrumPoints[i],blend);
         using var chart=new CanvasCommandList(sender);
         using(var ink=chart.CreateDrawingSession())
@@ -273,7 +292,7 @@ public sealed class MonitorRenderer : IDisposable
         using(var fade=new CanvasLinearGradientBrush(sender,[Stop(0,A(Design.White,0)),Stop(.05f,Design.White),Stop(.95f,Design.White),Stop(1,A(Design.White,0))]){StartPoint=new(left,0),EndPoint=new(right,0)})m.FillRectangle(left,top,right-left,bottom-top,fade);
         using(var faded=new AlphaMaskEffect{Source=chart,AlphaMask=mask})ds.DrawImage(faded);
     }
-    private void Pitch(CanvasControl sender,CanvasDrawingSession ds,ShellViewModel state,float w,float h)
+    private void Pitch(CanvasSwapChain sender,CanvasDrawingSession ds,ShellViewModel state,float w,float h)
     {
         var midi=state.Snapshot.MidiNote;
         if(midi is double note)
@@ -325,5 +344,12 @@ public sealed class MonitorRenderer : IDisposable
         }
         ds.DrawLine(x+width/2,y+3,x+width/2,y+27,Design.Gold,2);
     }
-    public void Dispose() { _disposed=true; _needleGlow?.Dispose(); _face?.Dispose(); _spectrumGrid?.Dispose(); foreach(var f in _formats.Values) f.Dispose(); }
+    public void ResetDeviceResources()
+    {
+        _needleGlow?.Dispose();_needleGlow=null;
+        _face?.Dispose();_face=null;
+        _spectrumGrid?.Dispose();_spectrumGrid=null;
+        foreach(var f in _formats.Values)f.Dispose();_formats.Clear();
+    }
+    public void Dispose(){_disposed=true;ResetDeviceResources();}
 }

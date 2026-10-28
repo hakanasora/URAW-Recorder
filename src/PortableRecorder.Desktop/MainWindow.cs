@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using PortableRecorder.Audio;
 using Microsoft.Graphics.Canvas.UI.Xaml;
+using Microsoft.Graphics.Canvas;
 using Microsoft.UI.Composition.SystemBackdrops;
 using Microsoft.UI;
 using Microsoft.UI.Input;
@@ -31,7 +32,9 @@ public sealed class MainWindow : Window
     private readonly DispatcherTimer _timer=new(){Interval=TimeSpan.FromMilliseconds(16.67)};
     private readonly Grid _root=new(),_body=new(),_main=new(),_header=new(),_monitor=new(),_transport=new();
     private readonly Grid _inspector=new(){Background=Design.Brush(Design.Inspector),Width=264};
-    private readonly CanvasControl _canvas=new(){IsHitTestVisible=false};
+    private readonly CanvasSwapChainPanel _canvas=new(){IsHitTestVisible=false};
+    private CanvasDevice? _renderDevice;
+    private CanvasSwapChain? _swapChain;
     private readonly SettingsDrawer _drawer;
     private readonly FixedWindowFrame _frame;
     private readonly Grid _primaryContent=new();
@@ -94,7 +97,7 @@ public sealed class MainWindow : Window
     private bool _devicesDirty,_devicesLoaded;
     private int _deviceVersion,_deviceQueryVersion;
     private readonly Stopwatch _renderClock=Stopwatch.StartNew();
-    private double _lastRender,_nextRenderDue,_nextDisplayProbe;
+    private double _lastRender,_nextDisplayProbe;
     private bool _displayProbePending;
     private DisplayRefreshInfo _displayRefresh=new("unknown",null,"compositor fallback");
     private int _renderFrames,_drawFrames;
@@ -196,12 +199,7 @@ public sealed class MainWindow : Window
         BuildInspector();UpdateSystemAccent();_settings.ColorValuesChanged+=OnSystemColorsChanged;
         _drawer=new SettingsDrawer(_body,_inspector,()=>_settings.AnimationsEnabled,
             ()=>_paneSelector.FocusSelected(),()=>_settingsButton.Focus(FocusState.Programmatic));
-        _canvas.Draw+=(sender,args)=>
-        {
-            if(_closing || _closeAllowed)return;
-            try { _drawFrames++;_renderer.Draw(sender,args,_state); if(!_firstFrameLogged){_firstFrameLogged=true;StartupLog.Write($"First monitor frame drawn: {sender.ActualWidth} x {sender.ActualHeight}");} }
-            catch(Exception error){StartupLog.Write("Draw failed: "+error);throw;}
-        };_state.PropertyChanged+=(_,_)=>RefreshValues();
+        _state.PropertyChanged+=(_,_)=>RefreshValues();
         _root.Loaded+=async(_,_)=>
         {
             try
@@ -247,7 +245,7 @@ public sealed class MainWindow : Window
             catch(Exception error){StartupLog.Write("Audio close: "+error);await Message("录音收尾异常",AudioEngine.Friendly(error),duringClose:true);}
             finally{_closeAllowed=true;Close();}
         };
-        Closed+=(_,_)=>{_dialogs.Close();_drawer.Dispose();_settings.ColorValuesChanged-=OnSystemColorsChanged;_settings.AnimationsEnabledChanged-=OnAnimationsChanged;_settings.TextScaleFactorChanged-=OnTextScaleChanged;if(_root.XamlRoot!=null)_root.XamlRoot.Changed-=OnXamlRootChanged;CompositionTarget.Rendering-=OnRendering;_inputName.ReleaseResources();_timer.Stop();_widthAnimation?.Stop();_monitorFade.Stop();_clockFade.Stop();_statusFade.Stop();_primaryFade.Stop();_pauseFade.Stop();_canvas.RemoveFromVisualTree();_renderer.Dispose();};Content=_root;
+        Closed+=(_,_)=>{_dialogs.Close();_drawer.Dispose();_settings.ColorValuesChanged-=OnSystemColorsChanged;_settings.AnimationsEnabledChanged-=OnAnimationsChanged;_settings.TextScaleFactorChanged-=OnTextScaleChanged;if(_root.XamlRoot!=null)_root.XamlRoot.Changed-=OnXamlRootChanged;CompositionTarget.Rendering-=OnRendering;_inputName.ReleaseResources();_timer.Stop();_widthAnimation?.Stop();_monitorFade.Stop();_clockFade.Stop();_statusFade.Stop();_primaryFade.Stop();_pauseFade.Stop();ReleaseRenderSurface();_renderer.Dispose();};Content=_root;
     }
     private void OnXamlRootChanged(XamlRoot sender,XamlRootChangedEventArgs args){if(!_closing)_frame.RefreshDpi();}
     private void OnAnimationsChanged(UISettings sender,object args)=>DispatcherQueue.TryEnqueue(()=>
@@ -597,6 +595,36 @@ public sealed class MainWindow : Window
         _state.RecordMode=mode;
         try{RecordingPreferences.Save(mode);_modePreferenceWarning=null;}catch(Exception error){_modePreferenceWarning="录制模式偏好未保存："+error.Message;StartupLog.Write(_modePreferenceWarning);}
     }
+    private void ReleaseRenderSurface()
+    {
+        _canvas.SwapChain=null;_swapChain?.Dispose();_swapChain=null;
+        _renderer.ResetDeviceResources();_renderDevice?.Dispose();_renderDevice=null;
+    }
+    private void RenderMonitor()
+    {
+        if(!_started||_closing||_canvas.ActualWidth<=0||_canvas.ActualHeight<=0)return;
+        float width=(float)_canvas.ActualWidth,height=(float)_canvas.ActualHeight;
+        float dpi=96*(float)(_root.XamlRoot?.RasterizationScale??1);
+        try
+        {
+            _renderDevice??=new CanvasDevice();
+            if(_swapChain==null)
+            {
+                _swapChain=new CanvasSwapChain(_renderDevice,width,height,dpi,Windows.Graphics.DirectX.DirectXPixelFormat.B8G8R8A8UIntNormalized,2,CanvasAlphaMode.Premultiplied);
+                _canvas.SwapChain=_swapChain;
+            }
+            else if(_swapChain.Size.Width!=width||_swapChain.Size.Height!=height||_swapChain.Dpi!=dpi)
+                _swapChain.ResizeBuffers(width,height,dpi);
+            using(var drawing=_swapChain.CreateDrawingSession(Colors.Transparent))
+                _renderer.Draw(_swapChain,drawing,_state);
+            // CompositionTarget already supplies display pacing; do not wait for another vblank on the UI thread.
+            _swapChain.Present(0);_drawFrames++;
+            if(!_firstFrameLogged){_firstFrameLogged=true;StartupLog.Write($"First swap-chain monitor frame drawn: {width} x {height}");}
+        }
+        catch(Exception error)when(_renderDevice?.IsDeviceLost(error.HResult)==true)
+        {StartupLog.Write("Monitor graphics device lost; recreating resources: "+error.Message);ReleaseRenderSurface();}
+        catch(Exception error){StartupLog.Write("Monitor draw failed: "+error);throw;}
+    }
     private void OnRendering(object? sender,object args)
     {
         if(!_started || _closing || AppWindow.Presenter is OverlappedPresenter{State:OverlappedPresenterState.Minimized})return;
@@ -606,17 +634,13 @@ public sealed class MainWindow : Window
             _nextDisplayProbe=now+1;_displayProbePending=true;
             _=ProbeDisplayRefreshAsync(WinRT.Interop.WindowNative.GetWindowHandle(this));
         }
-        if(_displayRefresh.Hertz is double rate)
-        {
-            double period=1d/rate;
-            if(now+Math.Min(.0003,period*.04)<_nextRenderDue)return;
-            _nextRenderDue=Math.Max(_nextRenderDue+period,now);
-        }
+        // Rendering is already paced by the compositor. A second near-vblank deadline
+        // test skips otherwise usable frames when the callback arrives slightly early.
         _maxRenderGap=Math.Max(_maxRenderGap,now-_lastRender);_lastRender=now;
-        _state.Refresh();_canvas.Invalidate();_renderFrames++;
+        _state.Refresh();RenderMonitor();_renderFrames++;
         if(now-_renderReportTime>=10)
         {
-            StartupLog.Write($"Monitor render requests: {_renderFrames/(now-_renderReportTime):F1}/s; Draw callbacks: {_drawFrames/(now-_renderReportTime):F1}/s; maximum gap {_maxRenderGap*1000:F1} ms (includes stalls); screen/compositor limited, target {_displayRefresh.Hertz?.ToString("F3")??"compositor"} Hz");
+            StartupLog.Write($"Monitor composition ticks: {_renderFrames/(now-_renderReportTime):F1}/s; Presented frames: {_drawFrames/(now-_renderReportTime):F1}/s; maximum gap {_maxRenderGap*1000:F1} ms (includes stalls); screen/compositor limited, target {_displayRefresh.Hertz?.ToString("F3")??"compositor"} Hz");
             _renderFrames=0;_drawFrames=0;_maxRenderGap=0;_renderReportTime=now;
         }
     }
@@ -629,7 +653,7 @@ public sealed class MainWindow : Window
             if(_closing)return;
             if(display!=_displayRefresh)
             {
-                _displayRefresh=display;_nextRenderDue=_renderClock.Elapsed.TotalSeconds;
+                _displayRefresh=display;
                 StartupLog.Write($"Display refresh: {display.Device}, {display.Hertz?.ToString("F3")??"unknown"} Hz, {display.Source}");
             }
         }
@@ -822,7 +846,7 @@ public sealed class MainWindow : Window
             MonitorMode.Spectrum=>"单边频点幅度 dBFS；横轴为对数 Hz，纵轴为非均匀 dBFS。显示范围止于实际 Nyquist。",
             _=>"单音检测，A4 = 440 Hz；音高不明确时不显示音名。"
         });
-        Layout();_canvas.Invalidate();
+        Layout();RenderMonitor();
         if(_started && !keepReadout)_monitorFade.In(120);
         else{_monitorFade.Stop();_monitor.Opacity=1;}
     }
@@ -959,7 +983,7 @@ public sealed class MainWindow : Window
         _level.VerticalAlignment=VerticalAlignment.Center;_pitch.VerticalAlignment=VerticalAlignment.Center;
         _level.Margin=new Thickness(28,0,0,0);_pitch.Margin=_level.Margin;
         _clockSlot.Width=240;
-        _canvas.Invalidate();
+        RenderMonitor();
     }
 
     private void LogClockCenters()
