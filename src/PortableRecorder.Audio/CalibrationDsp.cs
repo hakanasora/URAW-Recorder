@@ -56,14 +56,7 @@ public sealed class CalibrationPlan
 }
 
 public readonly record struct CalibrationOutput(long SourceStartFrame,int Frames,double SourcePeak);
-public interface ICalibrationStage
-{
-    int LatencyFrames {get;}
-    CalibrationOutput Process(ReadOnlySpan<float> input,Span<float> output,double gain,bool drain=false);
-    void Reset();
-    CalibrationOutput Flush(Span<float> output);
-}
-public sealed class CalibrationProcessor:ICalibrationStage
+public sealed class CalibrationProcessor
 {
     private readonly CalibrationPlan _plan;
     private readonly OlaBlockConvolver64[] _filters;

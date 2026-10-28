@@ -36,10 +36,7 @@ public sealed class MonitorRenderer : IDisposable
     private static readonly Color Amber=Design.Hex("FF9600"), Ivory=Design.Hex("FFE6AF"), Positive=Design.Hex("F38B58");
     public bool ReducedMotion { get; set; }
     public float TextScale { get; set; } = 1;
-    public bool Stacked { get; set; }
-    public float StackedVuTop { get; set; }
     public float CentsTop { get; set; } = 154;
-    public string NumericFont { get; set; } = "Segoe UI Variable";
     private static Color A(Color c,double a) => Color.FromArgb((byte)Math.Clamp(Math.Round(a*255),0,255),c.R,c.G,c.B);
     private CanvasTextFormat Format(float size)
     {
@@ -183,8 +180,8 @@ public sealed class MonitorRenderer : IDisposable
         ds.TextAntialiasing=CanvasTextAntialiasing.Grayscale;
         if(state.Mode==MonitorMode.Level)
         {
-            var x=Stacked?(width-536)/2:256+(width-284-536)/2;
-            var y=Stacked?StackedVuTop:(height-188)/2;
+            var x=256+(width-284-536)/2;
+            var y=(height-188)/2;
             Vu(sender,ds,x,y,vu.Left,"L"); Vu(sender,ds,x+276,y,vu.Right,"R");
         }
         else if(state.Mode==MonitorMode.Spectrum) Spectrum(sender,ds,state,width,height);
@@ -287,7 +284,6 @@ public sealed class MonitorRenderer : IDisposable
         var dt=_frameDelta;
         _low=ReducedMotion?_targetLow:_low+(_targetLow-_low)*(1-Math.Exp(-dt/.055));
         float left=288,right=w-8,top=16,bottom=h-28;
-        if(Stacked) { left=60; top=StackedVuTop; }
         float Y(double n)=>top+(float)((_low+36-n)/36)*(bottom-top);
         using var chart=new CanvasCommandList(sender);
         using(var ink=chart.CreateDrawingSession())

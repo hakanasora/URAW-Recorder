@@ -2,7 +2,7 @@
 
 ## 链条、线程与原始性
 
-WASAPI 原始包 / 原生格式 / 设备样本位置 → PCM 解码 → 原始输入峰值 → ICalibrationStage（所选频响 FIR / 未启用时直通）→ 软件增益 → 测量分析 / 有界写盘队列 → float32 WAV / RF64、24 位 FLAC 或 LAME VBR MP3。编码与精度边界详见 [压缩录音](compressed-recording.md)。
+WASAPI 原始包 / 原生格式 / 设备样本位置 → PCM 解码 → 原始输入峰值 → 按会话创建的 CalibrationProcessor（所选频响 FIR / 未启用时直通）→ 软件增益 → 测量分析 / 有界写盘队列 → float32 WAV / RF64、24 位 FLAC 或 LAME VBR MP3。编码与精度边界详见 [压缩录音](compressed-recording.md)。
 
 捕获线程为 MTA / MMCSS Pro Audio，持有 CoreAudio 对象，及时 ReleaseBuffer，只复制到池化包并投递，不操作 XAML、不写盘。单消费者处理队列按样本顺序执行增益、峰值重置、暂停与写入分支。FFT / 音高分析在单独任务读取最新环形窗；可以跳过旧显示窗口，不能静默丢录音样本。写盘另有单消费者队列，采集处理和写盘队列各最多约 2 秒 / 64 MiB，先到者为限；超限、非有限样本或磁盘错误会停止并报告。音频包不连续按是否正在向文件写入分别处理，见下文 2026-10-26 更新。会话代号隔离过期错误和结果。
 

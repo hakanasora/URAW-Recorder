@@ -22,7 +22,12 @@ public sealed class WasapiCaptureFactory:ICaptureFactory
     {
         var capture=new WasapiCaptureSession(device,exclusive,raw,epoch,packet,fault,preferredFormat);
         try{await capture.Ready.ConfigureAwait(false);return capture;}
-        catch{await capture.DisposeAsync();throw;}
+        catch(Exception openingError)
+        {
+            try{await capture.DisposeAsync();}
+            catch(Exception cleanupError){throw AudioFailure.Combine(openingError,cleanupError);}
+            throw;
+        }
     }
     public Task<InputFormatOptions> QueryFormatsAsync(AudioDevice description)=>Task.Run(()=>
     {
@@ -40,6 +45,8 @@ internal sealed class WasapiCaptureSession:IAudioCaptureService
     private readonly CancellationTokenSource _stop=new();
     private readonly TaskCompletionSource<CaptureInfo> _ready=new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly TaskCompletionSource _done=new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly object _disposeGate=new();
+    private Task? _disposeTask;
     public Task<CaptureInfo> Ready=>_ready.Task;
     public CaptureInfo Info=>_ready.Task.GetAwaiter().GetResult();
     public WasapiCaptureSession(AudioDevice device,bool exclusive,bool raw,long epoch,Func<CapturePacket,bool> submit,Action<Exception> fault,AudioFormat? preferredFormat)
@@ -49,7 +56,10 @@ internal sealed class WasapiCaptureSession:IAudioCaptureService
     }
     private void Run(AudioDevice description,bool exclusive,bool raw,long epoch,Func<CapturePacket,bool> submit,Action<Exception> fault,AudioFormat? preferredFormat)
     {
-        AudioClient? client=null;IntPtr mmcss=IntPtr.Zero;
+        AudioClient? client=null;
+        IntPtr mmcss=IntPtr.Zero;
+        bool started=false;
+        Exception? cleanupFailure=null;
         try
         {
             using var enumerator=new MMDeviceEnumerator();
@@ -80,6 +90,7 @@ internal sealed class WasapiCaptureSession:IAudioCaptureService
             var capture=client.AudioCaptureClient;
             uint taskIndex=0;mmcss=AvSetMmThreadCharacteristics("Pro Audio",ref taskIndex);
             client.Start();
+            started=true;
             _ready.TrySetResult(new(description,format,exclusive,raw,epoch));
             var waits=new WaitHandle[]{signal,_stop.Token.WaitHandle};
             var continuity=new CaptureContinuity();
@@ -111,12 +122,32 @@ internal sealed class WasapiCaptureSession:IAudioCaptureService
                 }while(!exclusive && !_stop.IsCancellationRequested && capture.GetNextPacketSize()>0);
             }
         }
-        catch(Exception error){if(!_ready.TrySetException(error) && !_stop.IsCancellationRequested)fault(error);}
+        catch(Exception error)
+        {
+            if(!_ready.TrySetException(error)&&!_stop.IsCancellationRequested)
+                try{fault(error);}catch(Exception callbackError){cleanupFailure=callbackError;}
+        }
         finally
         {
-            if(client!=null){try{client.Stop();}catch{}client.Dispose();}
-            if(mmcss!=IntPtr.Zero)AvRevertMmThreadCharacteristics(mmcss);
-            _done.TrySetResult();
+            if(client!=null)
+            {
+                if(started)
+                    try{client.Stop();}catch(Exception error){cleanupFailure=AudioFailure.Combine(cleanupFailure,error);}
+                try{client.Dispose();}catch(Exception error){cleanupFailure=AudioFailure.Combine(cleanupFailure,error);}
+            }
+            if(mmcss!=IntPtr.Zero)
+            {
+                try
+                {
+                    if(!AvRevertMmThreadCharacteristics(mmcss))
+                        throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(),"无法释放音频线程调度注册。");
+                }
+                catch(Exception error){cleanupFailure=AudioFailure.Combine(cleanupFailure,error);}
+            }
+            // Every path signals completion; a COM cleanup exception must not escape
+            // the native thread or leave DisposeAsync waiting for an unsignalled task.
+            if(cleanupFailure==null)_done.TrySetResult();
+            else _done.TrySetException(cleanupFailure);
         }
     }
     private static void RequestRaw(AudioClient client)
@@ -163,7 +194,16 @@ internal sealed class WasapiCaptureSession:IAudioCaptureService
             throw new NotSupportedException("设备格式不是支持的 PCM 16/24/32 或 float32。");
         return new(wave.SampleRate,wave.Channels,wave.BitsPerSample,valid,encoding);
     }
-    public async ValueTask DisposeAsync(){_stop.Cancel();await _done.Task.ConfigureAwait(false);}
+    public ValueTask DisposeAsync()
+    {
+        lock(_disposeGate)return new(_disposeTask??=StopAndReleaseAsync());
+    }
+    private async Task StopAndReleaseAsync()
+    {
+        _stop.Cancel();
+        try{await _done.Task.ConfigureAwait(false);}
+        finally{_stop.Dispose();}
+    }
     [DllImport("avrt.dll",CharSet=CharSet.Unicode,SetLastError=true)]private static extern IntPtr AvSetMmThreadCharacteristics(string taskName,ref uint taskIndex);
-    [DllImport("avrt.dll")]private static extern bool AvRevertMmThreadCharacteristics(IntPtr handle);
+    [DllImport("avrt.dll",SetLastError=true)]private static extern bool AvRevertMmThreadCharacteristics(IntPtr handle);
 }

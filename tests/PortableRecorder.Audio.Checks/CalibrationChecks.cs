@@ -69,6 +69,8 @@ static class CalibrationChecks
         library.Remove(item.Id);check(library.Entries.Count==0&&library.SelectedId("fake")==null,"Remove also removes device binding");
         // Personal calibration files are checked locally without copying them into the repository.
         string real=@"D:\文档\UMIK-1 校准文件";
+        if(!Directory.Exists(real))Console.WriteLine("SKIP personal calibration fixtures: directory not present; synthetic calibration checks still run.");
+        else Console.WriteLine("Personal calibration fixtures: "+Directory.GetFiles(real,"*.txt").Length+" files available.");
         if(Directory.Exists(real))foreach(string file in Directory.GetFiles(real,"*.txt"))
         {
             var supplied=CalibrationProfile.Parse(File.ReadAllBytes(file),Path.GetFileName(file));check(supplied.Points.Length==615,"Supplied calibration points");

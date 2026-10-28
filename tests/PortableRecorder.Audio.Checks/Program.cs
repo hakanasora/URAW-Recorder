@@ -1,368 +1,61 @@
-using PortableRecorder.Desktop;
-using System.Buffers;
-using System.Buffers.Binary;
-using System.Diagnostics;
-using System.Runtime.InteropServices;
-using System.Text;
-using NAudio.Wave;
-using PortableRecorder.Audio;
-
-var root=Path.GetFullPath(Path.Combine("artifacts","audio-checks",DateTime.Now.ToString("yyyyMMdd-HHmmss")));Directory.CreateDirectory(root);
-int checks=0;
-void Assert(bool condition,string message){if(!condition)throw new Exception(message);checks++;}
-void Near(double actual,double expected,double tolerance,string name)=>Assert(Math.Abs(actual-expected)<=tolerance,$"{name}: {actual} expected {expected} ± {tolerance}");
-float[] Sine(int rate,int frames,double frequency,double peak,int channels=1,bool inverted=false)
+if(args.Contains("--stall-output"))
 {
-    var samples=new float[frames*channels];for(int i=0;i<frames;i++)for(int c=0;c<channels;c++)samples[i*channels+c]=(float)(peak*Math.Sin(2*Math.PI*frequency*i/rate)*(inverted && c%2==1?-1:1));return samples;
+    Console.WriteLine("controlled stdout is open");
+    await Console.Out.FlushAsync();
+    await Task.Delay(Timeout.InfiniteTimeSpan);
+    return;
 }
-async Task Until(Func<bool> condition,string name)
-{var elapsed=Stopwatch.StartNew();while(!condition()){if(elapsed.Elapsed.TotalSeconds>5)throw new Exception("Timeout: "+name);await Task.Delay(10);}}
-var mono=new AudioFormat(48000,1,32,32,PcmEncoding.Float);
-foreach(int bits in new[]{16,24,32})
+var groups=new Dictionary<string,Func<string,Action<bool,string>,Task>>(StringComparer.OrdinalIgnoreCase)
 {
-    var format=new AudioFormat(48000,1,bits,bits,PcmEncoding.SignedInteger);var bytes=new byte[3*bits/8];
-    if(bits==16){BinaryPrimitives.WriteInt16LittleEndian(bytes,short.MinValue);BinaryPrimitives.WriteInt16LittleEndian(bytes.AsSpan(4),short.MaxValue);}
-    if(bits==24){bytes[2]=128;bytes[6]=255;bytes[7]=255;bytes[8]=127;}
-    if(bits==32){BinaryPrimitives.WriteInt32LittleEndian(bytes,int.MinValue);BinaryPrimitives.WriteInt32LittleEndian(bytes.AsSpan(8),int.MaxValue);}
-    var decoded=new float[3];PcmDecoder.Decode(bytes,decoded,format);
-    Near(decoded[0],-1,1e-7,$"PCM{bits} minimum");Near(decoded[1],0,0,$"PCM{bits} zero");Near(decoded[2],1,1d/Math.Pow(2,bits-1),$"PCM{bits} maximum");
-    PcmDecoder.Decode([],decoded,format,true);Assert(decoded.All(x=>x==0),"Silent packet");
-}
+    ["dsp"]=MeasurementChecks.Run,
+    ["capture"]=LifecycleChecks.Run,
+    ["display"]=DisplayChecks.Run,
+    ["continuity"]=ContinuityChecks.Run,
+    ["preferences"]=PreferencesChecks.Run,
+    ["calibration"]=CalibrationChecks.Run,
+    ["calibration-boundaries"]=CalibrationRobustnessChecks.Run,
+    ["settings"]=InputSettingsChecks.Run,
+    ["encoding"]=EncodingChecks.Run,
+    ["harness"]=HarnessChecks.Run,
+    ["regression-audio"]=AudioReliabilityChecks.Run,
+    ["regression-storage"]=StorageReliabilityChecks.Run,
+    ["regression-ui"]=UiStateChecks.Run,
+};
+if(args.Contains("--list")){Console.WriteLine(string.Join(Environment.NewLine,groups.Keys));return;}
+var selected=new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+for(int i=0;i<args.Length;i++)
 {
-    var bytes=new byte[8];BinaryPrimitives.WriteInt32LittleEndian(bytes,int.MinValue);BinaryPrimitives.WriteInt32LittleEndian(bytes.AsSpan(4),0x7fffff00);
-    var decoded=new float[2];PcmDecoder.Decode(bytes,decoded,new(48000,1,32,24,PcmEncoding.SignedInteger));Near(decoded[0],-1,0,"24-in-32 min");Near(decoded[1],8388607/8388608d,0,"24-in-32 max");
-}
-{
-    using var analyzer=new AudioAnalyzer(new(48000,1,16,16,PcmEncoding.SignedInteger),1,false);
-    analyzer.Process(new float[]{.5f},32767/32768d,1);
-    Assert(analyzer.Latest.InputFullScale && !analyzer.Latest.OutputOverload,"Input rail remains detected after attenuation");
-    analyzer.Process(new float[]{2},.5,2);
-    Assert(!analyzer.Latest.InputFullScale && analyzer.Latest.OutputOverload,"Software output overrange distinct from input clipping");
-}
-foreach(int block in new[]{1,127,1024})
-{
-    using var analyzer=new AudioAnalyzer(mono,7,false);var signal=Sine(48000,48000,1000,Math.Pow(10,-18d/20));
-    for(int offset=0;offset<signal.Length;offset+=block){int count=Math.Min(block,signal.Length-offset);analyzer.Process(signal.AsSpan(offset,count),signal.AsSpan(offset,count).ToArray().Max(x=>(double)Math.Abs(x)),offset+count);}
-    Near(analyzer.Latest.RmsDbfs,-21.01029996,.05,"Sine RMS");Near(analyzer.Latest.HeldPeakDbfs!.Value,-18,.05,"Sine peak");Near(analyzer.Latest.VuLeft,0,.1,"Steady VU");
-    analyzer.ResetPeak();Assert(analyzer.Latest.HeldPeakDbfs==null,"Reset peak");analyzer.Process(new float[480],0,48480);Assert(double.IsNegativeInfinity(analyzer.Latest.HeldPeakDbfs!.Value),"Reaccumulate reset");
-}
-{
-    var detector=new VuDetector(48000);double peak=Math.Pow(10,-18d/20),max=0;var levels=new double[48000];
-    for(int i=0;i<levels.Length;i++){detector.Push((float)(peak*Math.Sin(2*Math.PI*1000*i/48000)));levels[i]=detector.Linear;max=Math.Max(max,detector.Linear);}
-    var steady=levels[^1];int rise=Array.FindIndex(levels,x=>x>=steady*.99);
-    Near(rise/48d,300,30,"VU 99% rise ms");Near((max/steady-1)*100,1.2,.3,"VU overshoot percent");
-    int fall=-1;for(int i=0;i<24000;i++){detector.Push(0);if(fall<0 && detector.Linear<=steady*.01)fall=i;}
-    Near(fall/48d,300,30,"VU fall ms");Console.WriteLine($"VU rise={rise/48d:0.00}ms overshoot={(max/steady-1)*100:0.000}% fall={fall/48d:0.00}ms");
-}
-{
-    const int n=8192;double frequency=171*48000d/n,peak=.25;var signal=Sine(48000,n,frequency,peak);
-    var estimator=new SpectrumEstimator(n,48000);var db=estimator.Analyze([signal],1,false);
-    Near(db[171],20*Math.Log10(peak),.05,"FFT coherent gain");Near(estimator.Frequencies[171],frequency,1e-10,"FFT Hz");
-    var opposite=signal.Select(x=>-x).ToArray();var stereo=new SpectrumEstimator(n,48000).Analyze([signal,opposite],1,false);Near(stereo[171],db[171],.001,"Antiphase energy average");
-    var nonBin=Sine(48000,n,1000,.25);var off=new SpectrumEstimator(n,48000).Analyze([nonBin],1,false);var highest=Array.IndexOf(off,off.Max());Near(estimator.Frequencies[highest],1000,48000d/n,"Non-bin frequency");
-    var twin=signal.Zip(Sine(48000,n,500*48000d/n,.125),(a,b)=>a+b).ToArray();var dual=new SpectrumEstimator(n,48000).Analyze([twin],1,false);Near(dual[171],20*Math.Log10(.25),.05,"Dual tone first");Near(dual[500],20*Math.Log10(.125),.05,"Dual tone second");
-    var noise=new Random(123);var white=Enumerable.Range(0,n).Select(_=>(float)((noise.NextDouble()*2-1)*.1)).ToArray();Assert(new SpectrumEstimator(n,48000).Analyze([white],1,false).All(float.IsFinite),"Noise spectrum finite");
-    var silence=new SpectrumEstimator(n,48000).Analyze([new float[n]],1,false);Assert(silence.All(float.IsNegativeInfinity),"Silence spectrum");
-}
-{
-    const int size=8192;const double amplitude=.2;
-    var dc=Enumerable.Repeat((float)amplitude,size).ToArray();
-    Near(new SpectrumEstimator(size,48000).Analyze([dc],1,false)[0],20*Math.Log10(amplitude),.05,"DC amplitude single sided");
-    var nyquist=Enumerable.Range(0,size).Select(i=>(float)(i%2==0?amplitude:-amplitude)).ToArray();
-    Near(new SpectrumEstimator(size,48000).Analyze([nyquist],1,false)[size/2],20*Math.Log10(amplitude),.05,"Nyquist amplitude single sided");
-}
-double maximumPitchError=0;
-foreach(int rate in new[]{44100,48000,96000})
-foreach(double frequency in new[]{27.5,32.7032,110,123.47,440,1000,2093})
-{
-    int size=256;while(size<rate*.085)size<<=1;
-    var detector=new PitchDetector(size);var result=detector.Detect(Sine(rate,size,frequency,.2),rate);
-    Assert(result.Hertz!=null,$"Missing pitch {rate}/{frequency} clarity={result.Clarity}");
-    double cents=1200*Math.Log2(result.Hertz!.Value/frequency);maximumPitchError=Math.Max(maximumPitchError,Math.Abs(cents));Near(cents,0,5,$"Pitch cents {rate}/{frequency}");
-}
-{
-    var detector=new PitchDetector(4096);Assert(detector.Detect(new float[4096],48000).Hertz==null,"Silent pitch");
-    var noise=new Random(123);Assert(detector.Detect(Enumerable.Range(0,4096).Select(_=>(float)(noise.NextDouble()-.5)).ToArray(),48000).Hertz==null,"Noise pitch");
-    var harmonic=Sine(48000,4096,220,.1).Zip(Sine(48000,4096,440,.2),(a,b)=>a+b).Zip(Sine(48000,4096,660,.1),(a,b)=>a+b).ToArray();
-    var detected=detector.Detect(harmonic,48000);Assert(detected.Hertz!=null,"Harmonic pitch");Near(1200*Math.Log2(detected.Hertz!.Value/220),0,5,"Harmonic cents");
-}
-{
-    string path=Path.Combine(root,"float-headroom.wav");var values=new float[]{0,2.5f,-3f,.25f};
-    var writer=new FloatWaveWriter(path,mono,64);Assert(writer.TryWrite(values),"WAV enqueue");await writer.CompleteAsync();
-    using var reader=new WaveFileReader(path);Assert(reader.WaveFormat.Channels==1 && reader.WaveFormat.BitsPerSample==32,"WAV format mono");
-    var read=new float[values.Length];reader.ToSampleProvider().Read(read);for(int i=0;i<values.Length;i++)Near(read[i],values[i],0,"WAV preserves float headroom");
-    Assert(Encoding.ASCII.GetString(File.ReadAllBytes(path),0,4)=="RF64","RF64 promotion");Assert(writer.WrittenFrames==4,"WAV frames");
-}
-{
-    var factory=new FakeFactory();await using var engine=new AudioEngine(factory);
-    await engine.SelectDeviceAsync(factory.Device);Assert(!factory.Current!.Info.Exclusive && factory.Current.Info.Raw,"Startup shared RAW");
-    factory.Push(Sine(48000,480,1000,.1));await Until(()=>engine.Latest.Valid,"initial frame");
-    engine.SetGain(6);await engine.StartRecordingAsync(root,RecordingMode.Shared);
-    string path=engine.Status.FilePath!;factory.Push(new float[480].Select(_=>.1f).ToArray());await Until(()=>engine.WrittenFrames==480,"first write");
-    await engine.PauseAsync(true);factory.Push(new float[480]);await Task.Delay(40);Assert(engine.WrittenFrames==480,"Pause excludes samples");
-    await engine.PauseAsync(false);factory.Push(new float[240]);await Until(()=>engine.WrittenFrames==720,"resume write");
-    await engine.StopRecordingAsync();Assert(engine.WrittenFrames==720,"stop exact tail");Near(engine.RecordedTime.TotalSeconds,.015,1e-9,"sample clock");
-    using var reader=new WaveFileReader(path);var first=new float[1];reader.ToSampleProvider().Read(first);Near(first[0],.1*Math.Pow(10,6d/20),1e-6,"Recorded gain");Assert(reader.Length==720*4,"Pause file length");
-    await engine.StartRecordingAsync(root,RecordingMode.Exclusive);Assert(factory.Current!.Info.Exclusive,"Exclusive only on record");
-    factory.Push(new float[480]);await Until(()=>engine.WrittenFrames==480,"exclusive write");await engine.StopRecordingAsync();Assert(!factory.Current!.Info.Exclusive,"Restore shared");
-    factory.DenyExclusive=true;bool denied=false;try{await engine.StartRecordingAsync(root,RecordingMode.Exclusive);}catch(IOException){denied=true;}
-    Assert(denied && !factory.Current!.Info.Exclusive && engine.Status.State==AudioRunState.Monitoring,"Exclusive failure restore");
-}
-{
-    var factory=new FakeFactory{DenySharedRaw=true};await using var engine=new AudioEngine(factory);
-    await engine.SelectDeviceAsync(factory.Device);Assert(engine.RawDecisionPending,"RAW decision required");
-    await engine.DecideRawFallbackAsync(true);Assert(!factory.Current!.Info.Raw,"Explicit ordinary monitoring");
-    bool denied=false;try{await engine.StartRecordingAsync(root,RecordingMode.Shared);}catch(IOException){denied=true;}
-    Assert(denied && !factory.Current!.Info.Raw && !engine.RawDecisionPending,"Consent never permits ordinary recording");
-}
-{
-    var factory=new FakeFactory();await using var engine=new AudioEngine(factory);await engine.SelectDeviceAsync(factory.Device);
-    factory.Push(new float[480]);await Until(()=>engine.Latest.Valid,"fault preframe");factory.Push(new float[480],true);
-    await Until(()=>engine.Latest.RecoveredDiscontinuities==1,"monitoring discontinuity recovery");
-    Assert(engine.Status.State==AudioRunState.Monitoring && engine.Latest.Valid,"One monitoring glitch cannot kill capture");
-    Assert(engine.Latest.Segment==1,"Analysis segment changes across gap");
-}
-{
-    var factory=new FakeFactory();await using var engine=new AudioEngine(factory);await engine.SelectDeviceAsync(factory.Device);
-    factory.Push(new float[144001]);await Until(()=>engine.Status.State==AudioRunState.Faulted,"queue overflow");Assert(!engine.Latest.Valid,"No false data on overflow");
-}
-// Interleaved multichannel samples retain all channels, including float headroom.
-{
-    var format=new AudioFormat(44100,4,32,32,PcmEncoding.Float);
-    float[] values=[.1f,-.2f,1.25f,-2f,.4f,-.5f,.6f,-.7f];
-    var writer=new FloatWaveWriter(Path.Combine(root,"multichannel.wav"),format);
-    Assert(writer.TryWrite(values),"Multichannel enqueue");await writer.CompleteAsync();
-    using var reader=new WaveFileReader(writer.Path);var samples=new float[values.Length];reader.ToSampleProvider().Read(samples);
-    Assert(reader.WaveFormat.Channels==4 && reader.WaveFormat.SampleRate==44100,"Native multichannel format retained");
-    Assert(values.SequenceEqual(samples),"Interleaved channels unchanged");
-    var decoded=new float[values.Length];PcmDecoder.Decode(MemoryMarshal.AsBytes(values.AsSpan()),decoded,format);Assert(values.SequenceEqual(decoded),"Float interleaved decoder");
-}
-{
-    var factory=new FakeFactory{DenySharedRaw=true};await using var engine=new AudioEngine(factory);
-    await engine.SelectDeviceAsync(factory.Device);await engine.DecideRawFallbackAsync(false);
-    Assert(engine.Status.State==AudioRunState.Stopped && !engine.Latest.Valid,"RAW dialog close stops monitoring");
-    await engine.SelectDeviceAsync(factory.Device);await engine.DecideRawFallbackAsync(true);
-    await engine.SelectDeviceAsync(new("other","Other device"));Assert(engine.RawDecisionPending,"Ordinary consent expires on device change");
-}
-{
-    var factory=new FakeFactory();await using var engine=new AudioEngine(factory);
-    await engine.SelectDeviceAsync(factory.Device);var old=factory.Current!;
-    factory.Push(new float[480].Select(_=>.8f).ToArray());await Until(()=>engine.Latest.Valid,"old epoch valid");
-    await engine.StartRecordingAsync(root,RecordingMode.Exclusive);
-    factory.Push(new float[480]);await Until(()=>engine.WrittenFrames==480,"new epoch record");
-    old.TriggerFault();await Task.Delay(40);Assert(engine.Status.State==AudioRunState.Recording,"Stale capture error cannot end new session");
-    Near(engine.Latest.HeldPeakDbfs!.Value,20*Math.Log10(.8),.01,"Historical peak survives capture switch");
-    await engine.ResetPeakAsync();factory.Push(new float[480]);await Until(()=>engine.Latest.FramePosition>=960,"reset sample boundary");
-    Assert(double.IsNegativeInfinity(engine.Latest.HeldPeakDbfs!.Value),"Reset clears history across capture epochs");
-    await engine.StopRecordingAsync();
-    factory.Push(new float[480]);await Until(()=>engine.Latest.Valid,"shared after stop");
-    Assert(double.IsNegativeInfinity(engine.Latest.RmsDbfs),"Stopped shared stream has real silence");
-}
-{
-    var factory=new FakeFactory();var disk=new FailingWriter();await using var engine=new AudioEngine(factory,writerFactory:(_,_)=>disk);
-    await engine.SelectDeviceAsync(factory.Device);await engine.StartRecordingAsync(root,RecordingMode.Shared);
-    factory.Push(new float[480]);await Until(()=>engine.WrittenFrames==480,"disk fixture first block");
-    await engine.PauseAsync(true);disk.Fail();factory.Push(new float[480]);
-    await Until(()=>engine.Status.State==AudioRunState.Faulted,"Disk failure while paused");
-    Assert(engine.Status.Partial && !engine.Latest.Valid,"Failed file is partial, no stale data");
-}
-{
-    var factory=new FakeFactory();var engine=new AudioEngine(factory);
-    await engine.SelectDeviceAsync(factory.Device);await engine.StartRecordingAsync(root,RecordingMode.Exclusive);
-    string path=engine.Status.FilePath!;factory.Push(Sine(48000,1200,440,.1));
-    await engine.DisposeAsync();
-    using var file=new WaveFileReader(path);Assert(file.Length==1200*4,"Closing active recording drains final samples and header");
-    Assert(factory.Current!.Closed,"Closing releases exclusive capture");
-}
-{
-    var factory=new FakeFactory();var writer=new FailingWriter{Reject=true};
-    await using var engine=new AudioEngine(factory,writerFactory:(_,_)=>writer);
-    await engine.SelectDeviceAsync(factory.Device);await engine.StartRecordingAsync(root,RecordingMode.Shared);factory.Push(new float[480]);
-    await Until(()=>engine.Status.State==AudioRunState.Faulted,"Recording queue rejects data");
-    Assert(engine.Status.Partial && !engine.Latest.Valid,"Recording overflow stops, never silently drops");
-}
-// Discard is paused-only, deletes exactly the current file, and releases exclusive capture.
-{
-    var factory=new FakeFactory();await using var engine=new AudioEngine(factory);
-    await engine.SelectDeviceAsync(factory.Device);await engine.StartRecordingAsync(root,RecordingMode.Exclusive);
-    string discarded=engine.Status.FilePath!;string keep=Path.Combine(root,"keep-existing.wav");File.WriteAllText(keep,"keep");
-    factory.Push(new float[480]);await Until(()=>engine.WrittenFrames==480,"discard first write");
-    bool rejected=false;try{await engine.DiscardRecordingAsync();}catch(InvalidOperationException){rejected=true;}
-    Assert(rejected && File.Exists(discarded),"Cannot discard an unpaused recording");
-    await engine.PauseAsync(true);await engine.DiscardRecordingAsync();
-    Assert(!File.Exists(discarded) && File.ReadAllText(keep)=="keep","Discard removes only owned current file");
-    Assert(engine.WrittenFrames==0 && engine.Status.State==AudioRunState.Monitoring && !factory.Current!.Info.Exclusive,"Discard clears clock and restores shared monitoring");
-}
-{
-    var factory=new FakeFactory();await using var engine=new AudioEngine(factory);
-    var second=new AudioDevice("second","Second microphone");var third=new AudioDevice("third","Third microphone");
-    await engine.ReconcileDevicesAsync([factory.Device]);
-    Assert(engine.SelectedDevice!.Id==factory.Device.Id,"Initial topology chooses default");
-    await engine.ReconcileDevicesAsync([factory.Device,second]);Assert(engine.SelectedDevice!.Id==second.Id,"New device automatically selected while idle");
-    await engine.StartRecordingAsync(root,RecordingMode.Exclusive);var current=factory.Current!;string saved=engine.Status.FilePath!;
-    factory.Push(new float[480]);await Until(()=>engine.WrittenFrames==480,"hotplug recording");
-    await engine.ReconcileDevicesAsync([factory.Device,second,third]);
-    Assert(engine.SelectedDevice!.Id==second.Id && ReferenceEquals(current,factory.Current),"New device cannot switch ongoing recording");
-    await engine.ReconcileDevicesAsync([factory.Device,third]);
-    Assert(engine.SelectedDevice!.Id!=second.Id && !factory.Current!.Info.Exclusive && engine.Status.State==AudioRunState.Monitoring,"Removed recording device finalizes and restores shared on remaining input");
-    using(var reader=new WaveFileReader(saved))Assert(reader.Length==480*4,"Removed device preserves completed samples");
-    await engine.ReconcileDevicesAsync([]);Assert(engine.SelectedDevice==null && !engine.Latest.Valid,"No input leaves invalid readings");
-    await engine.ReconcileDevicesAsync([second]);Assert(engine.SelectedDevice!.Id==second.Id && engine.Status.State==AudioRunState.Monitoring,"New microphone recovers without manual refresh");
-}
-{
-    string settings=Path.Combine(root,"preferences.json");
-    Assert(RecordingPreferences.Load(settings)==RecordingMode.Exclusive,"Missing mode preference uses default");
-    RecordingPreferences.Save(RecordingMode.Shared,settings);Assert(RecordingPreferences.Load(settings)==RecordingMode.Shared,"Shared choice survives process reload");
-    RecordingPreferences.Save(RecordingMode.Exclusive,settings);Assert(RecordingPreferences.Load(settings)==RecordingMode.Exclusive,"Exclusive choice survives process reload");
-    File.WriteAllText(settings,"{broken");Assert(RecordingPreferences.Load(settings)==RecordingMode.Exclusive,"Invalid preference safely falls back");
-    Assert(!Directory.GetFiles(root,"*.tmp").Any(),"Atomic preference save cleans temporary file");
-}
-{
-    var motion=new MeterMotion();var low=AudioSnapshot.Empty(10) with{Valid=true,SampleRate=48000,FramePosition=1440,VuLeft=-20,VuRight=-10};
-    motion.Push(low,0);var high=low with{FramePosition=2880,VuLeft=0,VuRight=3};motion.Push(high,.030);
-    Near(motion.Read(.030,false).Left,-20,.001,"Visual interpolation begins at previous sample");
-    double last=-20;
-    for(int i=0;i<=4;i++)
+    if(args[i]!="--group"||i+1>=args.Length)throw new ArgumentException("Usage: --group dsp,capture,... | --list");
+    foreach(var name in args[++i].Split(',',StringSplitOptions.RemoveEmptyEntries|StringSplitOptions.TrimEntries))
     {
-        double value=motion.Read(.030+i/120d,false).Left;
-        Assert(value>=last && value<=0,"120 Hz interpolation is monotonic, no overshoot");last=value;
+        if(!groups.ContainsKey(name))throw new ArgumentException("Unknown check group: "+name);
+        selected.Add(name);
     }
-    Near(motion.Read(.060,false).Left,0,.001,"Visual interpolation reaches measured target");
-    Near(motion.Read(.035,true).Left,0,0,"Reduced motion uses measured target");
-    motion.Push(high with{Epoch=11,VuLeft=-8},.070);Near(motion.Read(.070,false).Left,-8,.001,"Epoch change never blends old device");
-    motion.Push(AudioSnapshot.Empty(11),.080);Assert(double.IsNegativeInfinity(motion.Read(.080,false).Left),"Failure clears interpolated pointer");
 }
+if(selected.Count==0&&args.Length>0)throw new ArgumentException("Select at least one non-empty check group.");
+if(selected.Count==0)selected.UnionWith(groups.Keys);
+string root=Path.GetFullPath(Path.Combine("artifacts","audio-checks",DateTime.Now.ToString("yyyyMMdd-HHmmss-fff")));
+Directory.CreateDirectory(root);
+int assertions=0,passed=0,failed=0;
+foreach(var(name,run)in groups)
 {
-    var motion=new CentsMotion();motion.Advance(1,69,0,0,false);
-    double previous=0;
-    for(int i=0;i<12;i++)
+    if(!selected.Contains(name))continue;
+    string directory=Path.Combine(root,name);Directory.CreateDirectory(directory);
+    int groupAssertions=0;
+    var elapsed=System.Diagnostics.Stopwatch.StartNew();
+    try
     {
-        double position=motion.Advance(1,69.3,30,1d/240,false)!.Value;
-        Assert(position>previous && position<30,"Cents ruler advances each 240 Hz frame without overshoot");previous=position;
-    }
-    Near(motion.Advance(1,70.49,49,.004,false)!.Value,49,0,"New note resets ruler");
-    Near(motion.Advance(1,70.51,-49,.004,false)!.Value,-49,0,"No sweeping across note boundary");
-    Assert(motion.Advance(1,null,null,.004,false)==null,"Invalid pitch clears ruler immediately");
-    Near(motion.Advance(2,60.2,20,.004,false)!.Value,20,0,"New session starts directly");
-    Near(motion.Advance(2,60.3,30,.004,true)!.Value,30,0,"Reduced motion bypasses interpolation");
-    var slower=new CentsMotion();var faster=new CentsMotion();slower.Advance(1,69,0,0,false);faster.Advance(1,69,0,0,false);
-    double a=0,b=0;for(int i=0;i<6;i++)a=slower.Advance(1,69.2,20,1d/60,false)!.Value;
-    for(int i=0;i<24;i++)b=faster.Advance(1,69.2,20,1d/240,false)!.Value;
-    Near(a,b,1e-10,"Cents response independent of refresh rate");
-    Assert(DisplayRefreshRate.NativeLayoutsValid,"DisplayConfig native layouts");
-    var display=DisplayRefreshRate.Read(IntPtr.Zero);
-    Console.WriteLine($"Read-only display probe: {display.Device}, {display.Hertz?.ToString("F3")??"unknown"} Hz ({display.Source})");
-    Assert(display.Hertz==null || double.IsFinite(display.Hertz.Value) && display.Hertz>0,"System refresh probe valid or explicit compositor fallback");
-}
-{
-    var tracker=new CaptureContinuity();
-    Assert(!tracker.Observe(480,0,1).Discontinuous,"Startup discontinuity flag is a stream boundary");
-    Assert(!tracker.Observe(480,480,0).Discontinuous,"Continuous native frame position");
-    var flagged=tracker.Observe(480,960,1);Assert(flagged.Discontinuous && flagged.Delta==0,"Driver glitch retained even with contiguous position");
-    var jump=tracker.Observe(480,1920,0);Assert(jump.Discontinuous && jump.Delta==480,"Positive frame gap diagnosed");
-    var backward=tracker.Observe(480,2000,0);Assert(backward.Discontinuous && backward.Delta==-400,"Backward frame jump diagnosed");
-    Assert(!tracker.Observe(480,999999,4).Discontinuous,"Timestamp-error packet cannot establish continuity evidence");
-    Assert(!tracker.Observe(480,2480,0).Discontinuous,"Ignore invalid prior timestamp anchor");
-    Assert(!tracker.Observe(0,0,1).Discontinuous,"Empty packet does not change continuity state");
-    Assert(!tracker.Observe(480,2960,0).Discontinuous,"Continuity continues after empty packet");
-}
-{
-    var factory=new FakeFactory();await using var engine=new AudioEngine(factory);var diagnostics=new List<string>();engine.Diagnostic+=message=>diagnostics.Add(message);
-    await engine.SelectDeviceAsync(factory.Device);var original=factory.Current!;
-    factory.Push(Enumerable.Repeat(.5f,480).ToArray());await Until(()=>engine.Latest.Valid,"glitch initial signal");
-    double held=engine.Latest.HeldPeakDbfs!.Value;
-    for(int i=1;i<=20;i++)
-    {
-        factory.Push(new float[480],true);int expected=i;
-        await Until(()=>engine.Latest.RecoveredDiscontinuities==expected,"repeated idle glitches remain recoverable");
-    }
-    Assert(ReferenceEquals(original,factory.Current) && engine.Status.State==AudioRunState.Monitoring,"Idle recovery retains device and RAW stream");
-    Assert(double.IsNegativeInfinity(engine.Latest.RmsDbfs),"Gap resets rolling RMS, no fabricated old energy");
-    Assert(engine.Latest.Spectrum==null && engine.Latest.FrequencyHz==null,"Gap cannot connect old FFT or pitch windows");
-    Near(engine.Latest.HeldPeakDbfs!.Value,held,.001,"Gap recovery retains held peak");
-    Assert(engine.Latest.FramePosition==480*21,"No fake samples inserted on gap");
-    Assert(diagnostics.Count(s=>s.StartsWith("Capture discontinuity:"))==20,"Each gap records detailed diagnostics");
-    await engine.StartRecordingAsync(root,RecordingMode.Shared);string path=engine.Status.FilePath!;
-    factory.Push(new float[480]);await Until(()=>engine.WrittenFrames==480,"recording after monitoring gap");
-    factory.Push(new float[480],true);
-    await Until(()=>engine.Status.Partial && engine.Status.State==AudioRunState.Monitoring,"Recording gap finalizes partial file and restores shared monitor");
-    using(var file=new WaveFileReader(path))Assert(file.Length==480*4,"Gap packet never silently appended to recording");
-    factory.Push(new float[480]);await Until(()=>engine.Latest.Valid,"Real samples resume after recording fault");
-    Assert(engine.WrittenFrames==480,"Recording never automatically resumes after gap");
-}
-{
-    var factory=new FakeFactory();await using var engine=new AudioEngine(factory);
-    await engine.SelectDeviceAsync(factory.Device);await engine.StartRecordingAsync(root,RecordingMode.Exclusive);string path=engine.Status.FilePath!;
-    factory.Push(new float[480]);await Until(()=>engine.WrittenFrames==480,"pause gap initial recording");
-    await engine.PauseAsync(true);factory.Push(new float[480],true);
-    await Until(()=>engine.Latest.RecoveredDiscontinuities==1,"Pause monitoring gap recovers");
-    Assert(engine.Status.State==AudioRunState.Paused && engine.WrittenFrames==480 && factory.Current!.Info.Exclusive,"Paused gap keeps file and capture mode");
-    await engine.PauseAsync(false);factory.Push(new float[240]);await Until(()=>engine.WrittenFrames==720,"resume after pause gap");
-    await engine.StopRecordingAsync();using var file=new WaveFileReader(path);Assert(file.Length==720*4,"Pause gap never writes gap or silence to file");
-}
-await CalibrationChecks.Run(root,Assert);
-await CalibrationRobustnessChecks.Run(root,Assert);
-await InputSettingsChecks.Run(root,Assert);
-await EncodingChecks.Run(root,Assert);
-Console.WriteLine($"Maximum pure-tone pitch error: {maximumPitchError:0.0000} cents");
-Console.WriteLine($"PASS: {checks} targeted assertions. No microphone, desktop, or browser used. Fixtures: {root}");
-
-sealed class FakeFactory:ICaptureFactory
-{
-    public AudioDevice Device {get;}=new("fake","Deterministic input",true);
-    public AudioFormat Format=new(48000,1,32,32,PcmEncoding.Float);
-    public bool DenySharedRaw,DenyExclusive,FailDuringOpen;
-    public FakeCapture? Current;
-    public IReadOnlyList<AudioDevice> Enumerate()=>[Device];
-    public AudioFormat? LastRequestedFormat;
-    public bool RejectPreferred;
-    public Task<InputFormatOptions> QueryFormatsAsync(AudioDevice device)=>Task.FromResult(new InputFormatOptions(Format,
-        new[]{Format,new AudioFormat(96000,Format.Channels,24,24,PcmEncoding.SignedInteger)}));
-    public Task<IAudioCaptureService> OpenAsync(AudioDevice device,bool exclusive,bool raw,long epoch,Func<CapturePacket,bool> packet,Action<Exception> fault,AudioFormat? preferredFormat=null)
-    {
-        if(exclusive && DenyExclusive)throw new IOException("Exclusive denied");
-        if(!exclusive && raw && DenySharedRaw)throw new RawUnavailableException("RAW unsupported");
-        LastRequestedFormat=preferredFormat;
-        if(preferredFormat!=null&&RejectPreferred)throw new NotSupportedException("Requested format unavailable");
-        Current=new(new(device,preferredFormat??Format,exclusive,raw,epoch),packet,fault);
-        if(FailDuringOpen)fault(new IOException("Capture stopped during preparation"));
-        return Task.FromResult<IAudioCaptureService>(Current);
-    }
-    public void Push(float[] samples,bool gap=false)=>Current!.Push(samples,gap);
-}
-sealed class FakeCapture(CaptureInfo info,Func<CapturePacket,bool> packet,Action<Exception> fault):IAudioCaptureService
-{
-    public CaptureInfo Info=>info;long _frame;bool _closed;
-    public bool Closed=>_closed;
-    public void TriggerFault()=>fault(new IOException("Old session fault"));
-    public void Push(float[] data,bool gap)
-    {
-        if(_closed)throw new InvalidOperationException("Closed capture");
-        int width=info.Format.Bits/8;var bytes=ArrayPool<byte>.Shared.Rent(data.Length*width);
-        if(info.Format.Encoding==PcmEncoding.Float)MemoryMarshal.AsBytes(data.AsSpan()).CopyTo(bytes);
-        else for(int i=0;i<data.Length;i++)
+        await run(directory,(condition,message)=>
         {
-            long scale=1L<<(info.Format.ValidBits-1);
-            int code=(int)(Math.Clamp((long)Math.Round(data[i]*scale),-scale,scale-1)<<(info.Format.Bits-info.Format.ValidBits));
-            var target=bytes.AsSpan(i*width,width);
-            if(width==2)BinaryPrimitives.WriteInt16LittleEndian(target,(short)code);
-            else if(width==3){target[0]=(byte)code;target[1]=(byte)(code>>8);target[2]=(byte)(code>>16);}
-            else BinaryPrimitives.WriteInt32LittleEndian(target,code);
-        }
-        var block=new CapturePacket(bytes,data.Length*width,data.Length/info.Format.Channels,_frame,false,gap);_frame+=block.Frames;
-        if(!packet(block)){block.Dispose();fault(new IOException("queue overflow"));}
+            if(!condition)throw new Exception(message);
+            groupAssertions++;assertions++;
+        });
+        passed++;Console.WriteLine($"PASS [{name}]: {groupAssertions} assertions; {elapsed.Elapsed.TotalSeconds:F2}s");
     }
-    public ValueTask DisposeAsync(){_closed=true;return ValueTask.CompletedTask;}
+    catch(Exception error)
+    {
+        failed++;Console.Error.WriteLine($"FAIL [{name}] after {groupAssertions} assertions: {error}");
+    }
 }
-
-sealed class FailingWriter:IRecordingWriter
-{
-    public string Path=>"injected-disk-failure.wav";
-    public long WrittenFrames {get;private set;}
-    public Exception? Failure {get;private set;}
-    public bool Reject;
-    public bool TryWrite(ReadOnlySpan<float> samples){if(Failure!=null || Reject)return false;WrittenFrames+=samples.Length;return true;}
-    public void Fail()=>Failure=new IOException("Injected disk failure");
-    public Task CompleteAsync()=>Failure==null?Task.CompletedTask:Task.FromException(Failure);
-    public ValueTask DisposeAsync()=>new(CompleteAsync());
-}
+Console.WriteLine($"Groups: {passed} passed / {failed} failed; {assertions} assertions (not distinct scenarios or coverage). No microphone, desktop, or playback. Fixtures: {root}");
+Environment.ExitCode=failed==0?0:1;

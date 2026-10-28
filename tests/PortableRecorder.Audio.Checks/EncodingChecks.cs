@@ -13,9 +13,9 @@ static class EncodingChecks
         {
             var start=new ProcessStartInfo(encoder){UseShellExecute=false,CreateNoWindow=true,RedirectStandardOutput=true,RedirectStandardError=true};
             foreach(var arg in new[]{"-v","error","-i",path,"-f","f32le","-c:a","pcm_f32le","pipe:1"})start.ArgumentList.Add(arg);
-            using var process=Process.Start(start)!;var error=process.StandardError.ReadToEndAsync();using var bytes=new MemoryStream();await process.StandardOutput.BaseStream.CopyToAsync(bytes);
-            await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(15));check(process.ExitCode==0,"Compressed file decodes: "+await error);
-            return MemoryMarshal.Cast<byte,float>(bytes.ToArray()).ToArray();
+            var result=await ProcessCapture.RunAsync(start,TimeSpan.FromSeconds(15));
+            check(result.ExitCode==0,"Compressed file decodes: "+result.Error);
+            return MemoryMarshal.Cast<byte,float>(result.Bytes).ToArray();
         }
         float[] Signal(int rate,int frames,int channels)=>Enumerable.Range(0,frames*channels).Select(i=>
             (float)(Math.Round(.3*Math.Sin(2*Math.PI*(440+110*(i%channels))*(i/channels)/rate)*8388608)/8388608)).ToArray();
@@ -24,7 +24,12 @@ static class EncodingChecks
             await using(writer)
             {
                 for(int offset=0;offset<samples.Length;offset+=127*channels)
-                {check(writer.TryWrite(samples.AsSpan(offset,Math.Min(127*channels,samples.Length-offset))),"Encoder accepts irregular whole-channel block");if(offset%(127*channels*16)==0)await Task.Delay(1);}
+                {
+                    if(!writer.TryWrite(samples.AsSpan(offset,Math.Min(127*channels,samples.Length-offset))))
+                        throw new IOException("Encoder rejected a block in "+writer.Path,writer.Failure);
+                    if(offset%(127*channels*16)==0)await Task.Delay(1);
+                }
+                check(true,"All irregular blocks accepted: "+Path.GetFileName(writer.Path));
                 await writer.CompleteAsync();check(writer.WrittenFrames==samples.Length/channels,"Written frame count exact");
                 check(writer.AuxiliaryPaths.All(p=>!File.Exists(p)),"Successful encoder removes staging file");
             }

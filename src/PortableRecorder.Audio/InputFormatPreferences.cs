@@ -13,9 +13,8 @@ public sealed class InputFormatPreferences
         _path=path??Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"PortableRecorder","input-formats.json");
         try
         {
-            if(!File.Exists(_path))return;
-            if(new FileInfo(_path).Length>1024*1024)throw new InvalidDataException("输入格式偏好文件过大。");
-            _formats=JsonSerializer.Deserialize<Dictionary<string,AudioFormat>>(File.ReadAllText(_path))??throw new InvalidDataException("输入格式偏好为空。");
+            if(!File.Exists(_path)&&!Directory.Exists(_path))return;
+            _formats=JsonSerializer.Deserialize<Dictionary<string,AudioFormat>>(AtomicFile.ReadTextBounded(_path,1024*1024,"输入格式偏好文件过大。"))??throw new InvalidDataException("输入格式偏好为空。");
             if(_formats.Any(p=>string.IsNullOrWhiteSpace(p.Key)||!Valid(p.Value)))throw new InvalidDataException("输入格式偏好无效。");
         }
         catch(Exception e) when(e is IOException or UnauthorizedAccessException or JsonException or InvalidDataException)
@@ -31,7 +30,7 @@ public sealed class InputFormatPreferences
         lock(_gate)
         {
             var next=new Dictionary<string,AudioFormat>(_formats);if(format==null)next.Remove(id);else next[id]=format;
-            CalibrationLibrary.AtomicWrite(_path,JsonSerializer.SerializeToUtf8Bytes(next));_formats=next;Warning=null;
+            AtomicFile.WriteAllBytes(_path,JsonSerializer.SerializeToUtf8Bytes(next),1024*1024);_formats=next;Warning=null;
         }
     }
 }

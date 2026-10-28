@@ -44,7 +44,15 @@ public sealed class CompressedAudioWriter:IRecordingWriter
         else Add("-c:a","libmp3lame","-q:a",encoding.Quality.ToString(CultureInfo.InvariantCulture),"-compression_level","2","-write_xing","1","-f","mp3");
         Add(_staging);_process=new Process{StartInfo=start};
         try{if(!_process.Start())throw new IOException("无法启动音频编码器。");}
-        catch{_process.Dispose();_destination.Dispose();File.Delete(path);throw;}
+        catch(Exception startError)
+        {
+            Exception failure=startError;
+            try{_process.Dispose();}catch(Exception error){failure=AudioFailure.Combine(failure,error);}
+            try{_destination.Dispose();}catch(Exception error){failure=AudioFailure.Combine(failure,error);}
+            try{File.Delete(path);}catch(Exception error){failure=AudioFailure.Combine(failure,error);}
+            System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(failure).Throw();
+            throw;
+        }
         _diagnostics=ReadDiagnostics();_worker=Task.Run(WriteLoop);
     }
     private async Task<string> ReadDiagnostics()
@@ -66,7 +74,13 @@ public sealed class CompressedAudioWriter:IRecordingWriter
         if(_queue.Writer.TryWrite(new(buffer,samples.Length)))return true;
         ArrayPool<float>.Shared.Return(buffer);Interlocked.Add(ref _queuedBytes,-bytes);return false;
     }
-    private void Fail(Exception error){Interlocked.CompareExchange(ref _failure,error,null);_queue.Writer.TryComplete();}
+    private void Fail(Exception error)
+    {
+        Exception? previous;
+        do{previous=Failure;}
+        while(Interlocked.CompareExchange(ref _failure,AudioFailure.Combine(previous,error),previous)!=previous);
+        _queue.Writer.TryComplete();
+    }
     private async Task WriteLoop()
     {
         try
@@ -100,12 +114,21 @@ public sealed class CompressedAudioWriter:IRecordingWriter
         {
             _queue.Writer.TryComplete();
             while(_queue.Reader.TryRead(out var block)){Interlocked.Add(ref _queuedBytes,-block.Count*4L);ArrayPool<float>.Shared.Return(block.Data);}
-            try{if(!_process.HasExited){_process.Kill(true);await _process.WaitForExitAsync();}}catch{}
-            try{await _diagnostics;}catch{}
-            _process.Dispose();
+            try
+            {
+                if(!_process.HasExited)
+                {
+                    _process.Kill(true);
+                    await _process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5));
+                }
+            }
+            catch(Exception error){Fail(new IOException("编码器进程清理失败："+error.Message,error));}
+            try{await _diagnostics.WaitAsync(TimeSpan.FromSeconds(5));}
+            catch(Exception error){Fail(new IOException("编码器错误输出收尾失败："+error.Message,error));}
+            try{_process.Dispose();}catch(Exception error){Fail(error);}
             try{await _destination.DisposeAsync();}catch(Exception error){Fail(error);}
         }
     }
-    public async Task CompleteAsync(){_queue.Writer.TryComplete();await _worker;if(Failure is Exception error)throw new IOException(error.Message,error);}
+    public async Task CompleteAsync(){_queue.Writer.TryComplete();await _worker;if(Failure is Exception error)throw new IOException(AudioFailure.Describe(error),error);}
     public async ValueTask DisposeAsync()=>await CompleteAsync();
 }

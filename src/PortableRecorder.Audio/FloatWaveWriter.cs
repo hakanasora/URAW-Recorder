@@ -24,7 +24,12 @@ public sealed class FloatWaveWriter:IRecordingWriter
         _file=new FileStream(path,FileMode.CreateNew,FileAccess.ReadWrite,FileShare.Read,65536,FileOptions.SequentialScan);
         try{_wave=new WaveFileWriter(_file,WaveFormat.CreateIeeeFloatWaveFormat(capture.SampleRate,capture.Channels),
             new WaveFileWriterOptions{EnableRf64=true,Rf64PromotionThreshold=testRf64Threshold??uint.MaxValue});}
-        catch{_file.Dispose();throw;}
+        catch(Exception headerError)
+        {
+            try{_file.Dispose();}
+            catch(Exception cleanupError){throw AudioFailure.Combine(headerError,cleanupError);}
+            throw;
+        }
         _worker=Task.Run(WriteLoop);
     }
     public bool TryWrite(ReadOnlySpan<float> samples)
@@ -56,14 +61,16 @@ public sealed class FloatWaveWriter:IRecordingWriter
         finally
         {
             while(_queue.Reader.TryRead(out var block)){Interlocked.Add(ref _queuedBytes,-block.Count*4L);ArrayPool<float>.Shared.Return(block.Data);}
-            try{_wave.Dispose();}catch(Exception error){Interlocked.CompareExchange(ref _failure,error,null);}
-            try{_file.Dispose();}catch(Exception error){Interlocked.CompareExchange(ref _failure,error,null);}
+            try{_wave.Dispose();}catch(Exception error){RecordCleanupFailure(error);}
+            try{_file.Dispose();}catch(Exception error){RecordCleanupFailure(error);}
         }
     }
+    private void RecordCleanupFailure(Exception error)
+        =>Volatile.Write(ref _failure,AudioFailure.Combine(Failure,error));
     public async Task CompleteAsync()
     {
         _queue.Writer.TryComplete();await _worker.ConfigureAwait(false);
-        if(Failure is Exception error)throw new IOException("WAV 写入或文件头收尾失败，文件可能不完整。",error);
+        if(Failure is Exception error)throw new IOException("WAV 写入或文件头收尾失败，文件可能不完整："+AudioFailure.Describe(error),error);
     }
     public async ValueTask DisposeAsync()=>await CompleteAsync();
 }

@@ -101,7 +101,7 @@ static class CalibrationRobustnessChecks
         // Reopening at another actual format builds fresh kernels and per-channel state.
         library.Bind("fake",attenuate.Id);
         var higherRate=new FakeFactory{Format=new(96000,2,32,32,PcmEncoding.Float)};
-        await using(var engine=new AudioEngine(higherRate,calibrationLibrary:library,writerFactory:(path,format)=>new FloatWaveWriter(path,format,256)))
+        await using(var engine=new AudioEngine(higherRate,calibrationLibrary:library,writerFactory:(path,format,_)=>new FloatWaveWriter(path,format,256)))
         {
             await engine.SelectDeviceAsync(higherRate.Device);
             check(engine.Calibration.SampleRate==96000&&engine.Calibration.Channels==2&&engine.Calibration.LatencyFrames==18431,"Format change rebuilds kernel / channel states");

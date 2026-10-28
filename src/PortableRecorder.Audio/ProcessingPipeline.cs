@@ -89,14 +89,16 @@ internal sealed class ProcessingPipeline:IAsyncDisposable
     private void Deliver(ReadOnlySpan<float> samples,CalibrationOutput result)
     {
         int channels=_info!.Format.Channels;long first=_base+result.SourceStartFrame,last=first+result.Frames;
-        if(_writer?.Failure is Exception disk)throw new IOException("录制文件写入失败。",disk);
+        if(_writer?.Failure is Exception disk)throw new IOException("录制文件写入失败："+AudioFailure.Describe(disk),disk);
         if(result.Frames>0)
         {
             if(_writer!=null)foreach(var interval in _intervals)
             {
                 long a=Math.Max(first,interval.Start),b=Math.Min(last,interval.End);
                 if(b>a&&!_writer.TryWrite(samples.Slice(checked((int)(a-first)*channels),checked((int)(b-a)*channels))))
-                    throw new IOException("录制队列溢出或文件写入失败，未静默丢样本。",_writer.Failure);
+                    throw new IOException(_writer.Failure is Exception failure
+                        ? "录制文件写入失败："+AudioFailure.Describe(failure)
+                        : "录制队列溢出，未静默丢样本。",_writer.Failure);
             }
             _analyzer!.Process(samples,result.SourcePeak,last);_delivered=last;
         }
@@ -133,6 +135,8 @@ internal sealed class ProcessingPipeline:IAsyncDisposable
         }
         await Command(()=>
         {
+            // Repeated pause commands must not add boundaries or shorten an existing interval.
+            if(!detach&&_paused){done.TrySetResult();return;}
             long end=_paused?(_intervals.LastOrDefault()?.End??_delivered):_frames;
             if(!_paused&&_intervals.Count>0)_intervals[^1].End=end;
             _paused=true;_boundaries.Add(new(end,detach,done));
@@ -149,7 +153,12 @@ internal sealed class ProcessingPipeline:IAsyncDisposable
         try{await done.Task.WaitAsync(TimeSpan.FromSeconds(3));}
         catch(TimeoutException){throw new IOException("等待校准尾部时采集未继续，本次录音可能不完整。");}
     }
-    public Task PauseAsync(bool paused)=>paused?BoundaryAsync(false,false):Command(()=>{_paused=false;_intervals.Add(new(_frames));});
+    public Task PauseAsync(bool paused)=>paused?BoundaryAsync(false,false):Command(()=>
+    {
+        if(!_paused||_writer==null)return;
+        _paused=false;
+        _intervals.Add(new(_frames));
+    });
     public Task DetachAsync(bool mathematicalDrain=false)=>BoundaryAsync(true,mathematicalDrain);
     public Task ResetPeakAsync()=>Command(()=>_analyzer!.ResetPeak());
     public async ValueTask DisposeAsync()

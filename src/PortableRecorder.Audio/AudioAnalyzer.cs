@@ -69,7 +69,7 @@ public sealed class SpectrumEstimator
     }
 }
 
-public sealed class AudioAnalyzer:IAudioAnalyzer
+public sealed class AudioAnalyzer:IDisposable
 {
     private readonly object _gate=new();
     private readonly AudioFormat _format;

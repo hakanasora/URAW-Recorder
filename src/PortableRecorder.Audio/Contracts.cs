@@ -48,12 +48,6 @@ public interface ICaptureFactory
 }
 
 
-public interface IAudioAnalyzer:IDisposable
-{
-    AudioSnapshot Latest {get;}
-    void Process(ReadOnlySpan<float> samples,double sourcePeak,long endFrame);
-    void ResetPeak();
-}
 public interface IRecordingWriter:IAsyncDisposable
 {
     IReadOnlyList<string> AuxiliaryPaths=>Array.Empty<string>();

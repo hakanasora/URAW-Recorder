@@ -27,32 +27,49 @@ public sealed class TransportSession
 public sealed class ShellViewModel:INotifyPropertyChanged
 {
     public event PropertyChangedEventHandler? PropertyChanged;
-    public AudioEngine Audio {get;}=new();
+    public AudioEngine Audio {get;}
     public TransportSession Session {get;}=new();
     public ObservableCollection<InputDevice> Devices {get;}=[];
     public ObservableCollection<CalibrationFile> Calibrations {get;}=[];
     public InputDevice SelectedInput {get;set;}=new("","未选择输入设备");
     public CalibrationFile? SelectedCalibration {get;set;}
     public MonitorMode Mode {get;set;}
-    public RecordingMode RecordMode {get;set;}=RecordingPreferences.Load();
+    public RecordingMode RecordMode {get;set;}
+    internal EncodingPreferences EncodingSettings {get;}
+    internal string? ModePreferenceWarning {get;}
+    internal string? EncodingPreferenceWarning {get;}
     public double GainDb {get;private set;}
     public double? HeldPeak {get;private set;}
     public string OutputPath {get;set;}="";
-    public RecordingEncoding Encoding {get;set;}=EncodingPreferences.Load().Encoding;
+    public RecordingEncoding Encoding {get;set;}
     public MonitorSnapshot Snapshot {get;private set;}=new(false,double.NaN,double.NaN,double.NaN,
         double.NegativeInfinity,double.NegativeInfinity,null,null,null,null);
     public Queue<PitchPoint> PitchHistory {get;}=new();
     public double MonitorTime {get;private set;}
     private long _epoch=-1,_pitchFrame=-1;
     private int _segment=-1;
-    public ShellViewModel()=>RefreshCalibrations();
+    private long _calibrationLibraryRevision=-1;
+    public ShellViewModel(AudioEngine? audio=null)
+    {
+        Audio=audio??new AudioEngine();
+        RecordMode=RecordingPreferences.Load(out var modeWarning);ModePreferenceWarning=modeWarning;
+        EncodingSettings=EncodingPreferences.Load(out var encodingWarning);EncodingPreferenceWarning=encodingWarning;
+        Encoding=EncodingSettings.Encoding;RefreshCalibrations();
+    }
     public void RefreshCalibrations()
     {
-        string? selected=Audio.CalibrationSelection.ProfileId;
-        var entries=Audio.Calibrations.Entries;
-        foreach(var old in Calibrations.Where(c=>c.Id!=null&&!entries.Any(e=>e.Id==c.Id)).ToArray())Calibrations.Remove(old);
-        foreach(var entry in entries)if(!Calibrations.Any(c=>c.Id==entry.Id))Calibrations.Add(new(Audio.Calibrations.GetLocalPath(entry.Id),entry.Name,entry.Id));
-        SelectedCalibration=Calibrations.FirstOrDefault(c=>c.Id==selected);
+        var snapshot=Audio.Calibrations.Snapshot;
+        if(snapshot.Revision!=_calibrationLibraryRevision)
+        {
+            var entries=snapshot.Entries.ToDictionary(e=>e.Id,StringComparer.OrdinalIgnoreCase);
+            for(int i=Calibrations.Count-1;i>=0;i--)if(Calibrations[i].Id is not string id||!entries.ContainsKey(id))Calibrations.RemoveAt(i);
+            var existing=Calibrations.Where(c=>c.Id!=null).Select(c=>c.Id!).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            foreach(var entry in snapshot.Entries)
+                if(existing.Add(entry.Id))Calibrations.Add(new(snapshot.GetLocalPath(entry.Id),entry.Name,entry.Id));
+            _calibrationLibraryRevision=snapshot.Revision;
+        }
+        string? selected=Audio.SelectedDevice is { } device?snapshot.GetSelection(device.Id).ProfileId:null;
+        SelectedCalibration=Calibrations.FirstOrDefault(c=>string.Equals(c.Id,selected,StringComparison.OrdinalIgnoreCase));
     }
     public void SetGain(double db)
     {
