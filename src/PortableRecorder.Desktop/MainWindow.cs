@@ -78,7 +78,7 @@ public sealed class MainWindow : Window
     private readonly List<Control> _configuration=[];
     private readonly SolidColorBrush _linkInk=Design.Brush(Design.Link);
     private Storyboard? _widthAnimation;
-    private bool _firstFrameLogged,_updatingForm,_started,_updatingCalibration;
+    private bool _firstFrameLogged,_updatingForm,_started,_updatingCalibration,_alternateTypography;
     private TextBlock? _managerError;
     private bool _audioBusy,_closing,_closeAllowed,_dialogOpen;
     private AudioRunState? _lastAudioState;
@@ -107,6 +107,7 @@ public sealed class MainWindow : Window
     public MainWindow()
     {
         _encodingPreferences=_state.EncodingSettings;
+        ApplyTypography(false);
         _modePreferenceWarning=_state.ModePreferenceWarning;_encodingPreferenceWarning=_state.EncodingPreferenceWarning;
         Title="Portable Recorder";ExtendsContentIntoTitleBar=true;
         _state.Audio.Diagnostic+=StartupLog.Write;
@@ -164,7 +165,7 @@ public sealed class MainWindow : Window
         _clock.HorizontalAlignment=HorizontalAlignment.Stretch;
         _sessionLabel.TextAlignment=TextAlignment.Center;_clock.TextAlignment=TextAlignment.Center;
         _clockSlot.Children.Add(_sessionLabel);_clockSlot.Children.Add(_clock);Grid.SetRow(_clock,1);
-        _clock.FontWeight=FontWeights.Bold;_clock.CharacterSpacing=-10;_transport.Children.Add(_clockSlot);
+        _clock.FontWeight=FontWeights.SemiBold;_clock.CharacterSpacing=-10;_transport.Children.Add(_clockSlot);
         _clockSlot.SizeChanged+=(_,_)=>LogClockCenters();
         _actions.Margin=new Thickness(0,0,28,0);_actions.VerticalAlignment=VerticalAlignment.Center;
         _pauseButton=Design.Button(Design.ActionContent("pause"),"暂停录制",Design.TransportAction);
@@ -265,14 +266,14 @@ public sealed class MainWindow : Window
         // the monitor's geometric center so it does not read high against the VU pair.
         _level.RenderTransform=new TranslateTransform{Y=8};
         _level.Width=200;_level.Margin=new Thickness(28,0,0,0);_level.HorizontalAlignment=HorizontalAlignment.Left;_level.VerticalAlignment=VerticalAlignment.Center;
-        var row=new StackPanel{Orientation=Orientation.Horizontal,Spacing=4,Height=72};_number.FontWeight=FontWeights.Bold;_number.CharacterSpacing=-20;row.Children.Add(_minus);row.Children.Add(_number);_level.Children.Add(row);
+        var row=new StackPanel{Orientation=Orientation.Horizontal,Spacing=4,Height=72};_number.FontWeight=FontWeights.SemiBold;_number.CharacterSpacing=-20;row.Children.Add(_minus);row.Children.Add(_number);_level.Children.Add(row);
         var units=Design.Text("dBFS · RMS",12,Design.Muted);units.Height=16;units.Margin=new Thickness(0,-6,0,0);_level.Children.Add(units);
-        _peak.FontWeight=FontWeights.Bold;
+        _peak.FontWeight=FontWeights.SemiBold;
         var peakRow=new StackPanel{Orientation=Orientation.Horizontal,Spacing=8,Height=28,Margin=new Thickness(0,24,0,0)};
         var reset=Design.Button(Design.Icon("\uE777",14),"清除历史输出峰值",Colors.Transparent);reset.Width=24;reset.Height=28;reset.Padding=new Thickness(0);reset.TabIndex=3;
         reset.Click+=async(_,_)=>await AudioCommand(_state.ResetPeakAsync);peakRow.Children.Add(_peak);peakRow.Children.Add(reset);_level.Children.Add(peakRow);_monitor.Children.Add(_level);
         _pitch.Width=200;_pitch.Margin=new Thickness(28,0,0,0);_pitch.HorizontalAlignment=HorizontalAlignment.Left;_pitch.VerticalAlignment=VerticalAlignment.Center;_pitch.Visibility=Visibility.Collapsed;
-        _note.Height=72;_note.CharacterSpacing=-20;_pitch.Children.Add(_note);var hz=new StackPanel{Orientation=Orientation.Horizontal,Spacing=5,Margin=new Thickness(0,10,0,0),Height=26};hz.Children.Add(_frequency);hz.Children.Add(Design.Text("Hz",12,Design.Muted));_pitch.Children.Add(hz);_pitch.Children.Add(new Border{Height=64});_monitor.Children.Add(_pitch);
+        _note.FontWeight=FontWeights.SemiBold;_frequency.FontWeight=FontWeights.SemiBold;_note.Height=72;_note.CharacterSpacing=0;_pitch.Children.Add(_note);var hz=new StackPanel{Orientation=Orientation.Horizontal,Spacing=5,Margin=new Thickness(0,10,0,0),Height=26};hz.Children.Add(_frequency);hz.Children.Add(Design.Text("Hz",12,Design.Muted));_pitch.Children.Add(hz);_pitch.Children.Add(new Border{Height=64});_monitor.Children.Add(_pitch);
         ToolTipService.SetToolTip(_level,"300 ms RMS；PEAK 为增益后历史逐样本峰值。VU 参考：峰值 −18 dBFS 的 1 kHz 正弦 = 0 VU，RMS 约 −21.01 dBFS。+3 VU 不等于数字削波：表盘刻度为 VU，PEAK 为 dBFS。多声道电平按能量平均，VU 显示前两路；单声道镜像显示。软件增益同时影响文件。 ");
         AutomationProperties.SetName(_number,"当前输出 RMS，dBFS");AutomationProperties.SetLiveSetting(_sessionLabel,AutomationLiveSetting.Polite);
     }
@@ -830,7 +831,7 @@ public sealed class MainWindow : Window
                 _note.Inlines.Clear();
                 var name=names[((n%12)+12)%12];
                 _note.Inlines.Add(new Run{Text=name[..1]});
-                if(name.Length>1)_note.Inlines.Add(new Run{Text="♯",FontSize=42,FontFamily=new FontFamily("Segoe UI Symbol")});
+                if(name.Length>1)_note.Inlines.Add(new Run{Text="♯ ",FontSize=42,FontFamily=new FontFamily("Segoe UI Symbol")});
                 _note.Inlines.Add(new Run{Text=$"{n/12-1}",FontSize=36});_displayedNote=n;
             }
             _frequency.Text=$"{_state.Snapshot.FrequencyHz:0.00}";
@@ -970,6 +971,17 @@ public sealed class MainWindow : Window
         _widthAnimation=storyboard;storyboard.Begin();
     }
 
+    private void ApplyTypography(bool alternate)
+    {
+        _alternateTypography=alternate;
+        var level=new FontFamily(alternate?"Bahnschrift":"ms-appx:///Assets/TypeStudy/IBMPlexSans.ttf#IBM Plex Sans");
+        var pitch=new FontFamily(alternate?"Bahnschrift":"ms-appx:///Assets/TypeStudy/Barlow-SemiBold.ttf#Barlow SemiBold");
+        _number.FontFamily=level;_peak.FontFamily=level;
+        _note.FontFamily=pitch;_frequency.FontFamily=pitch;_clock.FontFamily=pitch;
+        foreach(var text in new[]{_number,_peak,_note,_frequency,_clock})
+            Typography.SetNumeralAlignment(text,FontNumeralAlignment.Tabular);
+    }
+
     private void UpdateTextScale()
     {
         _renderer.TextScale=1;
@@ -982,7 +994,7 @@ public sealed class MainWindow : Window
         _main.Width=820;_main.Height=384;
         _monitor.Height=236;_monitor.MinHeight=0;
         _renderer.CentsTop=154;
-        _level.Width=200;_pitch.Width=200;
+        _level.Width=225;_pitch.Width=200;
         _level.VerticalAlignment=VerticalAlignment.Center;_pitch.VerticalAlignment=VerticalAlignment.Center;
         _level.Margin=new Thickness(28,0,0,0);_pitch.Margin=_level.Margin;
         _clockSlot.Width=240;
@@ -1004,6 +1016,6 @@ public sealed class MainWindow : Window
     {
         if(e.Key==VirtualKey.Escape&&_drawer.IsOpen){_drawer.Close();e.Handled=true;}
         var ctrl=(InputKeyboardSource.GetKeyStateForCurrentThread(VirtualKey.Control)&Windows.UI.Core.CoreVirtualKeyStates.Down)!=0;var alt=(InputKeyboardSource.GetKeyStateForCurrentThread(VirtualKey.Menu)&Windows.UI.Core.CoreVirtualKeyStates.Down)!=0;
-        if(e.Key==VirtualKey.T&&ctrl&&alt){e.Handled=true;var family=_number.FontFamily.Source=="Bahnschrift"?"Segoe UI Variable":"Bahnschrift";foreach(var text in new[]{_number,_note,_frequency,_clock})text.FontFamily=new FontFamily(family);}
+        if(e.Key==VirtualKey.T&&ctrl&&alt){e.Handled=true;ApplyTypography(!_alternateTypography);}
     }
 }
