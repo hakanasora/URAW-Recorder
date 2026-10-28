@@ -260,14 +260,15 @@ public sealed class MainWindow : Window
     }
     private void BuildReadouts()
     {
-        // Match the whole pitch block (note + Hz + cents ruler) optical center, not the monitor center:
-        // the pitch composition centers near 114.5 DIP; the 142 DIP level block centers there at -4.
-        _level.RenderTransform=new TranslateTransform{Y=-4};
+        // Number + unit are one primary readout group; PEAK is a separate secondary metric.
+        // Pull the unit into the number's line-box padding and keep the whole block slightly below
+        // the monitor's geometric center so it does not read high against the VU pair.
+        _level.RenderTransform=new TranslateTransform{Y=8};
         _level.Width=200;_level.Margin=new Thickness(28,0,0,0);_level.HorizontalAlignment=HorizontalAlignment.Left;_level.VerticalAlignment=VerticalAlignment.Center;
         var row=new StackPanel{Orientation=Orientation.Horizontal,Spacing=4,Height=72};_number.FontWeight=FontWeights.Bold;_number.CharacterSpacing=-20;row.Children.Add(_minus);row.Children.Add(_number);_level.Children.Add(row);
-        var units=Design.Text("dBFS · RMS",12,Design.Muted);units.Height=16;units.Margin=new Thickness(0,10,0,0);_level.Children.Add(units);
+        var units=Design.Text("dBFS · RMS",12,Design.Muted);units.Height=16;units.Margin=new Thickness(0,-6,0,0);_level.Children.Add(units);
         _peak.FontWeight=FontWeights.Bold;
-        var peakRow=new StackPanel{Orientation=Orientation.Horizontal,Spacing=8,Height=28,Margin=new Thickness(0,16,0,0)};
+        var peakRow=new StackPanel{Orientation=Orientation.Horizontal,Spacing=8,Height=28,Margin=new Thickness(0,24,0,0)};
         var reset=Design.Button(Design.Icon("\uE777",14),"清除历史输出峰值",Colors.Transparent);reset.Width=24;reset.Height=28;reset.Padding=new Thickness(0);reset.TabIndex=3;
         reset.Click+=async(_,_)=>await AudioCommand(_state.ResetPeakAsync);peakRow.Children.Add(_peak);peakRow.Children.Add(reset);_level.Children.Add(peakRow);_monitor.Children.Add(_level);
         _pitch.Width=200;_pitch.Margin=new Thickness(28,0,0,0);_pitch.HorizontalAlignment=HorizontalAlignment.Left;_pitch.VerticalAlignment=VerticalAlignment.Center;_pitch.Visibility=Visibility.Collapsed;
