@@ -24,9 +24,11 @@ static class PreferencesChecks
         {
             string settings=Path.Combine(root,"output-folder.json");
             Assert(OutputFolderPreferences.Load(out var warning,settings)==""&&warning==null,"New install keeps the default recording folder");
+            Assert(OutputFolderPreferences.DisplayFolder("")==AudioEngine.DefaultRecordingFolder,"Empty preference displays the recording engine default");
             string folder=Path.Combine(root,"录音 空间");
             OutputFolderPreferences.Save(folder,settings);
             Assert(OutputFolderPreferences.Load(out warning,settings)==folder&&warning==null,"Chosen Unicode output folder survives process reload");
+            Assert(OutputFolderPreferences.DisplayFolder(folder)==folder,"Custom folder is displayed unchanged");
             Assert(!Directory.Exists(folder),"Remembering a folder does not create it");
             using(var locked=new FileStream(settings,FileMode.Open,FileAccess.Read,FileShare.Read))
             {

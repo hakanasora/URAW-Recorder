@@ -108,8 +108,19 @@ internal sealed class WasapiCaptureSession:IAudioCaptureService
             ArrayPool<byte>.Shared.Return(packetWarm);ArrayPool<byte>.Shared.Return(warm);
             var waits=new WaitHandle[]{signal,_stop.Token.WaitHandle};
             var continuity=new CaptureContinuity();
-            var info=new CaptureInfo(description,format,exclusive,raw,epoch){StreamDiagnostics=
-                $"bufferFrames={bufferFrames}; bufferMs={bufferFrames*1000d/format.SampleRate:F3}; requestedMs={duration/10000d:F3}; defaultPeriodMs={client.DefaultDevicePeriod/10000d:F3}; scheduling={scheduling}"};
+            EndpointVolumeSnapshot? volume=null;string volumeDiagnostic;
+            try
+            {
+                var endpointVolume=device.AudioEndpointVolume;
+                float db=endpointVolume.MasterVolumeLevel;
+                if(!float.IsFinite(db))throw new NotSupportedException("Non-finite endpoint volume");
+                volume=new(db,((int)endpointVolume.HardwareSupport&1)!=0);
+                volumeDiagnostic=$"endpointDb={db:F3}; hardwareVolume={volume.HardwareVolume}";
+            }
+            catch(Exception error)when(error is COMException or NotSupportedException)
+            {volumeDiagnostic=$"endpointVolumeUnavailable=0x{error.HResult:X8}";}
+            var info=new CaptureInfo(description,format,exclusive,raw,epoch){EndpointVolume=volume,StreamDiagnostics=
+                $"bufferFrames={bufferFrames}; bufferMs={bufferFrames*1000d/format.SampleRate:F3}; requestedMs={duration/10000d:F3}; defaultPeriodMs={client.DefaultDevicePeriod/10000d:F3}; scheduling={scheduling}; {volumeDiagnostic}"};
             long lastWake=Stopwatch.GetTimestamp();
             client.Start();
             started=true;

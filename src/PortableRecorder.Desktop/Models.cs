@@ -40,7 +40,6 @@ public sealed class ShellViewModel:INotifyPropertyChanged
     internal string? EncodingPreferenceWarning {get;}
     public double GainDb {get;private set;}
     public double? HeldPeak {get;private set;}
-    public string OutputPath {get;set;}="";
     public RecordingEncoding Encoding {get;set;}
     public MonitorSnapshot Snapshot {get;private set;}=new(false,double.NaN,double.NaN,double.NaN,
         double.NegativeInfinity,double.NegativeInfinity,null,null,null,null);

@@ -28,7 +28,9 @@ internal static class OutputFolderPreferences
     public static void Save(string folder,string? path=null)
         =>AtomicFile.WriteAllBytes(path??DefaultPath,JsonSerializer.SerializeToUtf8Bytes(new{OutputFolder=Normalize(folder)}),MaximumBytes);
 
-    private static string Normalize(string folder)
+    internal static string DisplayFolder(string folder)=>string.IsNullOrWhiteSpace(folder)?AudioEngine.DefaultRecordingFolder:folder;
+
+    internal static string Normalize(string folder)
     {
         if(string.IsNullOrWhiteSpace(folder))return "";
         folder=folder.Trim();

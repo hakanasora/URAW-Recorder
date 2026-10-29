@@ -210,6 +210,7 @@ public sealed class AudioEngine:IAsyncDisposable
             System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(failure).Throw();
         }
     }
+    public static string DefaultRecordingFolder=>System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyMusic),"Portable Recorder");
     public async Task StartRecordingAsync(string directory,RecordingMode mode,RecordingEncoding? encoding=null)
     {
         await _commands.WaitAsync();
@@ -234,7 +235,7 @@ public sealed class AudioEngine:IAsyncDisposable
             var summaryProfile=calibration.ProfileId==null?null:await Task.Run(()=>Calibrations.Read(calibration.ProfileId));
             encoding??=new();encoding.Validate(_capture.Info.Format);
             Set(AudioRunState.Preparing,"正在准备录音文件");
-            directory=string.IsNullOrWhiteSpace(directory)?System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyMusic),"Portable Recorder"):System.IO.Path.GetFullPath(directory);
+            directory=string.IsNullOrWhiteSpace(directory)?DefaultRecordingFolder:System.IO.Path.GetFullPath(directory);
             Directory.CreateDirectory(directory);
             string stamp=DateTime.Now.ToString("yyyyMMdd-HHmmss-fff");
             for(int suffix=0;;suffix++)

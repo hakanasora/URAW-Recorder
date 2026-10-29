@@ -13,7 +13,10 @@ public sealed record AudioFormat(int SampleRate,int Channels,int Bits,int ValidB
 public sealed record CaptureInfo(AudioDevice Device,AudioFormat Format,bool Exclusive,bool Raw,long Epoch)
 {
     public string? StreamDiagnostics {get;init;}
+    public EndpointVolumeSnapshot? EndpointVolume {get;init;}
 }
+// Read-only metadata at stream opening; never used to rescale captured samples.
+public sealed record EndpointVolumeSnapshot(float Decibels,bool HardwareVolume);
 public sealed record InputFormatOptions(AudioFormat Shared,IReadOnlyList<AudioFormat> Exclusive);
 public sealed record SpectrumFrame(double[] FrequenciesHz,float[] Dbfs,int FftSize,long EndFrame);
 public sealed record AudioSnapshot(long Epoch,long FramePosition,int SampleRate,int Channels,bool Valid,

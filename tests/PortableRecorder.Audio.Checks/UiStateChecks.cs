@@ -5,6 +5,10 @@ static class UiStateChecks
 {
     public static async Task Run(string root,Action<bool,string> check)
     {
+        check(InputFormatPresentation.EndpointGain(new(30,false),false).Contains("+30.0 dB")&&InputFormatPresentation.EndpointGain(new(30,false),false).Contains("独占绕过"),"Shared software endpoint gain is disclosed");
+        check(InputFormatPresentation.EndpointGain(new(30,false),true).Contains("已绕过"),"Exclusive mode does not claim to apply Windows software gain");
+        check(!InputFormatPresentation.EndpointGain(new(6,true),true).Contains("已绕过"),"Hardware volume must not be described as bypassed");
+        check(InputFormatPresentation.EndpointGain(null,false).Contains("未知"),"Unavailable volume metadata is not fabricated as zero gain");
         var transportCases=new[]{
             (AudioRunState.Stopped,false,false,false,false,0,100),
             (AudioRunState.Opening,false,false,false,false,0,100),

@@ -183,7 +183,7 @@ public sealed class MainWindow : Window
         _stopButton.Click+=async(_,_)=>await AudioCommand(async()=>
         {
             if(_state.Session.Active)await _state.Audio.StopRecordingAsync();
-            else await _state.Audio.StartRecordingAsync(_state.OutputPath,_state.RecordMode,_state.Encoding);
+            else await _state.Audio.StartRecordingAsync(OutputFolderPreferences.Normalize(_path.Text),_state.RecordMode,_state.Encoding);
         });
         _activeButtons.Visibility=Visibility.Visible;_activeButtons.Spacing=0;
         _discardButton=Design.Button(Design.Icon("\uE74D",16,Design.White),"丢弃",Design.TransportAction);
@@ -373,12 +373,12 @@ public sealed class MainWindow : Window
             await AudioCommand(()=>_state.Audio.SetCalibrationAsync(file.Id));SyncCalibration();
         };
         SyncCalibration();
-        StyleField(_path);_path.VerticalContentAlignment=VerticalAlignment.Center;_path.Padding=new Thickness(12,8,12,8);_path.TextChanged+=(_,_)=>{_state.OutputPath=_path.Text;ToolTipService.SetToolTip(_path,_path.Text);};
+        StyleField(_path);_path.VerticalContentAlignment=VerticalAlignment.Center;_path.Padding=new Thickness(12,8,12,8);_path.TextChanged+=(_,_)=>ToolTipService.SetToolTip(_path,_path.Text);
         _path.LostFocus+=(_,_)=>SaveOutputFolder();
         var pathRow=new Grid{ColumnSpacing=8};pathRow.ColumnDefinitions.Add(new(){Width=new GridLength(1,GridUnitType.Star)});pathRow.ColumnDefinitions.Add(new(){Width=new GridLength(36)});pathRow.Children.Add(_path);
         var browse=Design.Button(Design.Icon("\uE8B7",16,Design.White),"浏览保存文件夹",Design.Field);browse.Width=36;browse.Height=36;browse.CornerRadius=new(3);browse.Padding=new Thickness(0);Grid.SetColumn(browse,1);pathRow.Children.Add(browse);_configuration.Add(browse);browse.Click+=async(_,_)=>await BrowseFolder();
         var pathGroup=Group("保存路径","\uE8B7",pathRow);_pathError.TextWrapping=TextWrapping.Wrap;_pathError.Visibility=Visibility.Collapsed;pathGroup.Children.Add(_pathError);_filePage.Children.Add(pathGroup);
-        _savedOutputFolder=OutputFolderPreferences.Load(out var folderWarning);_path.Text=_savedOutputFolder;
+        _savedOutputFolder=OutputFolderPreferences.Load(out var folderWarning);_path.Text=OutputFolderPreferences.DisplayFolder(_savedOutputFolder);
         if(folderWarning!=null){_pathError.Text=folderWarning;_pathError.Visibility=Visibility.Visible;StartupLog.Write(folderWarning);}
         StyleField(_formatBox);_formatBox.Items.Add(new ComboBoxItem{Content="WAV · 32 位浮点",Tag="WAV"});
         _formatBox.Items.Add(new ComboBoxItem{Content="FLAC · 24 位 PCM",Tag="FLAC"});
@@ -467,6 +467,14 @@ public sealed class MainWindow : Window
     }
     private void SaveOutputFolder()
     {
+        if(string.IsNullOrWhiteSpace(_path.Text))
+        {
+            try{OutputFolderPreferences.Save("");_savedOutputFolder="";_path.Text=OutputFolderPreferences.DisplayFolder("");_pathError.Visibility=Visibility.Collapsed;}
+            catch(Exception error)when(error is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+            {_pathError.Text="保存路径未记住："+error.Message;_pathError.Visibility=Visibility.Visible;StartupLog.Write(_pathError.Text);}
+            return;
+        }
+        if(_savedOutputFolder==""&&_path.Text==OutputFolderPreferences.DisplayFolder(""))return;
         if(_path.Text==_savedOutputFolder)return;
         try
         {
@@ -798,15 +806,17 @@ public sealed class MainWindow : Window
     {
         if(_closing)return;
         var audio=_state.Audio;bool shared=_state.RecordMode==RecordingMode.Shared;
-        var hintVisibility=shared?Visibility.Visible:Visibility.Collapsed;
+        var hintVisibility=Visibility.Visible;
         if(_inputFormatHint.Visibility!=hintVisibility)_inputFormatHint.Visibility=hintVisibility;
         var actual=audio.Status.Capture;
         var live=actual is{Exclusive:false}?actual.Format:_inputFormats?.Shared;
         var preferred=audio.PreferredInputFormat;
-        string key=$"{shared}|{_formatsDeviceId}|{_formatsBusy}|{_inputFormats?.GetHashCode()}|{live}|{preferred}|{actual?.Exclusive}|{actual?.Raw}|{_formatError}";
+        string key=$"{shared}|{_formatsDeviceId}|{_formatsBusy}|{_inputFormats?.GetHashCode()}|{live}|{preferred}|{actual?.Exclusive}|{actual?.Raw}|{actual?.EndpointVolume}|{_formatError}";
         bool available=audio.SelectedDevice!=null&&!_formatsBusy;
         _inputFormatBox.IsEnabled=InputFormatPresentation.CanSelect(_state.RecordMode,available,_formatsBusy,_inputFormats!=null,_audioBusy,_state.Session.Active);
         if(key==_inputFormatViewKey)return;_inputFormatViewKey=key;_updatingInputFormat=true;
+        string endpointGain=InputFormatPresentation.EndpointGain(actual?.EndpointVolume,actual?.Exclusive==true);
+        _inputFormatHint.Text=(shared?"共享格式沿用 Windows 设置。\n":"待机为共享，录制切换独占。\n")+endpointGain;
         try
         {
             _inputFormatBox.Items.Clear();_inputFormatBox.PlaceholderText=_formatsBusy?"正在读取格式":"无法读取输入格式";
@@ -832,6 +842,7 @@ public sealed class MainWindow : Window
         if(!shared)explanation+="\n独占录制设置："+(preferred?.Description??"自动（设备推荐）");
         if(actual!=null)explanation+=$"\n当前实际{(actual.Exclusive?"独占":"共享")} · {actual.Format.Description} · {(actual.Raw?"RAW 请求已接受":"普通输入（仅本次许可）")}";
         else explanation+="\n当前没有有效监看输入；若显示格式，它是最近查询的系统格式，不代表正在采集。";
+        explanation+="\n"+endpointGain+"\n该增益为打开流时读取；更改系统音量后请刷新输入。RAW 请求不代表绕过共享软件音量。";
         if(audio.InputFormats.Warning!=null)explanation+="\n"+audio.InputFormats.Warning;
         if(_formatError!=null)explanation+="\n"+_formatError;
         ToolTipService.SetToolTip(_inputFormatGroup,explanation);ToolTipService.SetToolTip(_inputFormatBox,explanation);

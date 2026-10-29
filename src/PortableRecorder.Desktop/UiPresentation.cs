@@ -26,6 +26,14 @@ internal sealed record TransportPresentation(bool Active, bool Paused, bool CanS
 
 internal static class InputFormatPresentation
 {
+    public static string EndpointGain(EndpointVolumeSnapshot? volume,bool exclusive)
+    {
+        if(volume==null)return "Windows 输入增益未知；共享与独占电平可能不同。";
+        string db=volume.Decibels.ToString("+0.0;-0.0;0.0",System.Globalization.CultureInfo.InvariantCulture);
+        return $"打开时 Windows 输入增益 {db} dB。"+(volume.HardwareVolume
+            ?"设备提供硬件音量控制，共享与独占均可能受其影响。"
+            :exclusive?"独占已绕过此软件增益；软件增益旋钮仍生效。":"共享受此软件增益影响，独占绕过它；切换时电平可能变化。");
+    }
     public static bool CanSelect(RecordingMode mode, bool hasDevice, bool querying, bool hasFormats,
         bool busy, bool recording) => mode == RecordingMode.Exclusive && hasDevice && !querying &&
         hasFormats && !busy && !recording;
