@@ -28,6 +28,22 @@ static class UiStateChecks
         check(TransportPresentation.From(AudioRunState.Paused,false,true).StatusText=="暂停中"&&
             TransportPresentation.From(AudioRunState.Finalizing,false,true).StatusText=="正在保存","Native status labels retained");
 
+        // Calibration keeps Preparing visible while delayed samples reach the writer. Those
+        // status changes and command completions must not restart the same transport motion.
+        var session=new TransportSession();RecordingStage? previous=null;int motions=0;
+        foreach(var state in new[]{AudioRunState.Monitoring,AudioRunState.Preparing,
+            AudioRunState.Preparing,AudioRunState.Recording,AudioRunState.Recording,AudioRunState.Finalizing})
+        {
+            session.Update(state,TimeSpan.Zero);
+            if(TransportPresentation.NeedsMotionUpdate(previous,session.Stage,false))motions++;
+            previous=session.Stage;
+        }
+        check(motions==2,"Calibration preparation, first samples and finalization preserve the existing recording motion");
+        check(TransportPresentation.NeedsMotionUpdate(previous,RecordingStage.Paused,false)&&
+            TransportPresentation.NeedsMotionUpdate(RecordingStage.Paused,RecordingStage.Recording,false),"Pause and resume each get a transport transition");
+        check(!TransportPresentation.NeedsMotionUpdate(previous,previous!.Value,false)&&
+            TransportPresentation.NeedsMotionUpdate(previous,previous.Value,true),"Command completion preserves motion; explicit accessibility reset settles it");
+
         check(InputFormatPresentation.CanSelect(RecordingMode.Exclusive,true,false,true,false,false),"Exclusive idle format selection enabled");
         foreach(var args in new[]{(RecordingMode.Shared,true,false,true,false,false),(RecordingMode.Exclusive,false,false,true,false,false),
             (RecordingMode.Exclusive,true,true,true,false,false),(RecordingMode.Exclusive,true,false,false,false,false),

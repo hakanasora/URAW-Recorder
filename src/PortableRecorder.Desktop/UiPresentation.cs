@@ -5,6 +5,10 @@ namespace PortableRecorder.Desktop;
 internal sealed record TransportPresentation(bool Active, bool Paused, bool CanStop, bool CanPause,
     bool CanDiscard, string StatusText, int PauseWidth, int StopWidth)
 {
+    // Service states such as Preparing and Recording share one visual stage. A status
+    // refresh must not interrupt a transition that is already running for that stage.
+    public static bool NeedsMotionUpdate(RecordingStage? previous,RecordingStage current,bool reset)=>reset||previous!=current;
+
     public static TransportPresentation From(AudioRunState state, bool busy, bool calibrationReady)
     {
         bool paused = state == AudioRunState.Paused;

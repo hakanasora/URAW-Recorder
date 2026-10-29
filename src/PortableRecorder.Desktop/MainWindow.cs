@@ -37,6 +37,7 @@ public sealed class MainWindow : Window
     private CanvasSwapChain? _swapChain;
     private readonly SettingsDrawer _drawer;
     private readonly FixedWindowFrame _frame;
+    private readonly StartupPresentation _startupPresentation;
     private readonly Grid _primaryContent=new();
     private readonly NativeFade _monitorFade,_clockFade,_statusFade,_primaryFade,_pauseFade;
     private RecordingStage? _lastStage;
@@ -70,6 +71,7 @@ public sealed class MainWindow : Window
     private string _calibrationDescription="";
     private readonly ComboBox _deviceBox=new(),_calibrationBox=new(),_formatBox=new(),_qualityBox=new();
     private readonly TextBox _path=new(){PlaceholderText="选择文件夹",MinWidth=0};
+    private string _savedOutputFolder="";
     private readonly StackPanel _qualityGroup=new(){Spacing=0};
     private EncodingPreferences _encodingPreferences;
     private RecordingCodec? _qualityCodec;
@@ -111,7 +113,9 @@ public sealed class MainWindow : Window
         _modePreferenceWarning=_state.ModePreferenceWarning;_encodingPreferenceWarning=_state.EncodingPreferenceWarning;
         Title="Portable Recorder";ExtendsContentIntoTitleBar=true;
         _state.Audio.Diagnostic+=StartupLog.Write;
-        _frame=new FixedWindowFrame(this,()=>_root.XamlRoot?.RasterizationScale??1);
+        _startupPresentation=new StartupPresentation(this);
+        _frame=new FixedWindowFrame(this,()=>_root.XamlRoot?.RasterizationScale??FixedWindowFrame.NativeScale(this));
+        _frame.Initialize();
         _monitorFade=new NativeFade(_monitor,()=>_settings.AnimationsEnabled);
         _clockFade=new NativeFade(_clockSlot,()=>_settings.AnimationsEnabled);
         _statusFade=new NativeFade(_sessionLabel,()=>_settings.AnimationsEnabled);
@@ -214,6 +218,7 @@ public sealed class MainWindow : Window
                 RefreshSession(false);StartupLog.Write("Session ready");
                 RefreshValues();StartupLog.Write("Values ready");
                 _timer.Start();StartupLog.Write("Timer started");
+                CompositionTarget.Rendering+=OnRendering;
                 if(!_noCapture)
                 {
                     try{_deviceWatcher=new DeviceTopologyWatcher(()=>DispatcherQueue.TryEnqueue(()=>
@@ -222,7 +227,6 @@ public sealed class MainWindow : Window
                     await LoadDevices(manual:false);
                 }
                 else StartupLog.Write("诊断模式：未打开麦克风");
-                if(!_closing)CompositionTarget.Rendering+=OnRendering;
             }
             catch(Exception error){StartupLog.Write("Loaded failed: "+error);if(!_closing)throw;}
         };
@@ -240,6 +244,7 @@ public sealed class MainWindow : Window
         AppWindow.Closing+=async(_,args)=>
         {
             if(_closeAllowed)return;
+            SaveOutputFolder();
             args.Cancel=true;if(_closing)return;_closing=true;_deviceQueryVersion++;_formatQueryVersion++;_activeDialog?.Hide();_drawer.Dispose();_deviceRefreshTimer.Stop();_deviceWatcher?.Dispose();_deviceWatcher=null;
             _stopButton.IsEnabled=false;_pauseButton.IsEnabled=false;
             try{await _state.Audio.DisposeAsync();}
@@ -369,9 +374,12 @@ public sealed class MainWindow : Window
         };
         SyncCalibration();
         StyleField(_path);_path.VerticalContentAlignment=VerticalAlignment.Center;_path.Padding=new Thickness(12,8,12,8);_path.TextChanged+=(_,_)=>{_state.OutputPath=_path.Text;ToolTipService.SetToolTip(_path,_path.Text);};
+        _path.LostFocus+=(_,_)=>SaveOutputFolder();
         var pathRow=new Grid{ColumnSpacing=8};pathRow.ColumnDefinitions.Add(new(){Width=new GridLength(1,GridUnitType.Star)});pathRow.ColumnDefinitions.Add(new(){Width=new GridLength(36)});pathRow.Children.Add(_path);
         var browse=Design.Button(Design.Icon("\uE8B7",16,Design.White),"浏览保存文件夹",Design.Field);browse.Width=36;browse.Height=36;browse.CornerRadius=new(3);browse.Padding=new Thickness(0);Grid.SetColumn(browse,1);pathRow.Children.Add(browse);_configuration.Add(browse);browse.Click+=async(_,_)=>await BrowseFolder();
         var pathGroup=Group("保存路径","\uE8B7",pathRow);_pathError.TextWrapping=TextWrapping.Wrap;_pathError.Visibility=Visibility.Collapsed;pathGroup.Children.Add(_pathError);_filePage.Children.Add(pathGroup);
+        _savedOutputFolder=OutputFolderPreferences.Load(out var folderWarning);_path.Text=_savedOutputFolder;
+        if(folderWarning!=null){_pathError.Text=folderWarning;_pathError.Visibility=Visibility.Visible;StartupLog.Write(folderWarning);}
         StyleField(_formatBox);_formatBox.Items.Add(new ComboBoxItem{Content="WAV · 32 位浮点",Tag="WAV"});
         _formatBox.Items.Add(new ComboBoxItem{Content="FLAC · 24 位 PCM",Tag="FLAC"});
         _formatBox.Items.Add(new ComboBoxItem{Content="MP3 · LAME VBR",Tag="MP3"});_formatBox.SelectedIndex=(int)_encodingPreferences.Codec;
@@ -454,8 +462,22 @@ public sealed class MainWindow : Window
     private async Task BrowseFolder()
     {
         if(_state.Session.Active||_closing)return;
-        try{var result=await new FolderPicker(AppWindow.Id).PickSingleFolderAsync();if(_closing)return;if(result!=null)_path.Text=result.Path;_pathError.Visibility=Visibility.Collapsed;}
+        try{var result=await new FolderPicker(AppWindow.Id).PickSingleFolderAsync();if(_closing)return;if(result!=null){_path.Text=result.Path;SaveOutputFolder();}}
         catch(Exception error){StartupLog.Write("Folder picker: "+error);if(_closing)return;_pathError.Text="暂时无法打开文件夹选择器，请手动输入路径。";_pathError.Visibility=Visibility.Visible;}
+    }
+    private void SaveOutputFolder()
+    {
+        if(_path.Text==_savedOutputFolder)return;
+        try
+        {
+            OutputFolderPreferences.Save(_path.Text);_savedOutputFolder=_path.Text;
+            _pathError.Visibility=Visibility.Collapsed;
+        }
+        catch(Exception error)when(error is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+        {
+            _pathError.Text="保存路径未记住："+error.Message;_pathError.Visibility=Visibility.Visible;
+            StartupLog.Write(_pathError.Text);
+        }
     }
     private async Task AddCalibration()
     {
@@ -624,7 +646,7 @@ public sealed class MainWindow : Window
                 _renderer.Draw(_swapChain,drawing,_state);
             // CompositionTarget already supplies display pacing; do not wait for another vblank on the UI thread.
             _swapChain.Present(0);_drawFrames++;
-            if(!_firstFrameLogged){_firstFrameLogged=true;StartupLog.Write($"First swap-chain monitor frame drawn: {width} x {height}");}
+            if(!_firstFrameLogged){_firstFrameLogged=true;StartupLog.Write($"First swap-chain monitor frame drawn: {width} x {height}");_startupPresentation.FrameSubmitted();}
         }
         catch(Exception error)when(_renderDevice?.IsDeviceLost(error.HResult)==true)
         {StartupLog.Write("Monitor graphics device lost; recreating resources: "+error.Message);ReleaseRenderSurface();}
@@ -864,14 +886,24 @@ public sealed class MainWindow : Window
         var paused=stage==RecordingStage.Paused;
         var wasActive=_lastStage is RecordingStage.Recording or RecordingStage.Paused;
         var changed=stage!=_lastStage;
+        bool refreshMotion=TransportPresentation.NeedsMotionUpdate(_lastStage,stage,reset:!animate);
         animate &= _settings.AnimationsEnabled;
         _lastStage=stage;
-        var generation=++_transportGeneration;
         _clock.Text=_state.Session.DisplayTime;
-        _inputName.SetRecording(active,animate);
-        if(active)DispatcherQueue.TryEnqueue(LogClockCenters);
         foreach(var control in _configuration)control.IsEnabled=!active && !_audioBusy;
         SyncCalibration();SyncInputFormat();UpdateQuality();
+        var presentation=TransportPresentation.From(_state.Audio.Status.State,_audioBusy,_state.Audio.CalibrationReadyToRecord);
+        _stopButton.IsEnabled=presentation.CanStop;_pauseButton.IsEnabled=presentation.CanPause;_discardButton.IsEnabled=presentation.CanDiscard;
+        if(!refreshMotion)
+        {
+            // Calibration makes preparation observable for longer. Keep status and command
+            // availability current without cancelling the button/clock transition at each refresh.
+            _sessionLabel.Text=presentation.StatusText;
+            return;
+        }
+        var generation=++_transportGeneration;
+        _inputName.SetRecording(active,animate);
+        if(active)DispatcherQueue.TryEnqueue(LogClockCenters);
         _stopButton.CornerRadius=active?new CornerRadius(0,5,5,0):new CornerRadius(5);
         AutomationProperties.SetName(_stopButton,active?"停止录制":"开始录制");
         ToolTipService.SetToolTip(_stopButton,active?"停止录制":"开始录制");
@@ -899,7 +931,6 @@ public sealed class MainWindow : Window
         }
         else if(animate)_pauseFade.To(0,160);
         else{_pauseFade.Stop();_pauseButton.Opacity=0;}
-        var presentation=TransportPresentation.From(_state.Audio.Status.State,_audioBusy,_state.Audio.CalibrationReadyToRecord);
         var left=presentation.PauseWidth;var right=presentation.StopWidth;
         AnimateWidths(left,right,active?3:0,animate?240:0,()=>
         {

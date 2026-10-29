@@ -1,5 +1,6 @@
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
+using System.Runtime.InteropServices;
 using Windows.Graphics;
 
 namespace PortableRecorder.Desktop;
@@ -12,6 +13,15 @@ internal sealed class FixedWindowFrame(Window window, Func<double> scale)
     public const int PaneWidth = 264;
     private bool _initialized;
     private double _dpiScale;
+
+    public static double NativeScale(Window window)
+    {
+        uint dpi = GetDpiForWindow(WinRT.Interop.WindowNative.GetWindowHandle(window));
+        return dpi == 0 ? 1 : dpi / 96.0;
+    }
+
+    [DllImport("user32.dll")]
+    private static extern uint GetDpiForWindow(nint window);
 
     public void Initialize()
     {
