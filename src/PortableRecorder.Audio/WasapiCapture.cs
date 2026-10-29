@@ -7,6 +7,13 @@ namespace PortableRecorder.Audio;
 
 public sealed class WasapiCaptureFactory:ICaptureFactory
 {
+    public Task<EndpointVolumeSnapshot> QueryEndpointVolumeAsync(AudioDevice description)=>Task.Run(()=>
+    {
+        using var enumerator=new MMDeviceEnumerator();using var device=enumerator.GetDevice(description.Id);
+        var volume=device.AudioEndpointVolume;float db=volume.MasterVolumeLevel;
+        if(!float.IsFinite(db))throw new InvalidDataException("Windows 输入增益不可用。");
+        return new EndpointVolumeSnapshot(db,((int)volume.HardwareSupport&1)!=0,volume.Mute);
+    });
     public IReadOnlyList<AudioDevice> Enumerate()
     {
         using var enumerator=new MMDeviceEnumerator();
@@ -114,7 +121,7 @@ internal sealed class WasapiCaptureSession:IAudioCaptureService
                 var endpointVolume=device.AudioEndpointVolume;
                 float db=endpointVolume.MasterVolumeLevel;
                 if(!float.IsFinite(db))throw new NotSupportedException("Non-finite endpoint volume");
-                volume=new(db,((int)endpointVolume.HardwareSupport&1)!=0);
+                volume=new(db,((int)endpointVolume.HardwareSupport&1)!=0,endpointVolume.Mute);
                 volumeDiagnostic=$"endpointDb={db:F3}; hardwareVolume={volume.HardwareVolume}";
             }
             catch(Exception error)when(error is COMException or NotSupportedException)

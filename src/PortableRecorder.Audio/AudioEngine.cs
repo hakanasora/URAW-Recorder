@@ -75,8 +75,9 @@ public sealed class AudioEngine:IAsyncDisposable
     public void SetGain(double db)
     {
         if(!double.IsFinite(db))throw new ArgumentOutOfRangeException(nameof(db),"增益必须为有限数值。");
-        Interlocked.Exchange(ref _gain,Math.Pow(10,Math.Clamp(db,-60,24)/20));
+        Interlocked.Exchange(ref _gain,Math.Pow(10,Math.Clamp(db,-60,60)/20));
     }
+    public Task<EndpointVolumeSnapshot> QueryEndpointVolumeAsync(AudioDevice device)=>_factory.QueryEndpointVolumeAsync(device);
     public async Task ReconcileDevicesAsync(IReadOnlyList<AudioDevice> devices,bool manualRefresh=false)
     {
         await _commands.WaitAsync();

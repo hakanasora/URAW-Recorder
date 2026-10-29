@@ -26,6 +26,15 @@ internal sealed record TransportPresentation(bool Active, bool Paused, bool CanS
 
 internal static class InputFormatPresentation
 {
+    public static string? AlignmentUnavailable(EndpointVolumeSnapshot? volume)
+    {
+        if(volume==null||!float.IsFinite(volume.Decibels))return "Windows 输入增益不可用";
+        if(volume.Muted)return "Windows 输入已静音，无法对齐";
+        if(volume.HardwareVolume)return "设备使用硬件音量，无法按软件增益对齐";
+        if(volume.Decibels is <-60 or >60)return "Windows 增益超出软件增益范围";
+        return null;
+    }
+    public static string FormatGain(float db)=>db.ToString("+0.0;−0.0;0.0",System.Globalization.CultureInfo.InvariantCulture)+" dB";
     public static string EndpointGain(EndpointVolumeSnapshot? volume,bool exclusive)
     {
         if(volume==null)return "Windows 输入增益未知；共享与独占电平可能不同。";

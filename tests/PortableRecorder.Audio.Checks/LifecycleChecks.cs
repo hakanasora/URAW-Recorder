@@ -18,12 +18,12 @@ static class LifecycleChecks
             var factory=new FakeFactory();await using var engine=CreateEngine(root,factory);
             await engine.SelectDeviceAsync(factory.Device);Assert(!factory.Current!.Info.Exclusive && factory.Current.Info.Raw,"Startup shared RAW");
             factory.Push(Sine(48000,480,1000,.1));await Until(()=>engine.Latest.Valid,"initial frame");
-            engine.SetGain(6);await engine.StartRecordingAsync(root,RecordingMode.Shared);
+            engine.SetGain(30);await engine.StartRecordingAsync(root,RecordingMode.Shared);
             string path=engine.Status.FilePath!;factory.Push(new float[480].Select(_=>.1f).ToArray());await Until(()=>engine.WrittenFrames==480,"first write");
             await engine.PauseAsync(true);factory.Push(new float[480]);await Task.Delay(40);Assert(engine.WrittenFrames==480,"Pause excludes samples");
             await engine.PauseAsync(false);factory.Push(new float[240]);await Until(()=>engine.WrittenFrames==720,"resume write");
             await engine.StopRecordingAsync();Assert(engine.WrittenFrames==720,"stop exact tail");Near(engine.RecordedTime.TotalSeconds,.015,1e-9,"sample clock");
-            using var reader=new WaveFileReader(path);var first=new float[1];reader.ToSampleProvider().Read(first);Near(first[0],.1*Math.Pow(10,6d/20),1e-6,"Recorded gain");Assert(reader.Length==720*4,"Pause file length");
+            using var reader=new WaveFileReader(path);var first=new float[1];reader.ToSampleProvider().Read(first);Near(first[0],.1*Math.Pow(10,30d/20),1e-6,"Recorded +30 dB gain preserves float overrange");Assert(reader.Length==720*4,"Pause file length");
             await engine.StartRecordingAsync(root,RecordingMode.Exclusive);Assert(factory.Current!.Info.Exclusive,"Exclusive only on record");
             factory.Push(new float[480]);await Until(()=>engine.WrittenFrames==480,"exclusive write");await engine.StopRecordingAsync();Assert(!factory.Current!.Info.Exclusive,"Restore shared");
             factory.DenyExclusive=true;bool denied=false;try{await engine.StartRecordingAsync(root,RecordingMode.Exclusive);}catch(IOException){denied=true;}

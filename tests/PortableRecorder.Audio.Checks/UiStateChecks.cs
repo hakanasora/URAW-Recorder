@@ -9,6 +9,9 @@ static class UiStateChecks
         check(InputFormatPresentation.EndpointGain(new(30,false),true).Contains("已绕过"),"Exclusive mode does not claim to apply Windows software gain");
         check(!InputFormatPresentation.EndpointGain(new(6,true),true).Contains("已绕过"),"Hardware volume must not be described as bypassed");
         check(InputFormatPresentation.EndpointGain(null,false).Contains("未知"),"Unavailable volume metadata is not fabricated as zero gain");
+        check(InputFormatPresentation.AlignmentUnavailable(new(30,false))==null&&InputFormatPresentation.AlignmentUnavailable(new(-60,false))==null,"Supported software gain endpoints can be aligned");
+        check(InputFormatPresentation.AlignmentUnavailable(new(0,false,true))!=null&&InputFormatPresentation.AlignmentUnavailable(new(0,true))!=null,"Muted and hardware endpoints cannot be aligned");
+        check(InputFormatPresentation.AlignmentUnavailable(null)!=null&&InputFormatPresentation.AlignmentUnavailable(new(61,false))!=null&&InputFormatPresentation.AlignmentUnavailable(new(-61,false))!=null,"Unknown and out-of-range gain cannot be aligned");
         var transportCases=new[]{
             (AudioRunState.Stopped,false,false,false,false,0,100),
             (AudioRunState.Opening,false,false,false,false,0,100),

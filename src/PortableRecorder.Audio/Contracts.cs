@@ -16,7 +16,7 @@ public sealed record CaptureInfo(AudioDevice Device,AudioFormat Format,bool Excl
     public EndpointVolumeSnapshot? EndpointVolume {get;init;}
 }
 // Read-only metadata at stream opening; never used to rescale captured samples.
-public sealed record EndpointVolumeSnapshot(float Decibels,bool HardwareVolume);
+public sealed record EndpointVolumeSnapshot(float Decibels,bool HardwareVolume,bool Muted=false);
 public sealed record InputFormatOptions(AudioFormat Shared,IReadOnlyList<AudioFormat> Exclusive);
 public sealed record SpectrumFrame(double[] FrequenciesHz,float[] Dbfs,int FftSize,long EndFrame);
 public sealed record AudioSnapshot(long Epoch,long FramePosition,int SampleRate,int Channels,bool Valid,
@@ -53,6 +53,7 @@ public interface ICaptureFactory
     Task<IAudioCaptureService> OpenAsync(AudioDevice device,bool exclusive,bool raw,long epoch,
         Func<CapturePacket,bool> packet,Action<Exception> fault,AudioFormat? preferredFormat=null);
     Task<InputFormatOptions> QueryFormatsAsync(AudioDevice device);
+    Task<EndpointVolumeSnapshot> QueryEndpointVolumeAsync(AudioDevice device)=>Task.FromException<EndpointVolumeSnapshot>(new NotSupportedException("无法读取 Windows 输入增益。"));
 }
 
 

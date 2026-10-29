@@ -115,7 +115,7 @@ public sealed class GainControl : UserControl
         steps.Children.Add(down);Grid.SetRow(down,2);
         var stepFrame=new Border{BorderThickness=new Thickness(1,0,0,0),BorderBrush=Design.Brush(Design.Hex("48484B")),Child=steps};
         Grid.SetColumn(stepFrame,1);input.Children.Add(stepFrame);_entry.Child=input;
-        AutomationProperties.SetName(_editor,"输入软件增益，单位 dB，范围负 60 至正 24");
+        AutomationProperties.SetName(_editor,"输入软件增益，单位 dB，范围负 60 至正 60");
         _entry.GotFocus+=(_,_)=>_entry.BorderBrush=Design.Brush(_accent);
         _entry.LostFocus+=(_,_)=>DispatcherQueue.TryEnqueue(()=>
         {
@@ -207,7 +207,7 @@ public sealed class GainControl : UserControl
         _lastGain=value;
         _number.Text=value==0?"0 dB":$"{(value>0?"+":"−")}{Math.Abs(value):0.0} dB";
         _number.Foreground=Design.Brush(value==0?Design.Zero:Design.Blue);
-        _marker.RenderTransform=new RotateTransform{CenterX=8.5,CenterY=8.5,Angle=value/(value>=0?24:60)*130};
+        _marker.RenderTransform=new RotateTransform{CenterX=8.5,CenterY=8.5,Angle=value/60*130};
     }
     protected override AutomationPeer OnCreateAutomationPeer()=>new GainPeer(this,_state);
     private sealed class GainPeer(GainControl owner,ShellViewModel state):FrameworkElementAutomationPeer(owner),IRangeValueProvider
@@ -216,7 +216,7 @@ public sealed class GainControl : UserControl
         protected override AutomationControlType GetAutomationControlTypeCore()=>AutomationControlType.Slider;
         protected override object GetPatternCore(PatternInterface pattern)=>pattern==PatternInterface.RangeValue?this:base.GetPatternCore(pattern);
         public bool IsReadOnly=>false;public double LargeChange=>1;public double SmallChange=>.1;
-        public double Maximum=>24;public double Minimum=>-60;public double Value=>state.GainDb;
+        public double Maximum=>60;public double Minimum=>-60;public double Value=>state.GainDb;
         public void SetValue(double value)=>state.SetGain(value);
     }
 }

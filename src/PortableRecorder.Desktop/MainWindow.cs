@@ -61,6 +61,7 @@ public sealed class MainWindow : Window
     private readonly Border _calibrationFileRow=new();
     private readonly Grid _inputFormatGroup=new();
     private readonly TextBlock _inputFormatHint=Design.Text("当录制模式为共享时，该选项不可用",11,Design.Muted);
+    private readonly TextBlock _modeGainHint=Design.Text("",11,Design.Muted);
     private readonly ScrollViewer _inputHost=new(),_fileHost=new();
     private InputFormatOptions? _inputFormats;
     private string? _formatsDeviceId,_inputFormatViewKey,_formatError;
@@ -316,7 +317,8 @@ public sealed class MainWindow : Window
         _recordModeBox.SelectedIndex=_state.RecordMode==RecordingMode.Exclusive?0:1;
         _recordModeBox.SelectionChanged+=(_,_)=>{SetRecordingMode(_recordModeBox.SelectedIndex==0?RecordingMode.Exclusive:RecordingMode.Shared);_inputFormatViewKey=null;SyncInputFormat();};
         AutomationProperties.SetName(_recordModeBox,"录制模式");
-        _inputPage.Children.Add(Group("录制模式","\uE713",_recordModeBox,4));
+        var modeGroup=Group("录制模式","\uE713",_recordModeBox,4);
+        _modeGainHint.TextWrapping=TextWrapping.Wrap;modeGroup.Children.Add(_modeGainHint);_inputPage.Children.Add(modeGroup);
         StyleField(_deviceBox);_deviceBox.ItemsSource=_state.Devices;_deviceBox.DisplayMemberPath="FriendlyName";
         AutomationProperties.SetName(_deviceBox,"输入设备");
         _deviceBox.SelectionChanged+=async(_,_)=>
@@ -816,7 +818,20 @@ public sealed class MainWindow : Window
         _inputFormatBox.IsEnabled=InputFormatPresentation.CanSelect(_state.RecordMode,available,_formatsBusy,_inputFormats!=null,_audioBusy,_state.Session.Active);
         if(key==_inputFormatViewKey)return;_inputFormatViewKey=key;_updatingInputFormat=true;
         string endpointGain=InputFormatPresentation.EndpointGain(actual?.EndpointVolume,actual?.Exclusive==true);
-        _inputFormatHint.Text=(shared?"共享格式沿用 Windows 设置。\n":"待机为共享，录制切换独占。\n")+endpointGain;
+        _inputFormatHint.Text=shared?"共享格式沿用 Windows 设置。":"仅当录制时切换为独占。";
+        _modeGainHint.Inlines.Clear();var volume=actual?.EndpointVolume;
+        string? unavailable=InputFormatPresentation.AlignmentUnavailable(volume);
+        if(unavailable!=null)_modeGainHint.Inlines.Add(new Microsoft.UI.Xaml.Documents.Run{Text=unavailable+"。"});
+        else if(shared)_modeGainHint.Inlines.Add(new Microsoft.UI.Xaml.Documents.Run{Text=InputFormatPresentation.FormatGain(volume!.Decibels)+" 的软件增益由 Windows 音频管理控制（打开时读取）。"});
+        else
+        {
+            _modeGainHint.Inlines.Add(new Microsoft.UI.Xaml.Documents.Run{Text="欲对齐 Windows 软件增益后的电平，需 "});
+            var link=new Microsoft.UI.Xaml.Documents.Hyperlink{Foreground=_linkInk,UnderlineStyle=Microsoft.UI.Xaml.Documents.UnderlineStyle.Single};
+            link.Inlines.Add(new Microsoft.UI.Xaml.Documents.Run{Text=InputFormatPresentation.FormatGain(volume!.Decibels)});
+            link.Click+=async(_,_)=>await ApplyWindowsGain();_modeGainHint.Inlines.Add(link);
+            _modeGainHint.Inlines.Add(new Microsoft.UI.Xaml.Documents.Run{Text="（打开时读取）。"});
+        }
+        ToolTipService.SetToolTip(_modeGainHint,"点击设置软件增益会立即影响监看与录音，可能造成削波。其他处理差异可能使电平不完全一致。Windows 音量变化后请刷新输入。");
         try
         {
             _inputFormatBox.Items.Clear();_inputFormatBox.PlaceholderText=_formatsBusy?"正在读取格式":"无法读取输入格式";
@@ -846,6 +861,21 @@ public sealed class MainWindow : Window
         if(audio.InputFormats.Warning!=null)explanation+="\n"+audio.InputFormats.Warning;
         if(_formatError!=null)explanation+="\n"+_formatError;
         ToolTipService.SetToolTip(_inputFormatGroup,explanation);ToolTipService.SetToolTip(_inputFormatBox,explanation);
+    }
+    private async Task ApplyWindowsGain()
+    {
+        var device=_state.Audio.SelectedDevice;
+        if(device==null||_state.RecordMode!=RecordingMode.Exclusive||_closing)return;
+        try
+        {
+            var volume=await _state.Audio.QueryEndpointVolumeAsync(device);
+            if(_closing)return;
+            if(_state.Audio.SelectedDevice?.Id!=device.Id||_state.RecordMode!=RecordingMode.Exclusive){await Message("无法对齐增益","设备或录制模式已改变，请重新选择。");return;}
+            var error=InputFormatPresentation.AlignmentUnavailable(volume);
+            if(error!=null){await Message("无法对齐增益",error);return;}
+            _state.SetGain(volume.Decibels);_gain.Refresh();
+        }
+        catch(Exception error){if(!_closing)await Message("无法对齐增益","读取 Windows 输入增益失败："+error.Message);}
     }
     private void RefreshValues()
     {

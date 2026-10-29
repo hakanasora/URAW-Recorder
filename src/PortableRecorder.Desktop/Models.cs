@@ -73,7 +73,7 @@ public sealed class ShellViewModel:INotifyPropertyChanged
     public void SetGain(double db)
     {
         if(!double.IsFinite(db))return;
-        GainDb=Math.Round(Math.Clamp(db,-60,24),1);if(Math.Abs(GainDb)<.05)GainDb=0;
+        GainDb=Math.Round(Math.Clamp(db,-60,60),1);if(Math.Abs(GainDb)<.05)GainDb=0;
         Audio.SetGain(GainDb);Notify();
     }
     public async Task ResetPeakAsync(){await Audio.ResetPeakAsync();Refresh();Notify();}
