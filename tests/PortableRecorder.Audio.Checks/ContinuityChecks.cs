@@ -27,6 +27,24 @@ static class ContinuityChecks
             Assert(!tracker.Observe(480,2960,0).Discontinuous,"Continuity continues after empty packet");
         }
         {
+            // Native gap evidence must survive the worker boundary. A generic gap message
+            // cannot distinguish a scheduler overrun from a timestamp-only driver report.
+            var factory=new MetadataCaptureFactory();
+            var diagnostics=new System.Collections.Concurrent.ConcurrentQueue<string>();
+            await using var engine=new AudioEngine(factory,new CalibrationLibrary(Path.Combine(root,"metadata-calibrations")),
+                inputFormats:new InputFormatPreferences(Path.Combine(root,"metadata-formats.json")));
+            engine.Diagnostic+=diagnostics.Enqueue;
+            await engine.SelectDeviceAsync(factory.Device);
+            factory.Push(0,false,0,null,123356789);
+            await Until(()=>engine.Latest.Valid,"native metadata initial signal");
+            factory.Push(720,true,1,240,123456789);
+            await Until(()=>engine.Latest.RecoveredDiscontinuities==1,"native metadata gap recovery");
+            string detail=diagnostics.Single(message=>message.StartsWith("Capture discontinuity:"));
+            foreach(string evidence in new[]{"flags=0x1","delta=240","qpc=123456789","rate=48000","exclusive=False","raw=True"})
+                Assert(detail.Contains(evidence,StringComparison.Ordinal),"Gap diagnostic preserves native evidence: "+evidence);
+            Assert(engine.Status.State==AudioRunState.Monitoring,"Native metadata diagnostics do not interrupt idle monitoring");
+        }
+        {
             var factory=new FakeFactory();await using var engine=CreateEngine(root,factory);var diagnostics=new List<string>();engine.Diagnostic+=message=>diagnostics.Add(message);
             await engine.SelectDeviceAsync(factory.Device);var original=factory.Current!;
             factory.Push(Enumerable.Repeat(.5f,480).ToArray());await Until(()=>engine.Latest.Valid,"glitch initial signal");
@@ -61,4 +79,30 @@ static class ContinuityChecks
             await engine.StopRecordingAsync();using var file=new WaveFileReader(path);Assert(file.Length==720*4,"Pause gap never writes gap or silence to file");
         }
     }
+    private sealed class MetadataCaptureFactory : ICaptureFactory
+    {
+        public AudioDevice Device {get;}=new("metadata","Native evidence input",true);
+        private readonly AudioFormat _format=new(48000,1,32,32,PcmEncoding.Float);
+        private Func<CapturePacket,bool>? _submit;
+        public IReadOnlyList<AudioDevice> Enumerate()=>[Device];
+        public Task<InputFormatOptions> QueryFormatsAsync(AudioDevice device)=>Task.FromResult(new InputFormatOptions(_format,[_format]));
+        public Task<IAudioCaptureService> OpenAsync(AudioDevice device,bool exclusive,bool raw,long epoch,
+            Func<CapturePacket,bool> packet,Action<Exception> fault,AudioFormat? preferredFormat=null)
+        {
+            _submit=packet;
+            return Task.FromResult<IAudioCaptureService>(new MetadataCapture(new(device,_format,exclusive,raw,epoch)));
+        }
+        public void Push(long position,bool gap,int flags,long? delta,long qpc)
+        {
+            var data=ArrayPool<byte>.Shared.Rent(480*4);data.AsSpan(0,480*4).Clear();
+            var packet=new CapturePacket(data,480*4,480,position,false,gap,flags,delta,qpc);
+            if(!_submit!(packet)){packet.Dispose();throw new IOException("Metadata fixture queue overflow");}
+        }
+    }
+    private sealed class MetadataCapture(CaptureInfo info):IAudioCaptureService
+    {
+        public CaptureInfo Info=>info;
+        public ValueTask DisposeAsync()=>ValueTask.CompletedTask;
+    }
+
 }

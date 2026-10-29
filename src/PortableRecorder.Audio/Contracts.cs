@@ -10,7 +10,10 @@ public sealed record AudioFormat(int SampleRate,int Channels,int Bits,int ValidB
     public int BlockAlign=>Channels*(Bits/8);
     public string Description=>$"{SampleRate/1000d:0.###} kHz \u00b7 {ValidBits} bit{(Encoding==PcmEncoding.Float?" float":"")} \u00b7 {Channels} \u58f0\u9053";
 }
-public sealed record CaptureInfo(AudioDevice Device,AudioFormat Format,bool Exclusive,bool Raw,long Epoch);
+public sealed record CaptureInfo(AudioDevice Device,AudioFormat Format,bool Exclusive,bool Raw,long Epoch)
+{
+    public string? StreamDiagnostics {get;init;}
+}
 public sealed record InputFormatOptions(AudioFormat Shared,IReadOnlyList<AudioFormat> Exclusive);
 public sealed record SpectrumFrame(double[] FrequenciesHz,float[] Dbfs,int FftSize,long EndFrame);
 public sealed record AudioSnapshot(long Epoch,long FramePosition,int SampleRate,int Channels,bool Valid,
@@ -25,7 +28,7 @@ public sealed record AudioStatus(AudioRunState State,CaptureInfo? Capture,string
 public sealed class RawUnavailableException(string message,Exception? inner=null):Exception(message,inner);
 public sealed class CaptureGapException(string detail):IOException("录音期间音频数据不连续，本次录音已停止；这不代表麦克风已断开。"+detail);
 public sealed class CapturePacket(byte[] data,int length,int frames,long position,bool silent,bool discontinuity,
-    int nativeFlags=0,long? positionDelta=null,long qpc100ns=0):IDisposable
+    int nativeFlags=0,long? positionDelta=null,long qpc100ns=0,double wakeGapMs=0,double bufferHoldMs=0):IDisposable
 {
     public byte[] Data {get;}=data;
     public int Length {get;}=length;
@@ -36,6 +39,8 @@ public sealed class CapturePacket(byte[] data,int length,int frames,long positio
     public int NativeFlags {get;}=nativeFlags;
     public long? PositionDelta {get;}=positionDelta;
     public long Qpc100ns {get;}=qpc100ns;
+    public double WakeGapMs {get;}=wakeGapMs;
+    public double BufferHoldMs {get;}=bufferHoldMs;
     public void Dispose()=>ArrayPool<byte>.Shared.Return(Data);
 }
 public interface IAudioCaptureService:IAsyncDisposable { CaptureInfo Info {get;} }

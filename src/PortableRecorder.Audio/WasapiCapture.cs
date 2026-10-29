@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Buffers;
 using System.Runtime.InteropServices;
 using NAudio.CoreAudioApi;
@@ -89,36 +90,64 @@ internal sealed class WasapiCaptureSession:IAudioCaptureService
             client.SetEventHandle(signal.SafeWaitHandle.DangerousGetHandle());
             var capture=client.AudioCaptureClient;
             uint taskIndex=0;mmcss=AvSetMmThreadCharacteristics("Pro Audio",ref taskIndex);
-            client.Start();
-            started=true;
-            _ready.TrySetResult(new(description,format,exclusive,raw,epoch));
+            int registrationError=mmcss==IntPtr.Zero?Marshal.GetLastWin32Error():0;
+            string scheduling="Pro Audio";
+            if(mmcss==IntPtr.Zero)
+            {
+                mmcss=AvSetMmThreadCharacteristics("Audio",ref taskIndex);
+                scheduling=mmcss!=IntPtr.Zero?$"Audio fallback (Pro Audio error={registrationError})"
+                    :$"managed AboveNormal fallback (Pro Audio error={registrationError}, Audio error={Marshal.GetLastWin32Error()})";
+                if(mmcss==IntPtr.Zero)Thread.CurrentThread.Priority=ThreadPriority.AboveNormal;
+            }
+            int bufferFrames=client.BufferSize;
+            // Shared events usually deliver one engine period, not the full endpoint buffer.
+            // Warm both buckets before Start; do not add work to an active native packet.
+            int periodFrames=exclusive?bufferFrames:Math.Clamp((int)Math.Ceiling(format.SampleRate*client.DefaultDevicePeriod/10_000_000d),1,bufferFrames);
+            var warm=ArrayPool<byte>.Shared.Rent(checked(bufferFrames*format.BlockAlign));
+            var packetWarm=ArrayPool<byte>.Shared.Rent(checked(periodFrames*format.BlockAlign));
+            ArrayPool<byte>.Shared.Return(packetWarm);ArrayPool<byte>.Shared.Return(warm);
             var waits=new WaitHandle[]{signal,_stop.Token.WaitHandle};
             var continuity=new CaptureContinuity();
+            var info=new CaptureInfo(description,format,exclusive,raw,epoch){StreamDiagnostics=
+                $"bufferFrames={bufferFrames}; bufferMs={bufferFrames*1000d/format.SampleRate:F3}; requestedMs={duration/10000d:F3}; defaultPeriodMs={client.DefaultDevicePeriod/10000d:F3}; scheduling={scheduling}"};
+            long lastWake=Stopwatch.GetTimestamp();
+            client.Start();
+            started=true;
+            _ready.TrySetResult(info);
             while(!_stop.IsCancellationRequested)
             {
                 int signaled=WaitHandle.WaitAny(waits,3000);
                 if(signaled==1)break;
                 if(signaled==WaitHandle.WaitTimeout)throw new IOException("采集设备连续 3 秒未提供音频包。");
+                long wake=Stopwatch.GetTimestamp();double wakeGapMs=Stopwatch.GetElapsedTime(lastWake,wake).TotalMilliseconds;lastWake=wake;
                 // GetNextPacketSize is shared-mode only. Exclusive events supply one buffer.
                 do
                 {
+                    long acquired=Stopwatch.GetTimestamp();
                     var pointer=capture.GetBuffer(out int frames,out var flags,out long position,out long qpc);
                     if(frames==0)break;
+                    byte[]? bytes=null;
+                    int length=0;
                     try
                     {
-                        var boundary=continuity.Observe(frames,position,(int)flags);
-                        var bytes=ArrayPool<byte>.Shared.Rent(frames*format.BlockAlign);
-                        var packet=new CapturePacket(bytes,frames*format.BlockAlign,frames,position,
-                            (flags&AudioClientBufferFlags.Silent)!=0,boundary.Discontinuous,(int)flags,boundary.Delta,qpc);
                         try
                         {
-                            if(packet.Silent)Array.Clear(bytes,0,packet.Length);
-                            else Marshal.Copy(pointer,bytes,0,packet.Length);
-                            if(!submit(packet))throw new IOException("采集处理队列溢出，已停止，未静默丢包。");
+                            length=checked(frames*format.BlockAlign);
+                            bytes=ArrayPool<byte>.Shared.Rent(length);
+                            if((flags&AudioClientBufferFlags.Silent)!=0)Array.Clear(bytes,0,length);
+                            else Marshal.Copy(pointer,bytes,0,length);
                         }
+                        finally{capture.ReleaseBuffer(frames);}
+                        double holdMs=Stopwatch.GetElapsedTime(acquired).TotalMilliseconds;
+                        var boundary=continuity.Observe(frames,position,(int)flags);
+                        var packet=new CapturePacket(bytes!,length,frames,position,
+                            (flags&AudioClientBufferFlags.Silent)!=0,boundary.Discontinuous,(int)flags,boundary.Delta,qpc,wakeGapMs,holdMs);
+                        // The packet owns the pool rental even if submission fails.
+                        bytes=null;
+                        try{if(!submit(packet))throw new IOException("采集处理队列溢出，已停止，未静默丢包。");}
                         catch{packet.Dispose();throw;}
                     }
-                    finally{capture.ReleaseBuffer(frames);}
+                    finally{if(bytes!=null)ArrayPool<byte>.Shared.Return(bytes);}
                 }while(!exclusive && !_stop.IsCancellationRequested && capture.GetNextPacketSize()>0);
             }
         }

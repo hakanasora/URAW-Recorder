@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Buffers;
 using System.Threading.Channels;
 namespace PortableRecorder.Audio;
@@ -25,6 +26,8 @@ internal sealed class ProcessingPipeline:IAsyncDisposable
     private readonly List<Boundary> _boundaries=[];
     private bool _paused;
     private Exception? _failure;
+    private long _diagnosticTime=Stopwatch.GetTimestamp(),_packetsSinceReport,_queueHighWater;
+    private double _maxWakeGapMs,_maxBufferHoldMs;
     internal CalibrationPlan Plan=>_plan;
     public CalibrationStatus Calibration=>_plan.Status(_info?.Format??new(0,0,32,32,PcmEncoding.Float),_revision);
     public AudioSnapshot Latest=>(Volatile.Read(ref _analyzer)?.Latest??AudioSnapshot.Empty()) with{CalibrationRevision=_revision,ProcessingDelayFrames=_plan.LatencyFrames};
@@ -58,10 +61,20 @@ internal sealed class ProcessingPipeline:IAsyncDisposable
                 {
                     try{work.Command();work.Completion!.TrySetResult();}catch(Exception e){work.Completion!.TrySetException(e);}continue;
                 }
-                using var packet=work.Packet!;Interlocked.Add(ref _queuedBytes,-packet.Length);
+                using var packet=work.Packet!;
+                _queueHighWater=Math.Max(_queueHighWater,Interlocked.Read(ref _queuedBytes));
+                Interlocked.Add(ref _queuedBytes,-packet.Length);
+                _packetsSinceReport++;
+                _maxWakeGapMs=Math.Max(_maxWakeGapMs,packet.WakeGapMs);
+                _maxBufferHoldMs=Math.Max(_maxBufferHoldMs,packet.BufferHoldMs);
+                if(Stopwatch.GetElapsedTime(_diagnosticTime).TotalSeconds>=10)
+                {
+                    _diagnostic($"Capture health: epoch={_info.Epoch}; packets={_packetsSinceReport}; maxWakeMs={_maxWakeGapMs:F3}; maxBufferHoldMs={_maxBufferHoldMs:F3}; queueHighBytes={_queueHighWater}; budgetBytes={_budget}");
+                    _diagnosticTime=Stopwatch.GetTimestamp();_packetsSinceReport=0;_queueHighWater=0;_maxWakeGapMs=0;_maxBufferHoldMs=0;
+                }
                 if(packet.Discontinuity)
                 {
-                    string detail=$" flags=0x{packet.NativeFlags:X}; position={packet.Position}; frames={packet.Frames}; epoch={_info.Epoch}";
+                    string detail=$" flags=0x{packet.NativeFlags:X}; position={packet.Position}; delta={packet.PositionDelta?.ToString(System.Globalization.CultureInfo.InvariantCulture)??"unknown"}; qpc={packet.Qpc100ns}; frames={packet.Frames}; rate={_info.Format.SampleRate}; exclusive={_info.Exclusive}; raw={_info.Raw}; wakeMs={packet.WakeGapMs:F3}; bufferHoldMs={packet.BufferHoldMs:F3}; queuedBytes={Interlocked.Read(ref _queuedBytes)}; epoch={_info.Epoch}";
                     _diagnostic("Capture discontinuity:"+detail);
                     if(_writer!=null&&(!_paused||_boundaries.Count>0))throw new CaptureGapException(detail);
                     Rebuild(_plan,true);

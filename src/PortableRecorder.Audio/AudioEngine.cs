@@ -178,6 +178,7 @@ public sealed class AudioEngine:IAsyncDisposable
                 throw;
             }
             Trace($"Capture ready: device={_device!.Name}; {capture.Info.Format.Description}; exclusive={exclusive}; RAW={raw}; epoch={epoch}");
+            if(capture.Info.StreamDiagnostics is string diagnostics)Trace($"Capture stream: epoch={epoch}; {diagnostics}");
         }
         catch(Exception openingError)
         {
