@@ -67,6 +67,7 @@ public sealed class AudioEngine:IAsyncDisposable
         }
     }
     public long WrittenFrames=>_writer?.WrittenFrames??Interlocked.Read(ref _lastWritten);
+    public long RecordingClippedSamples=>(_writer as CompressedAudioWriter)?.ClippedSamples??0;
     public int RecordingRate=>_writer!=null?Status.Capture?.Format.SampleRate??0:_lastRate;
     public TimeSpan RecordedTime=>RecordingRate>0?TimeSpan.FromSeconds(WrittenFrames/(double)RecordingRate):TimeSpan.Zero;
     private void Set(AudioRunState state,string message,string? file=null,bool partial=false)
@@ -365,6 +366,8 @@ public sealed class AudioEngine:IAsyncDisposable
             System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(failure).Throw();
         }
         string message="已保存："+System.IO.Path.GetFileName(writer.Path);
+        if(writer is CompressedAudioWriter compressed && compressed.ClippedSamples>0)
+            message+=$"；压缩文件有 {compressed.ClippedSamples} 个超限样本发生削波，录音未中断。使用浮点 WAV 可保留超限幅值。";
         if(summaryError!=null)message+="；音频已保存，但校准摘要写入失败："+summaryError;
         if(monitorFailure!=null)
         {
@@ -380,7 +383,8 @@ public sealed class AudioEngine:IAsyncDisposable
         try
         {
             if(!File.Exists(writer.Path))return null;
-            string sidecar=writer.Path+".calibration.json";
+            string sidecar=GetRecordingMetadataPath(writer.Path);
+            Directory.CreateDirectory(System.IO.Path.GetDirectoryName(sidecar)!);
             temp=sidecar+"."+Guid.NewGuid().ToString("N")+".tmp";
             using(var file=new FileStream(temp,FileMode.CreateNew,FileAccess.Write,FileShare.None))
             {
@@ -394,6 +398,11 @@ public sealed class AudioEngine:IAsyncDisposable
             try{if(temp!=null&&File.Exists(temp))File.Delete(temp);}
             catch(Exception cleanupError){Trace("Calibration summary temporary-file cleanup failed: "+cleanupError);}
         }
+    }
+    public string GetRecordingMetadataPath(string recordingPath)
+    {
+        string key=Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(System.IO.Path.GetFullPath(recordingPath).ToUpperInvariant())));
+        return System.IO.Path.Combine(Calibrations.Folder,"RecordingHistory",key+".json");
     }
     public async Task SetCalibrationAsync(string? id)
     {

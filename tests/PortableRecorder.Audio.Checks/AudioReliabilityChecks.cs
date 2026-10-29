@@ -125,7 +125,7 @@ internal static class AudioReliabilityChecks
         await using(var engine=Engine(factory,"summary-failure"))
         {
             await engine.SelectDeviceAsync(factory.Device);await engine.StartRecordingAsync(folder,RecordingMode.Shared);
-            string file=engine.Status.FilePath!;Directory.CreateDirectory(file+".calibration.json");
+            string file=engine.Status.FilePath!;Directory.CreateDirectory(engine.GetRecordingMetadataPath(file));
             factory.Push(new float[200]);await engine.StopRecordingAsync();
             using var wave=new WaveFileReader(file);
             check(wave.Length==800&&!engine.Status.Partial&&engine.Status.Message.Contains("校准摘要写入失败"),"Failed sidecar does not claim audio failure or silently disappear");
@@ -138,7 +138,7 @@ internal static class AudioReliabilityChecks
             string file=engine.Status.FilePath!;factory.Push(new float[200]);factory.Current!.FailDispose=true;
             bool failed=false;try{await engine.StopRecordingAsync();}catch(IOException){failed=true;}
             using var wave=new WaveFileReader(file);
-            using var summary=System.Text.Json.JsonDocument.Parse(File.ReadAllText(file+".calibration.json"));
+            using var summary=System.Text.Json.JsonDocument.Parse(File.ReadAllText(engine.GetRecordingMetadataPath(file)));
             check(failed&&wave.Length==800&&!engine.Status.Partial&&summary.RootElement.GetProperty("Completed").GetBoolean(),"Capture cleanup failure preserves successful audio and Completed sidecar");
             check(engine.Status.Message.Contains("恢复监看失败")&&engine.Status.Message.Contains("injected-capture-disposal-error"),"Saved-audio cleanup failure remains actionable in the service status");
         }

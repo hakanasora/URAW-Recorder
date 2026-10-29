@@ -440,8 +440,8 @@ public sealed class MainWindow : Window
         _qualityCodec=codec;
         _fileHint.Text=codec switch
         {
-            RecordingCodec.Flac=>"等级影响体积与编码耗时，音质相同。\n浮点量化至 24 位；超限会停止录制。",
-            RecordingCodec.Mp3=>"有损 VBR；V 值越小，品质越高。\n限单／双声道、标准 8–48 kHz 输入。\n超限停止，不自动混音或重采样。",
+            RecordingCodec.Flac=>"等级影响体积与编码耗时，音质相同。\n浮点量化至 24 位；超限削波并提示，继续录制。",
+            RecordingCodec.Mp3=>"有损 VBR；V 值越小，品质越高。\n限单／双声道、标准 8–48 kHz 输入。\n超限削波并提示，继续录制；不自动混音或重采样。",
             _=>"32 位浮点 WAV / RF64，保留超限数值。\n采样率、声道数沿用实际输入。"
         };
         ToolTipService.SetToolTip(_fileHint,"未设置路径时保存到‘音乐\\Portable Recorder’。\n压缩格式会在停止时完成编码和文件收尾；保存成功前请等待。\nFLAC 对量化后的 24 位 PCM 无损；MP3 有损，监看仍基于编码前信号。");
@@ -569,16 +569,17 @@ public sealed class MainWindow : Window
         SyncCalibration();SyncInputFormat();
         if(status.Message!=_lastAudioMessage){_lastAudioMessage=status.Message;StartupLog.Write("Audio: "+status.State+" / "+status.Message);}
         string preferenceWarning=string.Join("；",new[]{_modePreferenceWarning,_encodingPreferenceWarning}.Where(w=>!string.IsNullOrWhiteSpace(w)));
-        string noticeKey=$"{status.State}|{status.Message}|{preferenceWarning}|{_state.Audio.CalibrationReadyToRecord}";
+        bool clipped=_state.Audio.RecordingClippedSamples>0;
+        string noticeKey=$"{status.State}|{status.Message}|{preferenceWarning}|{_state.Audio.CalibrationReadyToRecord}|{clipped}";
         if(noticeKey!=_lastNoticeKey)
         {
             _lastNoticeKey=noticeKey;
-            _serviceNotice.Text=status.State==AudioRunState.Monitoring&&!_state.Audio.CalibrationReadyToRecord
+            _serviceNotice.Text=clipped?"录音继续中：压缩文件出现削波。降低增益或使用浮点 WAV 可避免超限损失。":status.State==AudioRunState.Monitoring&&!_state.Audio.CalibrationReadyToRecord
                 ?"校准尚未生效，请选择有效文件或禁用校准。":status.State is AudioRunState.Faulted or AudioRunState.Stopped || status.FilePath!=null && ! _state.Session.Active
                 ?status.Message:status.State==AudioRunState.Monitoring && _state.Audio.Latest.RecoveredDiscontinuities>0
                 ?$"监看已恢复（短暂不连续 {_state.Audio.Latest.RecoveredDiscontinuities} 次）":"";
             if(_serviceNotice.Text.Length==0&&preferenceWarning.Length>0)_serviceNotice.Text=preferenceWarning;
-            ToolTipService.SetToolTip(_serviceNotice,status.Message+(preferenceWarning.Length==0?"":"\n"+preferenceWarning)+(status.FilePath==null?"":"\n"+status.FilePath)+(_state.Audio.CalibrationReadyToRecord?"":"\n"+CalibrationDescription()));
+            ToolTipService.SetToolTip(_serviceNotice,status.Message+(preferenceWarning.Length==0?"":"\n"+preferenceWarning)+(status.FilePath==null?"":"\n"+status.FilePath)+(status.State==AudioRunState.Monitoring&&!_state.Audio.CalibrationReadyToRecord?"\n"+CalibrationDescription():""));
         }
         _=CheckRawDecision();
         bool minimized=AppWindow.Presenter is OverlappedPresenter{State:OverlappedPresenterState.Minimized};

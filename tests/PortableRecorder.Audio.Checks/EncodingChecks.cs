@@ -77,13 +77,17 @@ static class EncodingChecks
             string rejected=Path.Combine(directory,"overload."+codec.ToString().ToLowerInvariant());
             var invalid=new CompressedAudioWriter(rejected,format,new(codec,2),encoder);
             check(invalid.TryWrite(Signal(48000,2000,1)),"Valid prefix accepted");
-            check(!invalid.TryWrite([1.01f])&&invalid.Failure!=null,"Compressed overrange rejected before integer clipping");
-            bool failed=false;try{await invalid.CompleteAsync();}catch(IOException){failed=true;}check(failed,"Failed prefix completion is never reported successful");
-            check((await Decode(rejected)).Length==2000,"Overload retains playable valid prefix only");
+            check(invalid.TryWrite([1.01f,-1.01f])&&invalid.Failure==null,"Finite overload continues recording");
+            check(invalid.TryWrite(new float[100]),"Recording accepts audio after overload");
+            await invalid.CompleteAsync();
+            check(invalid.ClippedSamples==2,"Compressed clipping is counted explicitly");
+            var overloaded=await Decode(rejected);
+            check(overloaded.Length==2102,"Overload preserves full recording duration");
+            if(codec==RecordingCodec.Flac)check(overloaded[2000]>.999f&&overloaded[2001]==-1f,"FLAC clips overrange at PCM boundaries");
             try{await invalid.DisposeAsync();}catch(IOException){}
             var empty=new CompressedAudioWriter(rejected+"-empty",format,new(codec,2),encoder);
             bool emptyFailed=false;try{await empty.CompleteAsync();}catch(IOException){emptyFailed=true;}check(emptyFailed,"Empty compressed file cannot report saved successfully");try{await empty.DisposeAsync();}catch(IOException){}
-            foreach(float sample in new[]{float.NaN,float.PositiveInfinity,float.NegativeInfinity,-1.01f})
+            foreach(float sample in new[]{float.NaN,float.PositiveInfinity,float.NegativeInfinity})
             {
                 var bad=new CompressedAudioWriter(rejected+"-bad-"+BitConverter.SingleToInt32Bits(sample),format,new(codec,2),encoder);
                 check(!bad.TryWrite([sample]),"Invalid sample never enters encoder");try{await bad.DisposeAsync();}catch(IOException){}
@@ -127,10 +131,11 @@ static class EncodingChecks
             check(engine.RecordedTime.TotalSeconds==1200/48000d,"Engine sample clock excludes paused frames for "+codec);
             var samples=await decode(path);check(samples.Length==1200,"Engine pause gate and encoder tail length for "+codec);
             if(codec==RecordingCodec.Flac)check(samples.SequenceEqual(Enumerable.Repeat(.125f,1000).Concat(Enumerable.Repeat(.25f,200))),"Engine sends post-processing samples to FLAC");
-            using(var sidecar=JsonDocument.Parse(File.ReadAllText(path+".calibration.json")))
+            using(var sidecar=JsonDocument.Parse(File.ReadAllText(engine.GetRecordingMetadataPath(path))))
                 check(sidecar.RootElement.GetProperty("Completed").GetBoolean()&&sidecar.RootElement.GetProperty("Recording").GetProperty("Encoding").GetProperty("Codec").GetInt32()==(int)codec,"Calibration summary records actual encoder selection");
+            check(!File.Exists(path+".calibration.json"),"Recording directory contains no generated calibration sidecar");
             await engine.StartRecordingAsync(directory,RecordingMode.Shared,new(codec,2));string discarded=engine.Status.FilePath!;factory.Push(new float[200]);await engine.PauseAsync(true);await engine.DiscardRecordingAsync();
-            check(!File.Exists(discarded)&&!File.Exists(discarded+".calibration.json")&&!Directory.GetFiles(directory,Path.GetFileName(discarded)+".*.encoding").Any(),"Discard removes only current encoded file, summary and staging");
+            check(!File.Exists(discarded)&&!File.Exists(engine.GetRecordingMetadataPath(discarded))&&!Directory.GetFiles(directory,Path.GetFileName(discarded)+".*.encoding").Any(),"Discard removes only current encoded file, summary and staging");
         }
     }
 }

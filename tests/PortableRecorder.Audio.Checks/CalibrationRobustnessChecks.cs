@@ -90,13 +90,13 @@ static class CalibrationRobustnessChecks
             }
             await engine.StartRecordingAsync(root,RecordingMode.Shared);string discard=engine.Status.FilePath!;
             Push(.1f,300);await Task.Delay(20);var pending=engine.PauseAsync(true);await Task.Delay(20);Push(.2f,12000);await pending;
-            await engine.DiscardRecordingAsync();check(!File.Exists(discard)&&!File.Exists(discard+".calibration.json"),"Discard removes owned WAV and summary");
+            await engine.DiscardRecordingAsync();check(!File.Exists(discard)&&!File.Exists(engine.GetRecordingMetadataPath(discard)),"Discard removes owned WAV and summary");
             Push(.15f,20000);await Until(()=>engine.Latest.Valid);check(double.IsFinite(engine.Latest.RmsDbfs),"Monitoring rebuilds correctly after mathematical drain / discard");
             await engine.StartRecordingAsync(root,RecordingMode.Shared);string partial=engine.Status.FilePath!;
             Push(.1f,777);await Task.Delay(30);factory.Push(new float[100],true);
             await Until(()=>engine.Status.Partial&&engine.Status.State==AudioRunState.Monitoring);
             using(var wave=new WaveFileReader(partial))check(wave.Length==777*4,"Gap drains accepted calibrated input only, not missing / gap packet");
-            check(File.ReadAllText(partial+".calibration.json").Contains("\"Completed\":false"),"Partial summary accurately marks interruption");
+            check(File.ReadAllText(engine.GetRecordingMetadataPath(partial)).Contains("\"Completed\":false"),"Partial summary accurately marks interruption");
         }
         // Reopening at another actual format builds fresh kernels and per-channel state.
         library.Bind("fake",attenuate.Id);
@@ -119,8 +119,8 @@ static class CalibrationRobustnessChecks
             await engine.SelectDeviceAsync(collisionFactory.Device);await engine.SetCalibrationAsync(null);
             await engine.StartRecordingAsync(root,RecordingMode.Shared);string path=engine.Status.FilePath!;
             collisionFactory.Push(new float[40]);await engine.PauseAsync(true);
-            File.WriteAllText(path+".calibration.json","unowned");await engine.DiscardRecordingAsync();
-            check(!File.Exists(path)&&File.ReadAllText(path+".calibration.json")=="unowned","Discard only owns the sidecar it actually created");
+            Directory.CreateDirectory(Path.GetDirectoryName(engine.GetRecordingMetadataPath(path))!);File.WriteAllText(engine.GetRecordingMetadataPath(path),"unowned");await engine.DiscardRecordingAsync();
+            check(!File.Exists(path)&&File.ReadAllText(engine.GetRecordingMetadataPath(path))=="unowned","Discard only owns the sidecar it actually created");
             await engine.SetCalibrationAsync(boost.Id);await engine.StartRecordingAsync(root,RecordingMode.Shared);string pendingPath=engine.Status.FilePath!;
             collisionFactory.Push(new float[321]);await Task.Delay(30);var pending=engine.PauseAsync(true);await Task.Delay(30);collisionFactory.Push(new float[20],true);
             await Reject(async()=>await pending,"Pending pause rejects a real discontinuity without hanging");

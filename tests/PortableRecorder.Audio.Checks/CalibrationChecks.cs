@@ -63,7 +63,7 @@ static class CalibrationChecks
             var stop=engine.StopRecordingAsync();await Until(()=>Volatile.Read(ref boundaries)==2);factory.Push(Enumerable.Repeat(.4f,12000).ToArray());await stop;
             check(engine.WrittenFrames==933,"Start / resume / stop source frame ownership");
             using(var wave=new WaveFileReader(path))check(wave.Length==933*4,"WAV exact sample count");
-            check(File.Exists(path+".calibration.json"),"Traceable calibration sidecar");
+            check(File.Exists(engine.GetRecordingMetadataPath(path)),"Traceable calibration sidecar");
             await engine.SetCalibrationAsync(null);check(!engine.Calibration.Applied,"Disable returns true bypass");
         }
         library.Remove(item.Id);check(library.Entries.Count==0&&library.SelectedId("fake")==null,"Remove also removes device binding");

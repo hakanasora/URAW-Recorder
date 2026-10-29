@@ -20,6 +20,8 @@ public sealed class CompressedAudioWriter:IRecordingWriter
     private readonly long _budget;
     private readonly int _minimumFrames;
     private long _queuedBytes,_frames;
+    private long _clippedSamples;
+    public long ClippedSamples=>Interlocked.Read(ref _clippedSamples);
     private Exception? _failure;
     public string Path {get;}
     public long WrittenFrames=>Interlocked.Read(ref _frames);
@@ -66,11 +68,15 @@ public sealed class CompressedAudioWriter:IRecordingWriter
         if(Failure!=null)return false;
         if(samples.Length%_channels!=0){Fail(new InvalidDataException("编码样本声道未对齐。"));return false;}
         foreach(float sample in samples)
-            if(!float.IsFinite(sample)||sample is >1 or <-1)
-            {Fail(new InvalidDataException("压缩录音遇到非有限或超过满刻度的样本，已停止并保留此前有效录音。请降低增益，或使用可保存浮点超限的 WAV；未自动限幅。"));return false;}
+            if(!float.IsFinite(sample))
+            {Fail(new InvalidDataException("压缩录音遇到非有限音频数据，已停止并保留此前有效录音。"));return false;}
         long bytes=samples.Length*4L;
         if(Interlocked.Add(ref _queuedBytes,bytes)>_budget){Interlocked.Add(ref _queuedBytes,-bytes);Fail(new IOException("压缩录音队列已满，未静默丢样本。"));return false;}
         var buffer=ArrayPool<float>.Shared.Rent(samples.Length);samples.CopyTo(buffer);
+        long clipped=0;
+        for(int i=0;i<samples.Length;i++)
+            if(buffer[i] is >1 or <-1){buffer[i]=Math.Clamp(buffer[i],-1f,1f);clipped++;}
+        Interlocked.Add(ref _clippedSamples,clipped);
         if(_queue.Writer.TryWrite(new(buffer,samples.Length)))return true;
         ArrayPool<float>.Shared.Return(buffer);Interlocked.Add(ref _queuedBytes,-bytes);return false;
     }
