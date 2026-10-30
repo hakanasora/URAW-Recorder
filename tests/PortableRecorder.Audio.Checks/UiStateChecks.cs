@@ -5,6 +5,15 @@ static class UiStateChecks
 {
     public static async Task Run(string root,Action<bool,string> check)
     {
+        {
+            var factory=new FakeFactory();await using var engine=TestSupport.CreateEngine(root,factory);
+            var model=new ShellViewModel(engine);await using var listener=model.Listener;
+            model.SetGain(12);model.SetWorkMode(true);
+            check(model.GainDb==0,"Listening gain starts at zero instead of inheriting recording gain");
+            model.SetGain(-6);check(listener.GainDb==-6,"Listening knob drives independent analysis gain");
+            model.SetWorkMode(false);check(model.GainDb==12,"Returning to recording restores its own gain");
+            model.SetWorkMode(true);check(model.GainDb==-6&&!model.Snapshot.Valid,"Listening gain is retained and old microphone samples are not shown");
+        }
         check(InputFormatPresentation.EndpointGain(new(30,false),false).Contains("+30.0 dB")&&InputFormatPresentation.EndpointGain(new(30,false),false).Contains("独占绕过"),"Shared software endpoint gain is disclosed");
         check(InputFormatPresentation.EndpointGain(new(30,false),true).Contains("已绕过"),"Exclusive mode does not claim to apply Windows software gain");
         check(!InputFormatPresentation.EndpointGain(new(6,true),true).Contains("已绕过"),"Hardware volume must not be described as bypassed");

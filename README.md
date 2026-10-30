@@ -4,7 +4,7 @@
 
 ## 启动与文件
 
-双击 `Start.cmd`，或运行 `artifacts/native-preview/PortableRecorder.Desktop.exe`。保留整个自包含发布目录，不能只拷贝 EXE。
+双击 `Start.cmd`，或运行 `artifacts/current-preview/PortableRecorder.Desktop.exe`。保留整个自包含发布目录，不能只拷贝 EXE。
 
 启动即对当前默认输入设备进行**共享 RAW 监看**，录制中固定该设备；待机时监听热插拔并自动选中新接入的输入，当前设备拔除时先结束录音再恢复监看。输入页可选择其他真实设备、刷新设备和选择正式录制的“独占 / 共享”（首次默认独占，此后记忆用户上次选择，独立于设备）；待机、停止后总是共享监看。RAW 明确不支持时才询问是否允许当前设备在本次运行内使用普通共享监看；这项许可不允许普通非 RAW 正式录制。
 
@@ -26,6 +26,16 @@
 
 内置麦克风待机断读的修复与诊断见 [不连续事件恢复](docs/capture-discontinuity.md)。详细定义、信号链、RAW 边界及验证记录见 [真实音频服务](docs/audio-service.md)。材质见 [材质说明](docs/subtle-materials.md)，覆盖式设置面板与本轮实窗复测项目见 [设置抽屉](docs/settings-drawer.md)。最新侧栏 / 增益编辑 / 按钮 / 系统强调色细节见 [控件细修](docs/ui-controls-polish.md)。第三方来源和许可见 [第三方说明](third_party/README.md)，发布目录也带 `licenses/`。
 
+## 侦听模式
+
+头部“录制／侦听”菜单切换工作模式。侦听只运行仪表，不生成录音文件，也不占用麦克风；底栏增益独立保存于本次运行，默认 0 dB，仅影响仪表，不改变系统播放音量。
+
+- **整机／增强前**：侦听全部应用的进程混音，不随 Windows 总音量变化；来源可跨输出设备，不包含本程序。
+- **整机／增强后 · 输出回环**：侦听所选输出设备，反映当前设备链路的处理及总音量。与“增强前”的来源范围不同。
+- **应用**：侦听所选进程及其子进程；同名实例以 PID 区分。应用退出需重新选择，不自动绑定重启后的同名进程。
+
+已验证本机 SMSL / Equalizer APO 的增强前后差异；其他驱动效果、空间音效及受保护内容不作统一保证。未播放声音时显示等待，不把静音误判成设备断开。实现、取流范围与验证记录见 [侦听设计与证据](docs/designs/listening-native-capture.md)。
+
 ## 构建与校验
 
 固定 .NET SDK 10.0.402、Windows App SDK 2.5.1、Win2D 1.4.0、NAudio.Core / Wasapi 3.3.0、NWaves 0.9.6，Windows 11 x64。
@@ -35,7 +45,7 @@
 ./tools/check-audio.ps1
 ```
 
-本机 SDK：`F:/Codex/.tools/portable-recorder/dotnet/dotnet.exe`。首次构建会下载并校验固定版本 FFmpeg 编码器，后续复用本地缓存。发布到 `artifacts/native-preview`，保留其中的 `encoders/` 和 `licenses/`。`./tools/build.ps1 -Launch` 会打开窗体并启动真实共享监看，只有用户准备好时使用。`PortableRecorder.Desktop.exe --no-capture` 仅供无麦克风占用的界面诊断，不生成假信号。
+本机 SDK：`F:/Codex/.tools/portable-recorder/dotnet/dotnet.exe`。首次构建会下载并校验固定版本 FFmpeg 编码器，后续复用本地缓存。发布到 `artifacts/current-preview`，保留其中的 `encoders/` 和 `licenses/`。`./tools/build.ps1 -Launch` 会打开窗体并启动真实共享监看，只有用户准备好时使用。`PortableRecorder.Desktop.exe --no-capture` 仅供无麦克风占用的界面诊断，不生成假信号。
 
 离线检查仅使用合成样本和注入的采集 / 写盘适配，不操作桌面，不使用 Computer Use。数值校验与编译成功不代替实际设备、独占驱动兼容及视觉验收。用户已提供第一轮录音及两段录像，真实录音文件和视频已做后台分析；本轮改动后的热插拔、丢弃、文字渐隐和实际刷新率仍待实窗复测。见 [第一轮反馈与修复](docs/round2-feedback.md)。
 

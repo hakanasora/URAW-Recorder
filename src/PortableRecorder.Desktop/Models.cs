@@ -28,6 +28,13 @@ public sealed class ShellViewModel:INotifyPropertyChanged
 {
     public event PropertyChangedEventHandler? PropertyChanged;
     public AudioEngine Audio {get;}
+    public ListeningService Listener {get;}=new();
+    public bool IsListening {get;private set;}
+    private double _recordGain,_listenGain;
+    public AudioSnapshot CurrentAudioSnapshot
+    {
+        get{var source=IsListening?Listener.Latest:Audio.Latest;return IsListening?source with{Epoch=source.Epoch|long.MinValue}:source;}
+    }
     public TransportSession Session {get;}=new();
     public ObservableCollection<InputDevice> Devices {get;}=[];
     public ObservableCollection<CalibrationFile> Calibrations {get;}=[];
@@ -74,12 +81,19 @@ public sealed class ShellViewModel:INotifyPropertyChanged
     {
         if(!double.IsFinite(db))return;
         GainDb=Math.Round(Math.Clamp(db,-60,60),1);if(Math.Abs(GainDb)<.05)GainDb=0;
-        Audio.SetGain(GainDb);Notify();
+        if(IsListening){_listenGain=GainDb;Listener.SetGain(GainDb);}
+        else{_recordGain=GainDb;Audio.SetGain(GainDb);}Notify();
     }
-    public async Task ResetPeakAsync(){await Audio.ResetPeakAsync();Refresh();Notify();}
+    public void SetWorkMode(bool listening)
+    {
+        IsListening=listening;GainDb=listening?_listenGain:_recordGain;
+        PitchHistory.Clear();_epoch=-1;_pitchFrame=-1;_segment=-1;
+        Refresh();Notify();
+    }
+    public async Task ResetPeakAsync(){if(IsListening)Listener.ResetPeak();else await Audio.ResetPeakAsync();Refresh();Notify();}
     public void Refresh()
     {
-        var source=Audio.Latest;
+        var source=CurrentAudioSnapshot;
         if(source.Epoch!=_epoch || source.Segment!=_segment){PitchHistory.Clear();_pitchFrame=-1;_epoch=source.Epoch;_segment=source.Segment;}
         MonitorTime=source.Time;HeldPeak=source.HeldPeakDbfs;
         double? hz=source.Valid?source.FrequencyHz:null;

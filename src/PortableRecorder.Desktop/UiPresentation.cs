@@ -39,7 +39,7 @@ internal static class InputFormatPresentation
     {
         if(volume==null)return "Windows 输入增益未知；共享与独占电平可能不同。";
         string db=volume.Decibels.ToString("+0.0;-0.0;0.0",System.Globalization.CultureInfo.InvariantCulture);
-        return $"打开时 Windows 输入增益 {db} dB。"+(volume.HardwareVolume
+        return $"当前 Windows 输入增益 {db} dB。"+(volume.HardwareVolume
             ?"设备提供硬件音量控制，共享与独占均可能受其影响。"
             :exclusive?"独占已绕过此软件增益；软件增益旋钮仍生效。":"共享受此软件增益影响，独占绕过它；切换时电平可能变化。");
     }

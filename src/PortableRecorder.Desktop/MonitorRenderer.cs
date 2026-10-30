@@ -173,7 +173,7 @@ public sealed class MonitorRenderer : IDisposable
         if(_disposed)return;
         double now=_visualClock.Elapsed.TotalSeconds;
         _frameDelta=Math.Clamp(now-_lastDrawTime,0,.050);_lastDrawTime=now;
-        var sample=state.Audio.Latest;
+        var sample=state.CurrentAudioSnapshot;
         if(!sample.Valid || sample.Epoch!=_visualEpoch || sample.Segment!=_visualSegment)
         {
             _visualEpoch=sample.Epoch;_visualSegment=sample.Segment;_centsMotion.Reset();_projectedFrame=null;_spectrumPoints=[];_fromSpectrum=[];_drawSpectrum=[];

@@ -17,6 +17,8 @@ namespace PortableRecorder.Desktop;
 public sealed class FadingDeviceName : Grid
 {
     private readonly FontIcon _microphone=Design.Icon("\uE720",16,Design.White);
+    private readonly Image _applicationIcon=new(){Width=16,Height=16,HorizontalAlignment=HorizontalAlignment.Left,VerticalAlignment=VerticalAlignment.Center,Visibility=Visibility.Collapsed,IsHitTestVisible=false};
+    private bool _listening;
     private int _channels=-1;
     private readonly TextBlock _text = Design.Text("", 13);
     private readonly Grid _viewport = new();
@@ -42,6 +44,7 @@ public sealed class FadingDeviceName : Grid
         microphone.HorizontalAlignment = HorizontalAlignment.Left;
         microphone.IsHitTestVisible = false;
         Children.Add(microphone);
+        Children.Add(_applicationIcon);
         Grid.SetColumn(_viewport,1); Children.Add(_viewport);
         var naturalWidth = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
         _text.TextWrapping = TextWrapping.NoWrap;
@@ -66,12 +69,30 @@ public sealed class FadingDeviceName : Grid
 
     public void SetChannels(int channels)
     {
+        if(_listening)return;
         if(_channels==channels)return;_channels=channels;
         // Two adjacent microphone glyphs identify stereo/multichannel without falsifying mono files.
         _microphone.Glyph=channels>1?"\uE720\uE720":"\uE720";
         _microphone.FontSize=channels>1?11:16;
         var detail=_value+(channels>0?$" · 实际 {channels} 声道" : " · 尚未取得输入");
         ToolTipService.SetToolTip(this,detail);AutomationProperties.SetName(this,"输入设备："+detail);
+    }
+    public void UseMicrophone()
+    {
+        _listening=false;_channels=-1;_applicationIcon.Source=null;_applicationIcon.Visibility=Visibility.Collapsed;
+        _microphone.Visibility=Visibility.Visible;_microphone.Glyph="\uE720";_microphone.FontSize=16;
+    }
+    public void SetListeningSource(string name,bool application)
+    {
+        _listening=true;SetName(name);
+        _applicationIcon.Source=null;_applicationIcon.Visibility=Visibility.Collapsed;_microphone.Visibility=Visibility.Visible;
+        _microphone.Glyph=application?"\uE7C4":"\uE977";_microphone.FontSize=16;
+        AutomationProperties.SetName(this,"侦听来源："+name);
+    }
+    public void SetApplicationIcon(ImageSource icon)
+    {
+        if(!_listening)return;
+        _applicationIcon.Source=icon;_applicationIcon.Visibility=Visibility.Visible;_microphone.Visibility=Visibility.Collapsed;
     }
     public void SetRecording(bool recording, bool animate)
     {

@@ -20,6 +20,7 @@ var groups=new Dictionary<string,Func<string,Action<bool,string>,Task>>(StringCo
     ["regression-audio"]=AudioReliabilityChecks.Run,
     ["regression-storage"]=StorageReliabilityChecks.Run,
     ["regression-ui"]=UiStateChecks.Run,
+    ["listening"]=ListeningChecks.Run,
 };
 if(args.Contains("--list")){Console.WriteLine(string.Join(Environment.NewLine,groups.Keys));return;}
 var selected=new HashSet<string>(StringComparer.OrdinalIgnoreCase);

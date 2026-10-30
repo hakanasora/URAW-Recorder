@@ -78,6 +78,22 @@ public sealed class AudioEngine:IAsyncDisposable
         Interlocked.Exchange(ref _gain,Math.Pow(10,Math.Clamp(db,-60,60)/20));
     }
     public Task<EndpointVolumeSnapshot> QueryEndpointVolumeAsync(AudioDevice device)=>_factory.QueryEndpointVolumeAsync(device);
+    /// <summary>Release idle microphone capture while another work mode owns monitoring.</summary>
+    public async Task SuspendMonitoringAsync()
+    {
+        await _commands.WaitAsync();
+        try
+        {
+            ThrowIfDisposed();
+            if(_writer!=null)throw new InvalidOperationException("请先结束录制再切换工作模式。");
+            RawDecisionPending=false;
+            await CloseCapture();
+            Interlocked.Increment(ref _epoch);
+            Volatile.Write(ref _previousPeak,double.NaN);
+            Set(AudioRunState.Stopped,"麦克风监看已暂停。");
+        }
+        finally{_commands.Release();}
+    }
     public async Task ReconcileDevicesAsync(IReadOnlyList<AudioDevice> devices,bool manualRefresh=false)
     {
         await _commands.WaitAsync();

@@ -16,6 +16,19 @@ static class LifecycleChecks
         void Near(double actual,double expected,double tolerance,string name)=>Assert(Math.Abs(actual-expected)<=tolerance,$"{name}: {actual} expected {expected} ± {tolerance}");
         {
             var factory=new FakeFactory();await using var engine=CreateEngine(root,factory);
+            await engine.SelectDeviceAsync(factory.Device);
+            await engine.SuspendMonitoringAsync();await engine.SuspendMonitoringAsync();
+            Assert(engine.Status.State==AudioRunState.Stopped&&!engine.Latest.Valid,"Listening mode releases microphone monitoring and old readings");
+            Assert(engine.SelectedDevice?.Id==factory.Device.Id,"Listening mode preserves microphone selection");
+            await engine.SelectDeviceAsync(factory.Device);
+            Assert(engine.Status.State==AudioRunState.Monitoring,"Returning to recorder reopens microphone monitoring");
+            await engine.StartRecordingAsync(root,RecordingMode.Shared);
+            bool blocked=false;try{await engine.SuspendMonitoringAsync();}catch(InvalidOperationException){blocked=true;}
+            Assert(blocked,"Mode switch cannot abandon an active recording");
+            await engine.StopRecordingAsync();
+        }
+        {
+            var factory=new FakeFactory();await using var engine=CreateEngine(root,factory);
             await engine.SelectDeviceAsync(factory.Device);Assert(!factory.Current!.Info.Exclusive && factory.Current.Info.Raw,"Startup shared RAW");
             factory.Push(Sine(48000,480,1000,.1));await Until(()=>engine.Latest.Valid,"initial frame");
             engine.SetGain(30);await engine.StartRecordingAsync(root,RecordingMode.Shared);
