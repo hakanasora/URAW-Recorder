@@ -21,7 +21,7 @@ internal sealed class TypeStudyWindow : Window
       ("88.8","+0.0","+12.0 dB","08:08.88"), ("∞","−∞","0 dB","00:00.00") ];
     public TypeStudyWindow()
     {
-        Title="Portable Recorder · 数字字体研究";
+        Title="URAW Recorder · 数字字体研究";
         _sheet.RowDefinitions.Add(new(){Height=GridLength.Auto});
         _sheet.RowDefinitions.Add(new(){Height=GridLength.Auto});
         _sheet.RowDefinitions.Add(new(){Height=new GridLength(1,GridUnitType.Star)});

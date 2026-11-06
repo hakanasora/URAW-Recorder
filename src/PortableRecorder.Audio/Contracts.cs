@@ -29,7 +29,18 @@ public sealed record AudioSnapshot(long Epoch,long FramePosition,int SampleRate,
 }
 public sealed record AudioStatus(AudioRunState State,CaptureInfo? Capture,string Message,string? FilePath=null,bool Partial=false);
 public sealed class RawUnavailableException(string message,Exception? inner=null):Exception(message,inner);
-public sealed class CaptureGapException(string detail):IOException("录音期间音频数据不连续，本次录音已停止；这不代表麦克风已断开。"+detail);
+public sealed class CaptureGapException:IOException
+{
+    public CaptureGapException(string detail):base("录音期间音频数据不连续，本次录音已停止；这不代表麦克风已断开。"+detail){}
+    internal CaptureGapException(string detail,long? delta,int flags):base(Classify(delta,flags)+"；本次录音已停止，文件可能不完整。"+detail){}
+    private static string Classify(long? delta,int flags)=>delta switch
+    {
+        >0=>$"帧位置前跳 {delta} 帧",
+        <0=>$"帧位置回跳，差值 {delta} 帧",
+        _ when (flags&1)!=0=>"驱动报告异常，缺帧未确认",
+        _=>"音频数据不连续"
+    };
+}
 public sealed class CapturePacket(byte[] data,int length,int frames,long position,bool silent,bool discontinuity,
     int nativeFlags=0,long? positionDelta=null,long qpc100ns=0,double wakeGapMs=0,double bufferHoldMs=0):IDisposable
 {

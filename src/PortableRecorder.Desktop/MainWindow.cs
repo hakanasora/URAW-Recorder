@@ -99,7 +99,7 @@ public sealed partial class MainWindow : Window
     private string? _modePreferenceWarning,_encodingPreferenceWarning;
     private string _lastNoticeKey="";
     private string _lastAudioMessage="";
-    private readonly TextBlock _serviceNotice=Design.Text("",11,Design.Muted);
+    private readonly ServiceNotice _serviceNotice;
     private readonly bool _noCapture=Environment.GetCommandLineArgs().Contains("--no-capture");
     private int? _displayedNote;
     private readonly SolidColorBrush _normalPeakInk=Design.Brush(Design.White),_overloadPeakInk=Design.Brush(Design.Alert);
@@ -120,7 +120,8 @@ public sealed partial class MainWindow : Window
         _encodingPreferences=_state.EncodingSettings;
         ApplyTypography(false);
         _modePreferenceWarning=_state.ModePreferenceWarning;_encodingPreferenceWarning=_state.EncodingPreferenceWarning;
-        Title="Portable Recorder";ExtendsContentIntoTitleBar=true;
+        Title="URAW Recorder";ExtendsContentIntoTitleBar=true;
+        AppWindow.SetIcon(System.IO.Path.Combine(AppContext.BaseDirectory,"Assets","URAWRecorder.ico"));
         _state.Audio.Diagnostic+=StartupLog.Write;
         _startupPresentation=new StartupPresentation(this);
         _frame=new FixedWindowFrame(this,()=>_root.XamlRoot?.RasterizationScale??FixedWindowFrame.NativeScale(this));
@@ -138,7 +139,7 @@ public sealed partial class MainWindow : Window
         var transportSurface=MaterialSurface.Tint(Design.Transport,micaSupported?MaterialSurface.TransportVeilAlpha:255);
         StartupLog.Write($"Material: Mica={micaSupported}; neutral veils display={MaterialSurface.DisplayVeilAlpha}/255, transport={MaterialSurface.TransportVeilAlpha}/255");
         _root.RowDefinitions.Add(new(){Height=new GridLength(32)});_root.RowDefinitions.Add(new(){Height=new GridLength(1,GridUnitType.Star)});
-        var title=new Grid{Background=Design.Brush(displaySurface),Height=32};
+        var title=new Grid{Background=Design.Brush(transportSurface),Height=32};
         title.Children.Add(new TextBlock{Text=Title,FontSize=12,Foreground=Design.Brush(Design.Muted),Margin=new Thickness(16,0,140,0),VerticalAlignment=VerticalAlignment.Center});
         _root.Children.Add(title);SetTitleBar(title);
         AppWindow.TitleBar.BackgroundColor=Colors.Transparent;AppWindow.TitleBar.ButtonBackgroundColor=Colors.Transparent;
@@ -152,7 +153,8 @@ public sealed partial class MainWindow : Window
         _main.RowDefinitions.Add(new(){Height=new GridLength(236)});
         _main.RowDefinitions.Add(new(){Height=new GridLength(84)});
         var displayPanel=MaterialSurface.DisplayPanel(displaySurface);
-        _main.Children.Add(displayPanel);Grid.SetRowSpan(displayPanel,2);
+        _main.Children.Add(displayPanel);Grid.SetRow(displayPanel,1);
+        _header.Background=Design.Brush(transportSurface);
         _main.Children.Add(_header);_main.Children.Add(_monitor);Grid.SetRow(_monitor,1);
         _main.Children.Add(_transport);Grid.SetRow(_transport,2);
         _body.Children.Add(_main);
@@ -164,7 +166,7 @@ public sealed partial class MainWindow : Window
         _modeSelector=Design.Selector(["电平","频谱","音高"],76,2,index=>{_state.Mode=(MonitorMode)index;if(_started)RefreshMode();});_modeSelector.TabIndex=1;
         _header.Children.Add(new Border{Background=Design.Brush(MaterialSurface.Tint(Design.Hex("0A0A0A"),102)),CornerRadius=new CornerRadius(4),Padding=new Thickness(4),Child=_modeSelector,HorizontalAlignment=HorizontalAlignment.Center,VerticalAlignment=VerticalAlignment.Center});
         _monitor.Children.Add(_canvas);BuildReadouts();
-        _transport.Background=Design.Brush(transportSurface);
+        _transport.Background=Design.Brush(displaySurface);
         _transport.Children.Add(new Border{Height=1,Background=Design.Brush(MaterialSurface.Tint(Colors.White,14)),VerticalAlignment=VerticalAlignment.Top,IsHitTestVisible=false});
         _gain=new(_state){Width=96,HorizontalAlignment=HorizontalAlignment.Left,VerticalAlignment=VerticalAlignment.Center,Margin=new Thickness(190,0,0,0)};_transport.Children.Add(_gain);
         _inputName.HorizontalAlignment=HorizontalAlignment.Left;
@@ -204,7 +206,7 @@ public sealed partial class MainWindow : Window
         _activeButtons.Children.Add(_discardButton);
         _activeButtons.Children.Add(_pauseButton);_activeButtons.Children.Add(_stopButton);
         _actions.Children.Add(_activeButtons);_transport.Children.Add(_actions);
-        _serviceNotice.MaxWidth=215;_serviceNotice.TextTrimming=TextTrimming.CharacterEllipsis;
+        _serviceNotice=new ServiceNotice(()=>_settings.AnimationsEnabled,ActivateNotice){MaxWidth=215};
         _serviceNotice.HorizontalAlignment=HorizontalAlignment.Right;_serviceNotice.VerticalAlignment=VerticalAlignment.Center;
         _serviceNotice.Margin=new Thickness(0,0,28,0);_header.Children.Add(_serviceNotice);
         _paneSelector=Design.Selector(["输入","文件"],84,8,index=>
@@ -262,11 +264,11 @@ public sealed partial class MainWindow : Window
             catch(Exception error){StartupLog.Write("Audio close: "+error);await Message("录音收尾异常",AudioEngine.Friendly(error),duringClose:true);}
             finally{_closeAllowed=true;Close();}
         };
-        Closed+=(_,_)=>{_dialogs.Close();_drawer.Dispose();_settings.ColorValuesChanged-=OnSystemColorsChanged;_settings.AnimationsEnabledChanged-=OnAnimationsChanged;_settings.TextScaleFactorChanged-=OnTextScaleChanged;if(_root.XamlRoot!=null)_root.XamlRoot.Changed-=OnXamlRootChanged;CompositionTarget.Rendering-=OnRendering;_inputName.ReleaseResources();_timer.Stop();_widthAnimation?.Stop();_monitorFade.Stop();_clockFade.Stop();_statusFade.Stop();_primaryFade.Stop();_pauseFade.Stop();ReleaseRenderSurface();_renderer.Dispose();};Content=_root;
+        Closed+=(_,_)=>{_dialogs.Close();_drawer.Dispose();_settings.ColorValuesChanged-=OnSystemColorsChanged;_settings.AnimationsEnabledChanged-=OnAnimationsChanged;_settings.TextScaleFactorChanged-=OnTextScaleChanged;if(_root.XamlRoot!=null)_root.XamlRoot.Changed-=OnXamlRootChanged;CompositionTarget.Rendering-=OnRendering;_inputName.ReleaseResources();_serviceNotice.ReleaseResources();_timer.Stop();_widthAnimation?.Stop();_monitorFade.Stop();_clockFade.Stop();_statusFade.Stop();_primaryFade.Stop();_pauseFade.Stop();ReleaseRenderSurface();_renderer.Dispose();};Content=_root;
     }
     private void OnXamlRootChanged(XamlRoot sender,XamlRootChangedEventArgs args){if(!_closing)_frame.RefreshDpi();}
     private void OnAnimationsChanged(UISettings sender,object args)=>DispatcherQueue.TryEnqueue(()=>
-    {if(_closing)return;UpdateTextScale();RefreshSession(false);_drawer.ApplyMotionPreference();});
+    {if(_closing)return;UpdateTextScale();RefreshSession(false);_drawer.ApplyMotionPreference();_serviceNotice.ApplyMotionPreference();});
     private void OnTextScaleChanged(UISettings sender,object args)=>DispatcherQueue.TryEnqueue(()=>
     {if(_closing)return;UpdateTextScale();Layout();});
 
@@ -290,7 +292,6 @@ public sealed partial class MainWindow : Window
         reset.Click+=async(_,_)=>await AudioCommand(_state.ResetPeakAsync);peakRow.Children.Add(_peak);peakRow.Children.Add(reset);_level.Children.Add(peakRow);_monitor.Children.Add(_level);
         _pitch.Width=200;_pitch.Margin=new Thickness(28,0,0,0);_pitch.HorizontalAlignment=HorizontalAlignment.Left;_pitch.VerticalAlignment=VerticalAlignment.Center;_pitch.Visibility=Visibility.Collapsed;
         _note.FontWeight=FontWeights.SemiBold;_frequency.FontWeight=FontWeights.SemiBold;_note.Height=72;_note.CharacterSpacing=0;_pitch.Children.Add(_note);var hz=new StackPanel{Orientation=Orientation.Horizontal,Spacing=5,Margin=new Thickness(0,10,0,0),Height=26};hz.Children.Add(_frequency);hz.Children.Add(Design.Text("Hz",12,Design.Muted));_pitch.Children.Add(hz);_pitch.Children.Add(new Border{Height=64});_monitor.Children.Add(_pitch);
-        ToolTipService.SetToolTip(_level,"300 ms RMS；PEAK 为增益后历史逐样本峰值。VU 参考：峰值 −18 dBFS 的 1 kHz 正弦 = 0 VU，RMS 约 −21.01 dBFS。+3 VU 不等于数字削波：表盘刻度为 VU，PEAK 为 dBFS。多声道电平按能量平均，VU 显示前两路；单声道镜像显示。软件增益同时影响文件。 ");
         AutomationProperties.SetName(_number,"当前输出 RMS，dBFS");AutomationProperties.SetLiveSetting(_sessionLabel,AutomationLiveSetting.Polite);
     }
     private void BuildInspector()
@@ -366,7 +367,7 @@ public sealed partial class MainWindow : Window
         StyleField(_calibrationEnabledBox);_calibrationEnabledBox.ItemsSource=new[]{"启用","禁用"};
         var calibrationLabel=Label("校准","\uE9E9");calibrationLabel.VerticalAlignment=VerticalAlignment.Center;_calibrationHeading.Children.Add(calibrationLabel);
         var manage=LinkButton("管理校准");manage.HorizontalAlignment=HorizontalAlignment.Right;manage.VerticalAlignment=VerticalAlignment.Center;
-        ToolTipService.SetToolTip(manage,"管理已添加的校准文件");manage.Click+=async(_,_)=>await ManageCalibrations();_calibrationHeading.Children.Add(manage);
+        manage.Click+=async(_,_)=>await ManageCalibrations();_calibrationHeading.Children.Add(manage);
         AutomationProperties.SetName(_calibrationEnabledBox,"校准");
         _calibrationSection.Children.Add(_calibrationHeading);
         _calibrationSection.Children.Add(_calibrationEnabledBox);
@@ -386,6 +387,7 @@ public sealed partial class MainWindow : Window
             await AudioCommand(()=>_state.Audio.SetCalibrationAsync(file.Id));SyncCalibration();
         };
         SyncCalibration();
+        _inputPage.Children.Add(BuildVuReferenceGroup(listening:false));
         StyleField(_path);_path.VerticalContentAlignment=VerticalAlignment.Center;_path.Padding=new Thickness(12,8,12,8);_path.TextChanged+=(_,_)=>ToolTipService.SetToolTip(_path,_path.Text);
         _path.LostFocus+=(_,_)=>SaveOutputFolder();
         var pathRow=new Grid{ColumnSpacing=8};pathRow.ColumnDefinitions.Add(new(){Width=new GridLength(1,GridUnitType.Star)});pathRow.ColumnDefinitions.Add(new(){Width=new GridLength(36)});pathRow.Children.Add(_path);
@@ -415,7 +417,7 @@ public sealed partial class MainWindow : Window
     private Button LinkButton(string text)
     {
         var label=Design.Text(text,13);label.Foreground=_linkInk;
-        var button=Design.Button(label,text,Colors.Transparent);button.Height=24;button.Padding=new Thickness(0);
+        var button=Design.Button(label,text,Colors.Transparent);ToolTipService.SetToolTip(button,null);button.Height=24;button.Padding=new Thickness(0);
         button.HorizontalAlignment=HorizontalAlignment.Left;
         button.IsEnabledChanged+=(_,_)=>label.Foreground=button.IsEnabled?_linkInk:Design.Brush(Design.Muted);
         _configuration.Add(button);return button;
@@ -596,7 +598,21 @@ public sealed partial class MainWindow : Window
     private async Task Message(string title,string text,bool duringClose=false)
     {
         try{await ShowDialog(new ContentDialog{XamlRoot=_root.XamlRoot,Title=title,Content=text,CloseButtonText="关闭",RequestedTheme=ElementTheme.Dark},duringClose);}
-        catch(Exception error){StartupLog.Write("Message dialog failed: "+error);if(!_closing){_serviceNotice.Text=text;ToolTipService.SetToolTip(_serviceNotice,text);}}
+        catch(Exception error){StartupLog.Write("Message dialog failed: "+error);if(!_closing)_serviceNotice.SetNotice(text,text);}
+    }
+    private async Task ActivateNotice(NoticeData notice)
+    {
+        if(notice.Folder!=null)
+        {
+            try
+            {
+                if(!System.IO.Directory.Exists(notice.Folder)) throw new System.IO.DirectoryNotFoundException("保存文件夹不存在："+notice.Folder);
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo { FileName=notice.Folder, UseShellExecute=true });
+                return;
+            }
+            catch(Exception error) { await Message("无法打开文件夹", error.Message+"\n"+notice.Details); return; }
+        }
+        await Message("通知详情",notice.Details);
     }
     private void Tick()
     {
@@ -614,16 +630,19 @@ public sealed partial class MainWindow : Window
         if(status.Message!=_lastAudioMessage){_lastAudioMessage=status.Message;StartupLog.Write("Audio: "+status.State+" / "+status.Message);}
         string preferenceWarning=string.Join("；",new[]{_modePreferenceWarning,_encodingPreferenceWarning}.Where(w=>!string.IsNullOrWhiteSpace(w)));
         bool clipped=_state.Audio.RecordingClippedSamples>0;
-        string noticeKey=$"{status.State}|{status.Message}|{preferenceWarning}|{_state.Audio.CalibrationReadyToRecord}|{clipped}";
+        bool unconfirmed=_state.Audio.RecordingUnconfirmedDiscontinuities>0 && status.State is AudioRunState.Recording or AudioRunState.Paused;
+        string noticeKey=$"{status.State}|{status.Message}|{status.FilePath}|{status.Partial}|{preferenceWarning}|{_state.Audio.CalibrationReadyToRecord}|{clipped}|{unconfirmed}";
         if(noticeKey!=_lastNoticeKey)
         {
             _lastNoticeKey=noticeKey;
-            _serviceNotice.Text=clipped?"录音继续中：压缩文件出现削波。降低增益或使用浮点 WAV 可避免超限损失。":status.State==AudioRunState.Monitoring&&!_state.Audio.CalibrationReadyToRecord
+            string notice=unconfirmed?"缺帧未确认":clipped?"录音继续中：压缩文件出现削波。降低增益或使用浮点 WAV 可避免超限损失。":status.State==AudioRunState.Monitoring&&!_state.Audio.CalibrationReadyToRecord
                 ?"校准尚未生效，请选择有效文件或禁用校准。":status.State is AudioRunState.Faulted or AudioRunState.Stopped || status.FilePath!=null && ! _state.Session.Active
                 ?status.Message:status.State==AudioRunState.Monitoring && _state.Audio.Latest.RecoveredDiscontinuities>0
                 ?$"监看已恢复（短暂不连续 {_state.Audio.Latest.RecoveredDiscontinuities} 次）":"";
-            if(_serviceNotice.Text.Length==0&&preferenceWarning.Length>0)_serviceNotice.Text=preferenceWarning;
-            ToolTipService.SetToolTip(_serviceNotice,status.Message+(preferenceWarning.Length==0?"":"\n"+preferenceWarning)+(status.FilePath==null?"":"\n"+status.FilePath)+(status.State==AudioRunState.Monitoring&&!_state.Audio.CalibrationReadyToRecord?"\n"+CalibrationDescription():""));
+            string shown=notice.Length==0?preferenceWarning:notice;
+            string details=shown+(shown==status.Message?"":"\n"+status.Message)+(preferenceWarning.Length==0?"":"\n"+preferenceWarning)+(status.FilePath==null?"":"\n"+status.FilePath)+(status.Partial?"\n文件可能不完整。":"")+(status.State==AudioRunState.Monitoring&&!_state.Audio.CalibrationReadyToRecord?"\n"+CalibrationDescription():"");
+            bool saved=status.State!=AudioRunState.Faulted && !status.Partial && !clipped && !unconfirmed && preferenceWarning.Length==0 && status.Message.StartsWith("已保存：",StringComparison.Ordinal) && !status.Message.Contains("；") && status.FilePath!=null && !_state.Session.Active;
+            _serviceNotice.SetNotice(shown,details,saved?System.IO.Path.GetDirectoryName(status.FilePath):null);
         }
         _=CheckRawDecision();
         bool minimized=AppWindow.Presenter is OverlappedPresenter{State:OverlappedPresenterState.Minimized};
@@ -969,12 +988,6 @@ public sealed partial class MainWindow : Window
         _level.Visibility=_state.Mode!=MonitorMode.Pitch?Visibility.Visible:Visibility.Collapsed;
         _pitch.Visibility=_state.Mode==MonitorMode.Pitch?Visibility.Visible:Visibility.Collapsed;
         _monitor.Background=Design.Brush(Colors.Transparent);
-        ToolTipService.SetToolTip(_monitor,_state.Mode switch
-        {
-            MonitorMode.Level=>"VU 参考：−18 dBFS 峰值的 1 kHz 正弦 = 0 VU。+3 VU 不代表数字削波；数字超限看 PEAK ≥ 0 dBFS。",
-            MonitorMode.Spectrum=>"单边频点幅度 dBFS；横轴为对数 Hz，纵轴为非均匀 dBFS。显示范围止于实际 Nyquist。",
-            _=>"单音检测，A4 = 440 Hz；音高不明确时不显示音名。"
-        });
         Layout();RenderMonitor();
         if(_started && !keepReadout)_monitorFade.In(120);
         else{_monitorFade.Stop();_monitor.Opacity=1;}
@@ -1010,9 +1023,9 @@ public sealed partial class MainWindow : Window
         if(active)DispatcherQueue.TryEnqueue(LogClockCenters);
         _stopButton.CornerRadius=active?new CornerRadius(0,5,5,0):new CornerRadius(5);
         AutomationProperties.SetName(_stopButton,active?"停止录制":"开始录制");
-        ToolTipService.SetToolTip(_stopButton,active?"停止录制":"开始录制");
+        ToolTipService.SetToolTip(_stopButton,active&&paused?"停止录制":null);
         AutomationProperties.SetName(_pauseButton,paused?"继续录制":"暂停录制");
-        ToolTipService.SetToolTip(_pauseButton,paused?"继续录制":"暂停录制");
+        ToolTipService.SetToolTip(_pauseButton,active&&!paused?"暂停录制":null);
         _discardButton.Visibility=paused?Visibility.Visible:Visibility.Collapsed;
         _discardButton.IsEnabled=paused && !_audioBusy;
         _pauseButton.CornerRadius=paused?new CornerRadius(0):new CornerRadius(5,0,0,5);

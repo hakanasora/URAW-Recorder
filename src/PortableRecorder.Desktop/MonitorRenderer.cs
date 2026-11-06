@@ -186,7 +186,9 @@ public sealed class MonitorRenderer : IDisposable
         {
             var x=256+(width-284-536)/2;
             var y=(height-188)/2;
-            Vu(sender,ds,x,y,vu.Left,"L"); Vu(sender,ds,x+276,y,vu.Right,"R");
+            // Shift only the meter's zero point; samples and digital meters stay unchanged.
+            double offset=-18-state.VuReferenceDbfs;
+            Vu(sender,ds,x,y,vu.Left+offset,"L"); Vu(sender,ds,x+276,y,vu.Right+offset,"R");
         }
         else if(state.Mode==MonitorMode.Spectrum) Spectrum(sender,ds,state,width,height);
         else Pitch(sender,ds,state,width,height);

@@ -30,6 +30,14 @@ public sealed class ShellViewModel:INotifyPropertyChanged
     public AudioEngine Audio {get;}
     public ListeningService Listener {get;}=new();
     public bool IsListening {get;private set;}
+    private double _recordVuReference=-18,_listenVuReference=-6;
+    public double VuReferenceDbfs=>IsListening?_listenVuReference:_recordVuReference;
+    public void SetVuReference(double db)
+    {
+        if(db is not (-18 or -14 or -10 or -8 or -6))throw new ArgumentOutOfRangeException(nameof(db));
+        if(IsListening)_listenVuReference=db;else _recordVuReference=db;
+        Notify();
+    }
     private double _recordGain,_listenGain;
     public AudioSnapshot CurrentAudioSnapshot
     {

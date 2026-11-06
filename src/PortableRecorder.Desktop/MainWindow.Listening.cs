@@ -18,7 +18,6 @@ public sealed partial class MainWindow
     private readonly ComboBox _workModeBox=new(),_listenScope=new(),_listenTap=new(),_listenEndpoint=new(),_listenApplication=new();
     private readonly ScrollViewer _listenHost=new();
     private readonly TextBlock _listenHeading=Design.Text("侦听设置",13,Design.White,true);
-    private readonly TextBlock _listenDescription=Design.Text("",11,Design.Label);
     private readonly TextBlock _listenFormat=Design.Text("",11,Design.Muted);
     private readonly StackPanel _listenPage=new(){Spacing=16,Margin=new Thickness(0,0,16,0)};
     private StackPanel? _listenTapGroup,_listenEndpointGroup,_listenApplicationGroup;
@@ -32,9 +31,33 @@ public sealed partial class MainWindow
     {
         StyleField(_workModeBox);
         _workModeBox.ItemsSource=new[]{"录制","侦听"};_workModeBox.SelectedIndex=0;
-        _workModeBox.Width=92;_workModeBox.Height=34;_workModeBox.MinHeight=34;
+        _workModeBox.Width=double.NaN;_workModeBox.MinWidth=64;_workModeBox.Height=34;_workModeBox.MinHeight=34;
+        _workModeBox.Padding=new Thickness(8,0,0,0);
+        _workModeBox.Loaded+=(_,_)=>
+        {
+            // Native ComboBox reserves 38 DIP for its arrow. Compact that column,
+            // not the label: intrinsic sizing also accommodates text scaling.
+            void CompactArrow(DependencyObject node)
+            {
+                if(node is FrameworkElement {Name:"DropDownGlyph"} glyph &&
+                    Microsoft.UI.Xaml.Media.VisualTreeHelper.GetParent(glyph) is Grid grid)
+                {
+                    int column=Grid.GetColumn(glyph);
+                    if(column<grid.ColumnDefinitions.Count)grid.ColumnDefinitions[column].Width=new GridLength(24);
+                    glyph.Margin=new Thickness(0,0,8,0);return;
+                }
+                for(int i=0;i<Microsoft.UI.Xaml.Media.VisualTreeHelper.GetChildrenCount(node);i++)
+                    CompactArrow(Microsoft.UI.Xaml.Media.VisualTreeHelper.GetChild(node,i));
+            }
+            CompactArrow(_workModeBox);
+        };
+        _workModeBox.Background=Design.Brush(Colors.Transparent);
+        foreach(var key in new[]{"ComboBoxBackground","ComboBoxBackgroundDisabled"})
+            _workModeBox.Resources[key]=Design.Brush(Colors.Transparent);
+        _workModeBox.Resources["ComboBoxBackgroundPointerOver"]=Design.Brush(Design.Selected);
+        _workModeBox.Resources["ComboBoxBackgroundPressed"]=Design.Brush(Design.Hex("29292C"));
         _workModeBox.HorizontalAlignment=HorizontalAlignment.Left;_workModeBox.VerticalAlignment=VerticalAlignment.Center;
-        _workModeBox.Margin=new Thickness(76,0,0,0);_workModeBox.TabIndex=1;
+        _workModeBox.Margin=new Thickness(68,0,0,0);_workModeBox.TabIndex=1;
         AutomationProperties.SetName(_workModeBox,"工作模式");
         _workModeBox.SelectionChanged+=(_,_)=>
         {
@@ -80,6 +103,24 @@ public sealed partial class MainWindow
 
     private void RestoreWorkModeSelection()=>_workModeBox.SelectedIndex=_state.IsListening?1:0;
 
+    private StackPanel BuildVuReferenceGroup(bool listening)
+    {
+        double[] values=[-18,-14,-10,-8,-6];
+        var box=new ComboBox();StyleField(box);
+        _configuration.Remove(box); // Safe to adjust while recording; no sample processing changes.
+        box.ItemsSource=values.Select(db=>$"−{Math.Abs(db):0} dBFS").ToArray();
+        box.SelectedIndex=listening?4:0;
+        AutomationProperties.SetName(box,"VU 参考");
+        ToolTipService.SetToolTip(box,"0 VU 的正弦参考电平，仅影响表头。");
+        box.SelectionChanged+=(_,_)=>
+        {
+            if(box.SelectedIndex<0||_state.IsListening!=listening)return;
+            _state.SetVuReference(values[box.SelectedIndex]);
+            RenderMonitor();
+        };
+        return Group("VU 参考","\uE9D9",box);
+    }
+
     private void BuildListeningInspector(Grid top,Grid pages)
     {
         _listenHeading.Visibility=Visibility.Collapsed;_listenHeading.HorizontalAlignment=HorizontalAlignment.Left;
@@ -98,11 +139,17 @@ public sealed partial class MainWindow
         _listenPage.Children.Add(Group("侦听范围","\uE7F4",_listenScope));
         _listenTapGroup=Group("取流位置","\uE8AB",_listenTap);_listenPage.Children.Add(_listenTapGroup);
         _listenEndpointGroup=Group("输出设备","\uE767",_listenEndpoint);_listenPage.Children.Add(_listenEndpointGroup);
-        _listenApplicationGroup=Group("应用","\uE7C4",_listenApplication);_listenPage.Children.Add(_listenApplicationGroup);
         _listenRefresh=LinkButton("刷新");_listenRefresh.Click+=async(_,_)=>await RefreshListeningSources();
-        _listenPage.Children.Add(_listenRefresh);
-        _listenDescription.TextWrapping=TextWrapping.Wrap;_listenFormat.TextWrapping=TextWrapping.Wrap;
-        _listenPage.Children.Add(_listenDescription);_listenPage.Children.Add(_listenFormat);
+        var applicationHeading=new Grid{Height=24};
+        applicationHeading.Children.Add(Label("应用","\uE7C4"));
+        _listenRefresh.HorizontalAlignment=HorizontalAlignment.Right;
+        _listenRefresh.Height=24;_listenRefresh.Padding=new Thickness(0);
+        applicationHeading.Children.Add(_listenRefresh);
+        _listenApplicationGroup=new StackPanel{Spacing=8};
+        _listenApplicationGroup.Children.Add(applicationHeading);_listenApplicationGroup.Children.Add(_listenApplication);
+        _listenPage.Children.Add(_listenApplicationGroup);
+        _listenPage.Children.Add(BuildVuReferenceGroup(listening:true));
+        _listenFormat.TextWrapping=TextWrapping.Wrap;_listenPage.Children.Add(_listenFormat);
         foreach(var field in new[]{_listenScope,_listenTap,_listenEndpoint,_listenApplication})
             field.SelectionChanged+=(_,_)=>{if(!_updatingListening){_listenViewKey=null;RefreshListening();}};
     }
@@ -120,7 +167,7 @@ public sealed partial class MainWindow
         _pauseButton.Visibility=Visibility.Collapsed;_pauseButton.Width=0;_discardButton.Visibility=Visibility.Collapsed;_discardButton.Width=0;
         _activeButtons.Spacing=0;_clockSlot.Visibility=Visibility.Collapsed;
         _inputName.SetRecording(false,false);
-        if(!listening){_inputName.UseMicrophone();RefreshSession(false);}
+        if(!listening){_lastNoticeKey="";_inputName.UseMicrophone();RefreshSession(false);}
         else{_=SetListeningSourceIcon(SelectedListeningSource());RefreshListening();}
         RefreshValues();
     }
@@ -196,14 +243,14 @@ public sealed partial class MainWindow
         _primaryFade.Stop();_primaryContent.Opacity=1;_primaryContent.Children.Clear();
         _primaryContent.Children.Add(Design.ActionContent(active?"stop":"play",active?"停止侦听":"开始侦听"));
         Design.SetBaseFill(_stopButton,Design.TransportAction,false);
-        AutomationProperties.SetName(_stopButton,active?"停止侦听":"开始侦听");ToolTipService.SetToolTip(_stopButton,active?"停止侦听":"开始侦听");
-        _listenDescription.Text=application?"侦听所选应用及其子进程。来源不限定输出设备；应用退出后需重新选择。"
+        AutomationProperties.SetName(_stopButton,active?"停止侦听":"开始侦听");ToolTipService.SetToolTip(_stopButton,null);
+        string description=application?"侦听所选应用及其子进程。来源不限定输出设备；应用退出后需重新选择。"
             :endpoint?"侦听此输出设备的混音；包含当前设备链路的增强与系统音量。其他设备的声音不在此范围。"
             :"侦听全部应用的增强前混音，不跟随 Windows 总音量；来源可跨输出设备，不含本程序。";
-        ToolTipService.SetToolTip(_listenDescription,"当前 SMSL / Equalizer APO 链路已验证前后取流差异。其他驱动效果、空间音效与受保护内容不作统一保证。侦听只作分析，不写入文件；增益仅影响仪表。");
+        ToolTipService.SetToolTip(_listenScope,description);
+        ToolTipService.SetToolTip(_listenTap,"侦听不保存文件，增益仅影响仪表。");
         _listenFormat.Text=status.Format is {} format?"实际取流："+FormatName(format):"";
-        _serviceNotice.Text=status.State==ListeningState.Stopped?"":status.Message;
-        ToolTipService.SetToolTip(_serviceNotice,status.Message);
+        _serviceNotice.SetNotice(status.State is ListeningState.Stopped or ListeningState.Listening?"":status.Message,status.Message);
     }
 
     private async Task SetListeningSourceIcon(ListeningSource? source)

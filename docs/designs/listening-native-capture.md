@@ -47,6 +47,8 @@ Independent EGM reviewers inspected feasibility, measurement, and UX. All agreed
 
 ## Implementation and checks
 
+2026-10-31 UI refinement: remove the visible explanatory paragraphs (keep scope/capability details in control tooltips), hide refresh in both system scopes, and place application refresh at the right of the application heading, matching the microphone input heading. The work-mode ComboBox now sits at x=68 DIP beside the menu, has a transparent resting surface and native hover/pressed fills; keyboard focus and the native dropdown remain intact. Published and checked with no-capture UIAutomation; no audio-service changes.
+
 - `ListeningService` owns native capture and analysis only. It never creates a recording writer or calibration stage. Sources use NAudio's existing loopback builders, with a bounded pooled packet queue and serialized start/stop commands.
 - The microphone monitor is released on entering listening. Recording/paused sessions prevent a mode change. Returning to recording resumes shared microphone monitoring and restores its own gain. Listening gain starts at zero and is retained independently within the current run.
 - A 500 ms packet-age threshold hides stale measurements and presents `等待音频播放`; it does not diagnose a disconnected microphone or synthesize audio. A returning stream resets analysis continuity. Process creation time guards PID reuse, and exit faults instead of selecting another instance.

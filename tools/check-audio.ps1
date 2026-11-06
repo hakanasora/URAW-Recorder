@@ -2,8 +2,7 @@ param([string[]]$Group=@(),[switch]$List)
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $dotnetExecutable = $env:PORTABLE_RECORDER_DOTNET
-if (-not $dotnetExecutable) { $dotnetExecutable = 'F:\Codex\.tools\portable-recorder\dotnet\dotnet.exe' }
-if (-not (Test-Path -LiteralPath $dotnetExecutable)) { $dotnetExecutable = (Get-Command dotnet).Source }
+if (-not $dotnetExecutable) { $dotnetExecutable = (Get-Command dotnet).Source }
 Push-Location -LiteralPath $repoRoot
 try {
     if (-not $List -and ($Group.Count -eq 0 -or 'encoding' -in ($Group -split ','))) {

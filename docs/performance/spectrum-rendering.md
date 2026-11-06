@@ -53,7 +53,7 @@
 
 ```powershell
 ./tools/build.ps1
-& F:/Codex/.tools/portable-recorder/dotnet/dotnet.exe run --project tools/PortableRecorder.Audio.Benchmarks -c Release
+dotnet run --project tools/PortableRecorder.Audio.Benchmarks -c Release
 ./tools/measure-monitor.ps1 -AllowMicrophone -Mode 频谱 -Seconds 25 -Label spectrum -Screenshot
 ./tools/check-audio.ps1
 ```

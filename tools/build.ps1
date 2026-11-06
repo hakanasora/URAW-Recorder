@@ -6,10 +6,6 @@ if (-not $dotnetExecutable) {
     $systemDotnet = Get-Command dotnet -ErrorAction SilentlyContinue
     if ($systemDotnet -and (& $systemDotnet.Source --list-sdks)) { $dotnetExecutable = $systemDotnet.Source }
 }
-if (-not $dotnetExecutable) {
-    $localSdk = 'F:\Codex\.tools\portable-recorder\dotnet\dotnet.exe'
-    if (Test-Path -LiteralPath $localSdk) { $dotnetExecutable = $localSdk }
-}
 if (-not $dotnetExecutable) { throw 'Install .NET SDK 10.0.402 or set PORTABLE_RECORDER_DOTNET to dotnet.exe.' }
 $env:DOTNET_CLI_TELEMETRY_OPTOUT = '1'
 $originalLocation = Get-Location

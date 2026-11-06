@@ -149,4 +149,4 @@ Message 不维护统一的弹窗互斥；RAW 提示先记录 decision id，再�
 
 用户已确认“按完整清单推进，先修可靠性问题”，Gate 1 已通过；实现和验证完成后，用户另确认“确认，保存本地提交”，Gate 2 也已通过。详见[完成与验证记录](milestone-1-results.md)。新增产品行为或稳定依赖外部镜像不包含在该确认范围，不推送远端。
 
-依据：[ECC orch-refine-code](C:/Users/27602/.codex/plugins/cache/ecc/ecc/2.2.3/skills/orch-refine-code/SKILL.md)、[ECC orch-pipeline](C:/Users/27602/.codex/plugins/cache/ecc/ecc/2.2.3/skills/orch-pipeline/SKILL.md)。
+依据：ECC orch-refine-code、ECC orch-pipeline。
