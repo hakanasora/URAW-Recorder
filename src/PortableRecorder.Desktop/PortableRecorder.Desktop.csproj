@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
-    <Version>1.0.3</Version>
+    <Version>1.0.5</Version>
     <AssemblyTitle>URAW Recorder</AssemblyTitle>
     <Product>URAW Recorder</Product>
     <Description>URAW Recorder</Description>
@@ -23,6 +23,7 @@
     <PublishSingleFile>false</PublishSingleFile>
     <IncludeAllContentForSelfExtract Condition="'$(PublishSingleFile)' == 'true'">true</IncludeAllContentForSelfExtract>
     <ProjectPriFileName Condition="'$(PublishSingleFile)' == 'true'">resources.pri</ProjectPriFileName>
+    <EnableCompressionInSingleFile Condition="'$(PublishSingleFile)' == 'true'">true</EnableCompressionInSingleFile>
     <PublishTrimmed>false</PublishTrimmed>
     <PublishReadyToRun>false</PublishReadyToRun>
     <ApplicationManifest>app.manifest</ApplicationManifest>
@@ -31,12 +32,18 @@
   <ItemGroup>
     <Content Include="Assets\URAWRecorder.ico" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <Content Include="Assets\TypeStudy\**\*" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
-    <Content Include="..\..\third_party\**\*" Link="licenses\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="..\..\third_party\**\*" Exclude="..\..\third_party\ffmpeg\bin\**\*" Link="licenses\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <Content Include="..\..\artifacts\encoders\ffmpeg.exe" Link="encoders\ffmpeg.exe" CopyToPublishDirectory="PreserveNewest" Condition="'$(PublishSingleFile)' == 'true'" />
     <Content Include="..\..\artifacts\encoders\LICENSE.txt" Link="encoders\LICENSE.txt" CopyToPublishDirectory="PreserveNewest" Condition="'$(PublishSingleFile)' == 'true'" />
     <Content Include="..\..\LICENSE" Link="licenses\LICENSE" CopyToPublishDirectory="PreserveNewest" Condition="'$(PublishSingleFile)' == 'true'" />
     <ProjectReference Include="..\PortableRecorder.Audio\PortableRecorder.Audio.csproj" />
-    <PackageReference Include="Microsoft.WindowsAppSDK" Version="2.5.1" />
+    <PackageReference Include="Microsoft.WindowsAppSDK.Base" Version="2.0.4" />
+    <PackageReference Include="Microsoft.WindowsAppSDK.Foundation" Version="2.3.12" />
+    <PackageReference Include="Microsoft.WindowsAppSDK.InteractiveExperiences" Version="2.1.9" />
+    <PackageReference Include="Microsoft.WindowsAppSDK.WinUI" Version="2.3.9" />
+    <PackageReference Include="Microsoft.WindowsAppSDK.DWrite" Version="2.1.0" />
+    <PackageReference Include="Microsoft.WindowsAppSDK.Widgets" Version="2.0.5" />
+    <PackageReference Include="Microsoft.WindowsAppSDK.Runtime" Version="2.5.1" />
     <PackageReference Include="Microsoft.Graphics.Win2D" Version="1.4.0" />
   </ItemGroup>
 </Project>

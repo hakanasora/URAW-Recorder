@@ -25,8 +25,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "Native build failed with exit code $LASTEXITCODE" }
     $encoderOutput = Join-Path $repoRoot 'artifacts/current-preview/encoders'
     New-Item -ItemType Directory -Force $encoderOutput | Out-Null
-    Copy-Item -LiteralPath (Join-Path $repoRoot 'artifacts/encoders/ffmpeg.exe') -Destination $encoderOutput -Force
-    Copy-Item -LiteralPath (Join-Path $repoRoot 'artifacts/encoders/LICENSE.txt') -Destination $encoderOutput -Force
+    Copy-Item -Path (Join-Path $repoRoot 'artifacts/encoders/*') -Destination $encoderOutput -Recurse -Force
     # A successful compile alone does not guarantee a runnable WinUI publish.
     # Compiled XAML may be embedded in the PRI; a loose App.xbf is not required.
     foreach ($asset in @('PortableRecorder.Desktop.exe', 'PortableRecorder.Desktop.pri')) {

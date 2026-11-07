@@ -5,6 +5,13 @@ static class UiStateChecks
 {
     public static async Task Run(string root,Action<bool,string> check)
     {
+        string calibration=NoticePresentation.Details("校准尚未生效，请选择有效文件或禁用校准。","共享监看 · RAW 请求已接受；校准尚未生效：请选择校准文件，或禁用校准后录制。","校准尚未生效，请选择有效文件。\n校准尚未生效：请选择校准文件，或禁用校准后录制。\n未应用校准；保留原始频响。未启用绝对声压。");
+        check(calibration.Split("校准尚未生效").Length==2,"Equivalent calibration notices appear once");
+        check(calibration.Contains("未启用绝对声压"),"Distinct calibration limitations survive deduplication");
+        check(NoticePresentation.Details("原因甲","原因乙","原因甲")=="原因甲\n原因乙","Distinct causes preserved and exact duplicates removed");
+        check(NoticePresentation.Details(@"C:\录音；备份\test.wav")==@"C:\录音；备份\test.wav","Paths are preserved verbatim");
+        check(NoticePresentation.Title("校准尚未生效，请选择有效文件或禁用校准。")=="校准尚未生效，请选择有效文件或禁用校准","Dialog title describes its notice");
+        check(NoticePresentation.Title("录音继续中：压缩文件出现削波。降低增益或使用浮点 WAV 可避免超限损失。")=="录音出现削波","Clipping gets concise specific title");
         {
             var factory=new FakeFactory();await using var engine=TestSupport.CreateEngine(root,factory);
             var model=new ShellViewModel(engine);await using var listener=model.Listener;

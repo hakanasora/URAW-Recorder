@@ -100,7 +100,7 @@ public sealed class SegmentedSelector : UserControl
         Loaded += (_, _) => { UpdateSelection(false); LogLayout(); };
         Unloaded += (_, _) =>
         {
-            if (_slide != null) _indicator.StopAnimation(_slide);
+            StopSlide();
             foreach (var animation in _colorAnimations.Values) animation.Stop();
             _colorAnimations.Clear();
         };
@@ -153,6 +153,19 @@ public sealed class SegmentedSelector : UserControl
         }
     }
 
+    public void ApplyMotionPreference()
+    {
+        if (!_settings.AnimationsEnabled) UpdateSelection(false);
+    }
+
+    private void StopSlide()
+    {
+        if (_slide == null) return;
+        _indicator.StopAnimation(_slide);
+        _slide.Dispose();
+        _slide = null;
+    }
+
     private void UpdateSelection(bool animate)
     {
         var target = new Vector3((float)(Math.Max(0, SelectedIndex) * _step), 0, 0);
@@ -164,12 +177,14 @@ public sealed class SegmentedSelector : UserControl
             slide.Duration = TimeSpan.FromMilliseconds(180);
             slide.InsertExpressionKeyFrame(0, "this.StartingValue");
             slide.InsertKeyFrame(1, target, compositor.CreateCubicBezierEasingFunction(new(.22f, 1), new(.36f, 1)));
-            _slide = slide;
+            var previousSlide = _slide;
             _indicator.StartAnimation(slide);
+            _slide = slide;
+            previousSlide?.Dispose();
         }
         else
         {
-            if (_slide != null) _indicator.StopAnimation(_slide);
+            StopSlide();
             _indicator.Translation = target;
         }
         for (var i = 0; i < _inks.Length; i++)

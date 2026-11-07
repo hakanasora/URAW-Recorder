@@ -4,3 +4,6 @@
 artifacts/
 *.user
 *.log
+!third_party/ffmpeg/bin/
+!third_party/ffmpeg/bin/win-x64/
+!third_party/ffmpeg/bin/win-x64/ffmpeg.exe

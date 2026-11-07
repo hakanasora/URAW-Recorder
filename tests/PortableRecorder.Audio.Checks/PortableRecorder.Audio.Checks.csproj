@@ -6,6 +6,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="../../src/PortableRecorder.Desktop/NoticePresentation.cs" Link="NoticePresentation.cs" />
     <Compile Include="../../src/PortableRecorder.Desktop/EncodingPreferences.cs" Link="EncodingPreferences.cs" />
     <Compile Include="../../src/PortableRecorder.Desktop/DisplayRefreshRate.cs" Link="DisplayRefreshRate.cs" />
     <Compile Include="../../src/PortableRecorder.Desktop/CentsMotion.cs" Link="CentsMotion.cs" />

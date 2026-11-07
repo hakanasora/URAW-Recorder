@@ -22,7 +22,7 @@ internal sealed class ServiceNotice : Grid
         _animationsEnabled = animationsEnabled;
         _activate = activate;
         _fade = new NativeFade(this, animationsEnabled);
-        _button = new Button { Content = _label, Padding = new Thickness(6, 2, 6, 2), Background = Design.Brush(Microsoft.UI.Colors.Transparent), BorderThickness = new Thickness(0), HorizontalContentAlignment = HorizontalAlignment.Stretch };
+        _button = new Button { IsTabStop = false, Content = _label, Padding = new Thickness(6, 2, 6, 2), Background = Design.Brush(Microsoft.UI.Colors.Transparent), BorderThickness = new Thickness(0), HorizontalContentAlignment = HorizontalAlignment.Stretch };
         _button.Click += async (_, _) => { var notice = _rendered; if (notice.Text.Length != 0) await _activate(notice); };
         Opacity = 0;
         IsHitTestVisible = false;

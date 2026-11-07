@@ -1,22 +1,17 @@
 # FFmpeg / LAME encoder provenance
 
-This software uses an unmodified, separate FFmpeg executable under LGPL-3.0-or-later. It is not loaded or linked into the C# process. FFmpeg's built-in FLAC encoder and libmp3lame provide the two compressed recording formats; no codec implementation is copied into application code.
+The application invokes the vendored `bin/win-x64/ffmpeg.exe` as an external process. It is a minimal static Windows x64 build of upstream FFmpeg revision `92611900bb` (8.1.3 + 24 commits) and official LAME 3.100, without application-specific source patches. It is LGPL-2.1-or-later; `binary-license.txt` contains the binary's declaration. No GPL or nonfree component is enabled.
 
-- Builder: https://github.com/BtbN/FFmpeg-Builds
-- Build recipe revision: `b4a2b1d7cc241786eb8e2b588a7ade40cad48bbd`
-- Recipe / patches: https://github.com/BtbN/FFmpeg-Builds/tree/b4a2b1d7cc241786eb8e2b588a7ade40cad48bbd
-- Release: `autobuild-2026-10-26-14-25`, LGPL static Windows x64 8.1 variant
-- FFmpeg reported version: `n8.1.3-24-g92611900bb-20261026`
-- Archive: https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-10-26-14-25/ffmpeg-n8.1.3-24-g92611900bb-win64-lgpl-8.1.zip
-- Archive SHA256: `9b1907a3871eed4564ee745f04cc53c8713f3db7b3e2bed7805da3521769901a`
-- Executable SHA256: `866b788425174dd57a41da9938887aa6f6cd1826f0513aec6ec2969a9bba3486`
-- Upstream FFmpeg source reference: https://github.com/FFmpeg/FFmpeg/tree/92611900bb
-- LAME source / license: https://lame.sourceforge.io/ ; LGPL 2.0-or-later (LAME-COPYING).
+- Executable: 1,577,472 bytes; SHA256 `69fcfedfd0a893da4605c59bc7032b7649030a35de27bd68c6c761f7c09e1211`.
+- FFmpeg source: https://codeload.github.com/FFmpeg/FFmpeg/tar.gz/92611900bb ; SHA256 `950fe4283a24501ab004375c6aa08705051699b6eea7db7dd19fc21e8bc27cec`.
+- LAME source: https://downloads.sourceforge.net/project/lame/lame/3.100/lame-3.100.tar.gz ; SHA256 `ddfe36cab873794038ae2c1210557ad34857a4b6bdc515785d1da9e175b1da1e`.
+- Build recipe: `tools/build-minimal-ffmpeg.sh`; verified source bootstrap and license/source packaging: `tools/prepare-minimal-encoder.ps1`.
+- Compiler and package versions: `toolchain.txt`. Runtime notices: `toolchain-licenses/`. Exact compiler/configuration output: `build-configuration.txt`.
 
-`build-configuration.txt` preserves actual compiler/configuration; `binary-license.txt` preserves the executable's own license declaration. `LICENSE.txt` is the bundled LGPL3 text, supplemented by COPYING.GPLv3. BtbN's build-script MIT license is not the executable's license. This selected build has no `--enable-gpl` or `--enable-nonfree`; do not substitute a GPL or nonfree binary silently.
+Normal builds require no compiler installation or encoder download: `tools/prepare-encoders.ps1` verifies the vendored executable hash and atomically installs it with notices into `artifacts/encoders`. The executable requires only Windows system DLLs. All encoder notices are carried into publish outputs; the vendored binary is excluded from the licenses tree to avoid a duplicate binary copy.
 
-`tools/prepare-encoders.ps1` downloads the pinned archive once to ignored artifacts, verifies both archive and executable SHA256, and checks encoder availability. Native publish carries encoders/ffmpeg.exe plus licenses/ffmpeg notices. No PATH lookup or runtime download. Preserve this cache: upstream daily release retention may remove dated downloads; updating the pin is an explicit dependency update, never a silent fallback to latest. The large binary/cache are not stored in source Git.
+Only float32 PCM input, FLAC/LAME encoding, FLAC/MP3 muxing, file/pipe protocols and required audio conversion filters are retained. The binary has no compressed-audio decoders. `tools/prepare-encoders.ps1 -ForTests` optionally downloads the former universal BtbN binary to `artifacts/verification-decoder`, using the original archive/binary hashes and bounded verified downloader. `tools/check-audio.ps1` prepares this independent decoder only for encoding checks, unless PORTABLE_RECORDER_DECODER is supplied. `upstream-release.txt` and `COPYING.GPLv3` are retained records for that optional former BtbN dependency, not the production minimal executable.
 
-Downloads now use owned temporary files, a 60-second per-request timeout, and at most three attempts; only a complete hash-verified archive is atomically published. An interrupted old cache can recover from the same pinned source. Binary installation also verifies its temporary copy before replacement. `tests/EncoderDownloadChecks.ps1` exercises interruption, hash mismatch, cache reuse and cleanup offline. This improves failure recovery; it does not solve upstream release retention or replace a project-owned durable dependency archive.
+For external redistribution, provide the corresponding source archives, build recipe and license notices alongside the binary or as an accompanying source package. `prepare-minimal-encoder.ps1` creates this package content in `artifacts/minimal-encoders`; source archives need not be embedded in the application's EXE. Rebuilding requires the documented MSYS2 MINGW64 toolchain; an ordinary application build uses the vetted vendored executable. Source pins and component selection are reproducible; byte-identical rebuilding additionally requires the same toolchain/environment.
 
-This is a local development distribution. Before external binary redistribution, bundle the corresponding FFmpeg **and all enabled dependency** sources, patches and build instructions from this exact build; source links alone are not a complete source distribution. Follow https://ffmpeg.org/legal.html and each dependency license. No application-specific changes were made to FFmpeg/LAME.
+See `docs/minimal-ffmpeg.md` for the verification matrix and measured byte sizes. Product encoding/clipping/failure code is unchanged.

@@ -23,7 +23,7 @@ URAW Recorder 可以录制输入设备，也可以侦听系统或指定应用的
 
 ## 使用
 
-1. 构建项目后，双击仓库根目录的 `Start.cmd`，或运行 `artifacts/current-preview/PortableRecorder.Desktop.exe`。移动程序时保留整个发布目录，包括 `encoders/` 和 `licenses/`。
+1. 从 [GitHub Releases](https://github.com/hakanasora/URAW-Recorder/releases/latest) 下载单文件 EXE，双击运行，无需另装 .NET 或 FFmpeg。首次启动会提取运行文件。源码构建的目录版可通过 `Start.cmd` 启动，移动时需保留整个发布目录。
 2. 在设置的输入页选择设备、录制模式和输入格式。在文件页选择保存路径和录制格式。保存路径留空时，文件保存在用户音乐目录的 `Portable Recorder` 文件夹中。
 3. 点击 **录制**。录音时可以暂停、继续或停止；暂停时可以丢弃本次录音。
 4. 要观察播放音频，在顶部切换到 **侦听**，然后选择整机或应用来源。
@@ -50,7 +50,7 @@ FLAC 保留输入采样率和 1 至 8 个声道。MP3 仅支持单声道或立�
 
 单文件输出为 `artifacts/singlefile/URAW Recorder.exe`，首次启动自动提取运行依赖。构建脚本会准备并打包 FFmpeg、字体、WinUI 资源和许可证。
 
-脚本发布 Windows x64 自包含程序至 `artifacts/current-preview`。首次构建会下载固定版本的 FFmpeg 编码器并校验文件摘要，后续构建使用缓存。运行音频检查：
+脚本发布 Windows x64 自包含程序至 `artifacts/current-preview`。普通构建使用仓库内固定版本的精简 FFmpeg，并校验文件摘要，无需另行下载编码器。编码测试另用完整 FFmpeg 解码验证，首次检查可能下载该验证工具。精简编码器的来源与重建方法见 [构建说明](docs/minimal-ffmpeg.md)。运行音频检查：
 
 ```powershell
 ./tools/check-audio.ps1

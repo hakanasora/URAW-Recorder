@@ -204,7 +204,10 @@ public sealed class GainControl : UserControl
     {
         var value=_state.GainDb;
         if(value==_lastGain)return;
+        var previous = _lastGain;
         _lastGain=value;
+        if(double.IsFinite(previous))
+            FrameworkElementAutomationPeer.FromElement(this)?.RaisePropertyChangedEvent(RangeValuePatternIdentifiers.ValueProperty,previous,value);
         _number.Text=value==0?"0 dB":$"{(value>0?"+":"−")}{Math.Abs(value):0.0} dB";
         _number.Foreground=Design.Brush(value==0?Design.Zero:Design.Blue);
         _marker.RenderTransform=new RotateTransform{CenterX=8.5,CenterY=8.5,Angle=value/60*130};

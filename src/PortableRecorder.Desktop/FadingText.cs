@@ -47,11 +47,13 @@ internal sealed class FadingText : Grid
         _canvas.Draw += DrawLabel;
         SizeChanged += (_, _) =>
         {
+            if (_released) return;
             _clip.Rect = new Rect(0, 0, ActualWidth, ActualHeight);
             _canvas.Invalidate();
         };
         _text.SizeChanged += (_, _) =>
         {
+            if (_released) return;
             NaturalWidthChanged?.Invoke();
             _canvas.Invalidate();
         };
@@ -65,7 +67,7 @@ internal sealed class FadingText : Grid
         get => _text.Text;
         set
         {
-            if (_text.Text == value) return;
+            if (_released || _text.Text == value) return;
             _text.Text = value;
             _canvas.Invalidate();
         }
@@ -101,6 +103,7 @@ internal sealed class FadingText : Grid
 
     public void ReleaseResources()
     {
+        if (_released) return;
         _released = true;
         _canvas.RemoveFromVisualTree();
         _format.Dispose();

@@ -8,10 +8,11 @@ static class EncodingChecks
 {
     public static async Task Run(string root,Action<bool,string> check)
     {
-        string encoder=Path.GetFullPath("artifacts/encoders/ffmpeg.exe"),directory=Path.Combine(root,"编码 formats");Directory.CreateDirectory(directory);
+        string encoder=Path.GetFullPath(Environment.GetEnvironmentVariable("PORTABLE_RECORDER_ENCODER")??"artifacts/encoders/ffmpeg.exe");
+        string decoder=Path.GetFullPath(Environment.GetEnvironmentVariable("PORTABLE_RECORDER_DECODER")??encoder),directory=Path.Combine(root,"编码 formats");Directory.CreateDirectory(directory);
         async Task<float[]> Decode(string path)
         {
-            var start=new ProcessStartInfo(encoder){UseShellExecute=false,CreateNoWindow=true,RedirectStandardOutput=true,RedirectStandardError=true};
+            var start=new ProcessStartInfo(decoder){UseShellExecute=false,CreateNoWindow=true,RedirectStandardOutput=true,RedirectStandardError=true};
             foreach(var arg in new[]{"-v","error","-i",path,"-f","f32le","-c:a","pcm_f32le","pipe:1"})start.ArgumentList.Add(arg);
             var result=await ProcessCapture.RunAsync(start,TimeSpan.FromSeconds(15));
             check(result.ExitCode==0,"Compressed file decodes: "+result.Error);
@@ -34,17 +35,17 @@ static class EncodingChecks
                 check(writer.AuxiliaryPaths.All(p=>!File.Exists(p)),"Successful encoder removes staging file");
             }
         }
-        foreach(int level in new[]{0,5,8})
-        foreach(var tuple in new[]{(44100,1),(48000,2),(96000,6)})
+        foreach(int level in Enumerable.Range(0,9))
+        foreach(var tuple in Enumerable.Range(1,8).Select(channels=>(new[]{8000,44100,48000,96000,192000,655350,11025,1}[channels-1],channels)))
         {
             var (rate,channels)=tuple;var format=new AudioFormat(rate,channels,32,32,PcmEncoding.Float);
-            var signal=Signal(rate,rate/8+13,channels);string path=Path.Combine(directory,$"flac-{level}-{rate}-{channels}.flac");
+            var signal=Signal(rate,Math.Min(rate,rate/8+13),channels);string path=Path.Combine(directory,$"flac-{level}-{rate}-{channels}.flac");
             await Write(new(path,format,new(RecordingCodec.Flac,level),encoder),signal,channels);
             var decoded=await Decode(path);check(decoded.SequenceEqual(signal),"FLAC exact 24-bit PCM roundtrip; rate/channels/length unchanged");
             check(File.ReadAllBytes(path).Take(4).SequenceEqual("fLaC"u8.ToArray()),"Real FLAC header");
         }
-        foreach(int quality in new[]{0,2,9})
-        foreach(var tuple in new[]{(44100,1),(48000,2),(24000,1),(8000,1)})
+        foreach(int quality in Enumerable.Range(0,10))
+        foreach(var tuple in new[]{8000,11025,12000,16000,22050,24000,32000,44100,48000}.SelectMany(rate=>new[]{(rate,1),(rate,2)}))
         {
             var(rate,channels)=tuple;var format=new AudioFormat(rate,channels,32,32,PcmEncoding.Float);
             var signal=Signal(rate,rate/2+13,channels);string path=Path.Combine(directory,$"mp3-{quality}-{rate}-{channels}.mp3");

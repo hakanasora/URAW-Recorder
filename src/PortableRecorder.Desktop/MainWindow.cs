@@ -36,6 +36,7 @@ public sealed partial class MainWindow : Window
     private readonly CanvasSwapChainPanel _canvas=new(){IsHitTestVisible=false};
     private CanvasDevice? _renderDevice;
     private CanvasSwapChain? _swapChain;
+    private (float Width,float Height,float Dpi)? _renderSize;
     private readonly SettingsDrawer _drawer;
     private readonly FixedWindowFrame _frame;
     private readonly StartupPresentation _startupPresentation;
@@ -268,7 +269,7 @@ public sealed partial class MainWindow : Window
     }
     private void OnXamlRootChanged(XamlRoot sender,XamlRootChangedEventArgs args){if(!_closing)_frame.RefreshDpi();}
     private void OnAnimationsChanged(UISettings sender,object args)=>DispatcherQueue.TryEnqueue(()=>
-    {if(_closing)return;UpdateTextScale();RefreshSession(false);_drawer.ApplyMotionPreference();_serviceNotice.ApplyMotionPreference();});
+    {if(_closing)return;UpdateTextScale();RefreshSession(false);_drawer.ApplyMotionPreference();_serviceNotice.ApplyMotionPreference();_modeSelector.ApplyMotionPreference();_paneSelector.ApplyMotionPreference();});
     private void OnTextScaleChanged(UISettings sender,object args)=>DispatcherQueue.TryEnqueue(()=>
     {if(_closing)return;UpdateTextScale();Layout();});
 
@@ -463,8 +464,8 @@ public sealed partial class MainWindow : Window
         _qualityCodec=codec;
         _fileHint.Text=codec switch
         {
-            RecordingCodec.Flac=>"等级影响体积与编码耗时，音质相同。\n浮点量化至 24 位；超限削波并提示，继续录制。",
-            RecordingCodec.Mp3=>"有损 VBR；V 值越小，品质越高。\n限单／双声道、标准 8–48 kHz 输入。\n超限削波并提示，继续录制；不自动混音或重采样。",
+            RecordingCodec.Flac=>"等级影响体积与编码耗时，音质相同。\n浮点量化至 24 位。",
+            RecordingCodec.Mp3=>"有损 VBR；V 值越小，品质越高。\n限单／双声道、标准 8–48 kHz 输入。\n不自动混音或重采样。",
             _=>"32 位浮点 WAV / RF64，保留超限数值。\n采样率、声道数沿用实际输入。"
         };
         ToolTipService.SetToolTip(_fileHint,"未设置路径时保存到‘音乐\\Portable Recorder’。\n压缩格式会在停止时完成编码和文件收尾；保存成功前请等待。\nFLAC 对量化后的 24 位 PCM 无损；MP3 有损，监看仍基于编码前信号。");
@@ -612,11 +613,13 @@ public sealed partial class MainWindow : Window
             }
             catch(Exception error) { await Message("无法打开文件夹", error.Message+"\n"+notice.Details); return; }
         }
-        await Message("通知详情",notice.Details);
+        await Message(NoticePresentation.Title(notice.Text),NoticePresentation.Details(notice.Details));
     }
     private void Tick()
     {
         if(_closing)return;
+        bool minimized=AppWindow.Presenter is OverlappedPresenter{State:OverlappedPresenterState.Minimized};
+        var interval=TimeSpan.FromMilliseconds(minimized?250:33.33);if(_timer.Interval!=interval)_timer.Interval=interval;
         _state.Refresh();
         if(_state.IsListening){RefreshListening();RefreshValues();return;}
         var status=_state.Audio.Status;
@@ -640,13 +643,11 @@ public sealed partial class MainWindow : Window
                 ?status.Message:status.State==AudioRunState.Monitoring && _state.Audio.Latest.RecoveredDiscontinuities>0
                 ?$"监看已恢复（短暂不连续 {_state.Audio.Latest.RecoveredDiscontinuities} 次）":"";
             string shown=notice.Length==0?preferenceWarning:notice;
-            string details=shown+(shown==status.Message?"":"\n"+status.Message)+(preferenceWarning.Length==0?"":"\n"+preferenceWarning)+(status.FilePath==null?"":"\n"+status.FilePath)+(status.Partial?"\n文件可能不完整。":"")+(status.State==AudioRunState.Monitoring&&!_state.Audio.CalibrationReadyToRecord?"\n"+CalibrationDescription():"");
+            string details=NoticePresentation.Details(shown,status.Message,preferenceWarning,status.FilePath,status.Partial?"文件可能不完整。":null,status.State==AudioRunState.Monitoring&&!_state.Audio.CalibrationReadyToRecord?CalibrationDescription():null);
             bool saved=status.State!=AudioRunState.Faulted && !status.Partial && !clipped && !unconfirmed && preferenceWarning.Length==0 && status.Message.StartsWith("已保存：",StringComparison.Ordinal) && !status.Message.Contains("；") && status.FilePath!=null && !_state.Session.Active;
             _serviceNotice.SetNotice(shown,details,saved?System.IO.Path.GetDirectoryName(status.FilePath):null);
         }
         _=CheckRawDecision();
-        bool minimized=AppWindow.Presenter is OverlappedPresenter{State:OverlappedPresenterState.Minimized};
-        var interval=TimeSpan.FromMilliseconds(minimized?250:33.33);if(_timer.Interval!=interval)_timer.Interval=interval;
         // CompositionTarget drives drawing separately; the timer only updates XAML and commands.
     }
     private async Task AudioCommand(Func<Task> command)
@@ -665,7 +666,7 @@ public sealed partial class MainWindow : Window
     }
     private void ReleaseRenderSurface()
     {
-        _canvas.SwapChain=null;_swapChain?.Dispose();_swapChain=null;
+        _canvas.SwapChain=null;_swapChain?.Dispose();_swapChain=null;_renderSize=null;
         _renderer.ResetDeviceResources();_renderDevice?.Dispose();_renderDevice=null;
     }
     private void RenderMonitor()
@@ -680,9 +681,14 @@ public sealed partial class MainWindow : Window
             {
                 _swapChain=new CanvasSwapChain(_renderDevice,width,height,dpi,Windows.Graphics.DirectX.DirectXPixelFormat.B8G8R8A8UIntNormalized,2,CanvasAlphaMode.Premultiplied);
                 _canvas.SwapChain=_swapChain;
+                _renderSize=(width,height,dpi);
             }
-            else if(_swapChain.Size.Width!=width||_swapChain.Size.Height!=height||_swapChain.Dpi!=dpi)
+            // Size is rounded through physical pixels; compare the successful request instead.
+            else if(_renderSize!=(width,height,dpi))
+            {
                 _swapChain.ResizeBuffers(width,height,dpi);
+                _renderSize=(width,height,dpi);
+            }
             using(var drawing=_swapChain.CreateDrawingSession(Colors.Transparent))
                 _renderer.Draw(_swapChain,drawing,_state);
             // CompositionTarget already supplies display pacing; do not wait for another vblank on the UI thread.
