@@ -42,6 +42,14 @@ FLAC 保留输入采样率和 1 至 8 个声道。MP3 仅支持单声道或立�
 ./tools/build.ps1
 ```
 
+发布单文件 EXE 时运行以下命令。
+
+```powershell
+./tools/build.ps1 -SingleFile
+```
+
+单文件输出为 `artifacts/singlefile/URAW Recorder.exe`，首次启动自动提取运行依赖。构建脚本会准备并打包 FFmpeg、字体、WinUI 资源和许可证。
+
 脚本发布 Windows x64 自包含程序至 `artifacts/current-preview`。首次构建会下载固定版本的 FFmpeg 编码器并校验文件摘要，后续构建使用缓存。运行音频检查：
 
 ```powershell

@@ -1,6 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
+    <Version>1.0.3</Version>
     <AssemblyTitle>URAW Recorder</AssemblyTitle>
     <Product>URAW Recorder</Product>
     <Description>URAW Recorder</Description>
@@ -20,6 +21,8 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <PublishSingleFile>false</PublishSingleFile>
+    <IncludeAllContentForSelfExtract Condition="'$(PublishSingleFile)' == 'true'">true</IncludeAllContentForSelfExtract>
+    <ProjectPriFileName Condition="'$(PublishSingleFile)' == 'true'">resources.pri</ProjectPriFileName>
     <PublishTrimmed>false</PublishTrimmed>
     <PublishReadyToRun>false</PublishReadyToRun>
     <ApplicationManifest>app.manifest</ApplicationManifest>
@@ -29,6 +32,9 @@
     <Content Include="Assets\URAWRecorder.ico" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <Content Include="Assets\TypeStudy\**\*" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <Content Include="..\..\third_party\**\*" Link="licenses\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="..\..\artifacts\encoders\ffmpeg.exe" Link="encoders\ffmpeg.exe" CopyToPublishDirectory="PreserveNewest" Condition="'$(PublishSingleFile)' == 'true'" />
+    <Content Include="..\..\artifacts\encoders\LICENSE.txt" Link="encoders\LICENSE.txt" CopyToPublishDirectory="PreserveNewest" Condition="'$(PublishSingleFile)' == 'true'" />
+    <Content Include="..\..\LICENSE" Link="licenses\LICENSE" CopyToPublishDirectory="PreserveNewest" Condition="'$(PublishSingleFile)' == 'true'" />
     <ProjectReference Include="..\PortableRecorder.Audio\PortableRecorder.Audio.csproj" />
     <PackageReference Include="Microsoft.WindowsAppSDK" Version="2.5.1" />
     <PackageReference Include="Microsoft.Graphics.Win2D" Version="1.4.0" />

@@ -1,4 +1,4 @@
-﻿param([switch]$Launch)
+﻿param([switch]$Launch,[switch]$SingleFile)
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $dotnetExecutable = $env:PORTABLE_RECORDER_DOTNET
@@ -12,6 +12,15 @@ $originalLocation = Get-Location
 try {
     Set-Location -LiteralPath $repoRoot
     & (Join-Path $PSScriptRoot 'prepare-encoders.ps1')
+    if ($SingleFile) {
+        $singleOutput = Join-Path $repoRoot 'artifacts/singlefile'
+        & $dotnetExecutable publish src/PortableRecorder.Desktop/PortableRecorder.Desktop.csproj -c Release -p:Platform=x64 -r win-x64 --self-contained true -p:PublishSingleFile=true -p:DebugType=None -p:DebugSymbols=false -o $singleOutput --nologo
+        if ($LASTEXITCODE -ne 0) { throw "Single-file build failed with exit code $LASTEXITCODE" }
+        $singleExe = Join-Path $singleOutput 'URAW Recorder.exe'
+        Move-Item -LiteralPath (Join-Path $singleOutput 'PortableRecorder.Desktop.exe') -Destination $singleExe -Force
+        if ($Launch) { Start-Process -FilePath $singleExe }
+        return
+    }
     & $dotnetExecutable publish src/PortableRecorder.Desktop/PortableRecorder.Desktop.csproj -c Release -p:Platform=x64 -r win-x64 --self-contained true -p:PublishSingleFile=false -o artifacts/current-preview --nologo
     if ($LASTEXITCODE -ne 0) { throw "Native build failed with exit code $LASTEXITCODE" }
     $encoderOutput = Join-Path $repoRoot 'artifacts/current-preview/encoders'
