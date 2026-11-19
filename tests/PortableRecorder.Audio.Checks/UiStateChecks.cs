@@ -107,6 +107,33 @@ static class UiStateChecks
         bool afterClose=false;try{await queue.ShowAsync(_=>Task.FromResult(4));}catch(OperationCanceledException){afterClose=true;}
         check(afterClose&&!queue.IsBusy,"Closed queue rejects later completions");
 
+        queue=new DialogQueue();
+        var dismissed=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var allowExit=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        first=queue.ShowAsync(async token=>
+        {
+            using var registration=token.Register(()=>dismissed.TrySetResult());
+            await allowExit.Task;
+            return 1;
+        });
+        staleOpened=false;
+        second=queue.ShowAsync(_=>{staleOpened=true;return Task.FromResult(2);});
+        queue.BeginCleanup();queue.BeginCleanup();
+        await dismissed.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        check(!await queue.WaitForPresenterAsync(TimeSpan.Zero),"Shutdown can detect a presenter that has not released");
+        bool cleanupOpened=false;
+        var cleanup=queue.ShowAsync(_=>{cleanupOpened=true;return Task.FromResult(3);},cleanupError:true);
+        check(!cleanupOpened,"Cleanup error waits for the previous presenter to exit");
+        allowExit.SetResult();
+        check(await first==1&&await cleanup==3&&cleanupOpened&&!staleOpened,"Only the cleanup error may follow the active dialog");
+        foreach(var pending in new[]{second,queue.ShowAsync(_=>Task.FromResult(4)),queue.ShowAsync(_=>Task.FromResult(5),cleanupError:true)})
+        {
+            bool cancelled=false;try{await pending;}catch(OperationCanceledException){cancelled=true;}
+            check(cancelled,"Cleanup rejects ordinary dialogs and duplicate cleanup errors");
+        }
+        queue.Close();
+        check(!queue.IsBusy&&await queue.WaitForPresenterAsync(TimeSpan.Zero),"Cleanup leaves no active or queued dialog");
+
         await CalibrationCollectionChecks(root,check);
     }
 

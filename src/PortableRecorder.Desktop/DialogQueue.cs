@@ -5,20 +5,26 @@ internal sealed class DialogQueue
 {
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly CancellationTokenSource _closed = new();
-    private int _pending, _isClosed;
+    private readonly CancellationTokenSource _normalClosed = new();
+    private int _pending, _isClosed, _cleanupStarted, _cleanupErrorShown;
 
     public bool IsBusy => Volatile.Read(ref _pending) != 0;
 
-    public async Task<T> ShowAsync<T>(Func<CancellationToken, Task<T>> show)
+    public async Task<T> ShowAsync<T>(Func<CancellationToken, Task<T>> show, bool cleanupError = false)
     {
+        if (cleanupError && (Volatile.Read(ref _cleanupStarted) == 0 ||
+            Interlocked.Exchange(ref _cleanupErrorShown, 1) != 0))
+            throw new OperationCanceledException();
+
+        var token = cleanupError ? _closed.Token : _normalClosed.Token;
         Interlocked.Increment(ref _pending);
         bool entered = false;
         try
         {
-            await _gate.WaitAsync(_closed.Token);
+            await _gate.WaitAsync(token);
             entered = true;
-            _closed.Token.ThrowIfCancellationRequested();
-            return await show(_closed.Token);
+            token.ThrowIfCancellationRequested();
+            return await show(token);
         }
         finally
         {
@@ -27,8 +33,22 @@ internal sealed class DialogQueue
         }
     }
 
+    public void BeginCleanup()
+    {
+        if (Interlocked.Exchange(ref _cleanupStarted, 1) == 0) _normalClosed.Cancel();
+    }
+
+    public async Task<bool> WaitForPresenterAsync(TimeSpan timeout)
+    {
+        if (!await _gate.WaitAsync(timeout)) return false;
+        _gate.Release();
+        return true;
+    }
+
     public void Close()
     {
-        if (Interlocked.Exchange(ref _isClosed, 1) == 0) _closed.Cancel();
+        if (Interlocked.Exchange(ref _isClosed, 1) != 0) return;
+        BeginCleanup();
+        _closed.Cancel();
     }
 }

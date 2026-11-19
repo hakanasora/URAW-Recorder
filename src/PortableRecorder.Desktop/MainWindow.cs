@@ -95,7 +95,10 @@ public sealed partial class MainWindow : Window
     private Storyboard? _widthAnimation;
     private bool _firstFrameLogged,_updatingForm,_started,_updatingCalibration,_alternateTypography;
     private TextBlock? _managerError;
-    private bool _audioBusy,_closing,_closeAllowed,_dialogOpen,_exclusiveNoticeShown,_exclusiveNoticePending;
+    private enum WindowLifetime { Running, CleaningUp, Closing }
+    private WindowLifetime _lifetime;
+    private bool _closing=>_lifetime!=WindowLifetime.Running;
+    private bool _audioBusy,_dialogOpen,_exclusiveNoticeShown,_exclusiveNoticePending;
     private AudioRunState? _lastAudioState;
     private readonly DialogQueue _dialogs=new();
     private readonly RawDecisionPrompt _rawPrompt=new();
@@ -257,7 +260,7 @@ public sealed partial class MainWindow : Window
         _settings.TextScaleFactorChanged+=OnTextScaleChanged;
         AppWindow.Closing+=async(_,args)=>
         {
-            if(_closeAllowed)return;
+            if(_lifetime==WindowLifetime.Closing)return;
             args.Cancel=true;
             await CloseWithAudioCleanup();
         };
@@ -292,11 +295,31 @@ public sealed partial class MainWindow : Window
     private async Task CloseWithAudioCleanup()
     {
         if(_closing)return;
-        _closing=true;SaveOutputFolder();StopVolumeWatcher();_deviceQueryVersion++;_formatQueryVersion++;_activeDialog?.Hide();_drawer.Dispose();_deviceRefreshTimer.Stop();_deviceWatcher?.Dispose();_deviceWatcher=null;
-        _stopButton.IsEnabled=false;_pauseButton.IsEnabled=false;
-        try{try{await _state.Listener.DisposeAsync();}finally{await _state.Audio.DisposeAsync();}}
-        catch(Exception error){StartupLog.Write("Audio close: "+error);await Message("录音收尾异常",AudioEngine.Friendly(error),duringClose:true);}
-        finally{_closeAllowed=true;Close();}
+        _lifetime=WindowLifetime.CleaningUp;
+        _dialogs.BeginCleanup();
+        Exception? failure=null;
+        try
+        {
+            try
+            {
+                SaveOutputFolder();StopVolumeWatcher();_deviceQueryVersion++;_formatQueryVersion++;
+                _drawer.Dispose();_deviceRefreshTimer.Stop();_deviceWatcher?.Dispose();_deviceWatcher=null;
+                _stopButton.IsEnabled=false;_pauseButton.IsEnabled=false;
+            }
+            finally
+            {
+                try{await _state.Listener.DisposeAsync();}finally{await _state.Audio.DisposeAsync();}
+            }
+        }
+        catch(Exception error){StartupLog.Write("Audio close: "+error);failure=error;}
+        try
+        {
+            if(!await _dialogs.WaitForPresenterAsync(TimeSpan.FromSeconds(3)))
+                StartupLog.Write("Dialog dismissal did not finish before window close.");
+            else if(failure!=null)
+                await Message("录音收尾异常",AudioEngine.Friendly(failure),duringClose:true);
+        }
+        finally{_lifetime=WindowLifetime.Closing;_dialogs.Close();Close();}
     }
 
     private void OnXamlRootChanged(XamlRoot sender,XamlRootChangedEventArgs args){if(!_closing)_frame.RefreshDpi();}
@@ -616,14 +639,22 @@ public sealed partial class MainWindow : Window
     {
         if(dialog.Title is string title && dialog.Content is string body && NoticePresentation.RepeatsBody(title,body))
             dialog.Title=null;
-        if(_closeAllowed||(_closing&&!duringClose))return ContentDialogResult.None;
+        if(_lifetime!=(duringClose?WindowLifetime.CleaningUp:WindowLifetime.Running))return ContentDialogResult.None;
         try
         {
             return await _dialogs.ShowAsync(async cancellation=>
             {
-                if(_closeAllowed||(_closing&&!duringClose))return ContentDialogResult.None;
+                if(_lifetime!=(duringClose?WindowLifetime.CleaningUp:WindowLifetime.Running))return ContentDialogResult.None;
                 _activeDialog=dialog;
-                using var registration=cancellation.Register(()=>DispatcherQueue.TryEnqueue(()=>dialog.Hide()));
+                using var registration=cancellation.Register(()=>
+                {
+                    if(!DispatcherQueue.TryEnqueue(()=>
+                    {
+                        if(!ReferenceEquals(_activeDialog,dialog))return;
+                        try{dialog.Hide();}
+                        catch(Exception error){StartupLog.Write("Dialog dismissal failed: "+error);}
+                    }))StartupLog.Write("Dispatcher rejected dialog dismissal.");
+                });
                 var replaceShade=!_accessibility.HighContrast;
                 var existingPopups=replaceShade?VisualTreeHelper.GetOpenPopupsForXamlRoot(dialog.XamlRoot).ToHashSet():null;
                 bool useWindowShade=false;
@@ -668,8 +699,9 @@ public sealed partial class MainWindow : Window
                     if(args.Cancel)return;
                     shadeClosing=true;
                     var deferral=args.GetDeferral();
-                    _dialogShadeFade.To(0,_closing?0:140);
-                    dialogFade.To(0,_closing?0:140,()=>deferral.Complete());
+                    int duration=_closing&&!duringClose?0:140;
+                    _dialogShadeFade.To(0,duration);
+                    dialogFade.To(0,duration,()=>deferral.Complete());
                 }
 
                 try
@@ -691,7 +723,7 @@ public sealed partial class MainWindow : Window
                     if(!shadeClosing)_dialogShadeFade.To(0,0);
                     if(ReferenceEquals(_activeDialog,dialog))_activeDialog=null;
                 }
-            });
+            },cleanupError:duringClose);
         }
         catch(OperationCanceledException)when(_closing){return ContentDialogResult.None;}
     }
