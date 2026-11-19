@@ -26,7 +26,8 @@ public sealed partial class MainWindow
     private readonly WorkModeTransition _workModeTransition=new();
     private bool WorkModeChanging=>_workModeTransition.Target!=null;
     private WorkMode CurrentWorkMode=>_state.IsListening?WorkMode.Listening:WorkMode.Recording;
-    private int _listenQuery,_sourceIconVersion;
+    private object? _listenRefreshRequest;
+    private int _sourceIconVersion;
     private string? _listenViewKey;
     private ListeningSource? _displayedListeningSource;
 
@@ -103,7 +104,7 @@ public sealed partial class MainWindow
                 }
             },()=>_closing,target=>
             {
-                _listenQuery++;
+                _listenRefreshRequest=null;
                 _sourceIconVersion++;
                 if(target==WorkMode.Listening)InvalidateRecordingInputQueries();
                 _state.SetWorkMode(target==WorkMode.Listening);
@@ -204,15 +205,17 @@ public sealed partial class MainWindow
 
     private async Task RefreshListeningSources()
     {
-        if(_closing||!_state.IsListening)return;
-        int query=++_listenQuery;
-        string? endpoint=(_listenEndpoint.SelectedItem as AudioDevice)?.Id;
-        var application=(_listenApplication.SelectedItem as ApplicationChoice)?.Source;
-        _listenRefresh!.IsEnabled=false;
+        if(_closing||!_state.IsListening||_audioBusy||ListeningActive||_listenRefreshRequest!=null)return;
+        var request=new object();
+        _listenRefreshRequest=request;
+        bool OwnsRequest()=>!_closing&&_state.IsListening&&ReferenceEquals(_listenRefreshRequest,request);
         try
         {
+            RefreshListening();
             var sources=await Task.Run(()=>(Endpoints:ListeningSources.EnumerateEndpoints(),Apps:ListeningSources.EnumerateApplications()));
-            if(_closing||query!=_listenQuery||!_state.IsListening)return;
+            if(!OwnsRequest())return;
+            string? endpoint=(_listenEndpoint.SelectedItem as AudioDevice)?.Id;
+            var application=(_listenApplication.SelectedItem as ApplicationChoice)?.Source;
             _updatingListening=true;
             try
             {
@@ -220,17 +223,25 @@ public sealed partial class MainWindow
                 _listenEndpoint.SelectedItem=sources.Endpoints.FirstOrDefault(d=>d.Id==endpoint)??sources.Endpoints.FirstOrDefault(d=>d.IsDefault)??sources.Endpoints.FirstOrDefault();
                 var apps=sources.Apps.Select(s=>new ApplicationChoice(s)).ToArray();
                 _listenApplication.ItemsSource=apps;
-                _listenApplication.SelectedItem=apps.FirstOrDefault(p=>p.Source.ProcessId==application?.ProcessId&&p.Source.ProcessStartTicks==application.ProcessStartTicks);
+                _listenApplication.SelectedItem=application==null?null:apps.FirstOrDefault(p=>
+                    p.Source.ProcessId==application.ProcessId&&p.Source.ProcessStartTicks==application.ProcessStartTicks);
             }
             finally{_updatingListening=false;}
-            _listenViewKey=null;RefreshListening();
+            _listenViewKey=null;
         }
         catch(Exception error)
         {
             StartupLog.Write("Listening sources: "+error);
-            if(!_closing&&_state.IsListening&&query==_listenQuery)await Message("侦听来源",AudioEngine.Friendly(error));
+            if(OwnsRequest())await Message("侦听来源",AudioEngine.Friendly(error));
         }
-        finally{if(!_closing&&_state.IsListening&&query==_listenQuery)RefreshListening();}
+        finally
+        {
+            if(ReferenceEquals(_listenRefreshRequest,request))
+            {
+                _listenRefreshRequest=null;
+                if(!_closing&&_state.IsListening)RefreshListening();
+            }
+        }
     }
 
     private ListeningSource? SelectedListeningSource()
@@ -242,37 +253,42 @@ public sealed partial class MainWindow
 
     private async Task ToggleListening()
     {
-        var state=_state.Listener.Status.State;
-        if(state is ListeningState.Listening or ListeningState.Waiting or ListeningState.Opening)await _state.Listener.StopAsync();
+        if(ListeningActive)await _state.Listener.StopAsync();
         else
         {
+            if(_listenRefreshRequest!=null)return;
             var source=SelectedListeningSource()??throw new InvalidOperationException("请先选择要侦听的应用或输出设备。");
             await _state.Listener.StartAsync(source);
         }
         _listenViewKey=null;
     }
 
+    private bool ListeningActive=>IsListeningActive(_state.Listener.Status.State);
+    private static bool IsListeningActive(ListeningState state)=>state is
+        ListeningState.Opening or ListeningState.Listening or ListeningState.Waiting;
+
     private void RefreshListening()
     {
         if(!_state.IsListening||_closing)return;
         var status=_state.Listener.Status;
-        bool active=status.State is ListeningState.Opening or ListeningState.Listening or ListeningState.Waiting;
+        bool active=IsListeningActive(status.State);
+        bool refreshing=_listenRefreshRequest!=null;
         bool application=_listenScope.SelectedIndex==1,endpoint=!application&&_listenTap.SelectedIndex==1;
         _workModeBox.IsEnabled=!_audioBusy&&!WorkModeChanging;
         foreach(var box in new[]{_listenScope,_listenTap,_listenEndpoint,_listenApplication})box.IsEnabled=!active&&!_audioBusy&&!WorkModeChanging;
-        if(_listenRefresh!=null)_listenRefresh.IsEnabled=!active&&!_audioBusy&&!WorkModeChanging;
+        if(_listenRefresh!=null)_listenRefresh.IsEnabled=!refreshing&&!active&&!_audioBusy&&!WorkModeChanging;
         _listenTapGroup!.Visibility=application?Visibility.Collapsed:Visibility.Visible;
         _listenEndpointGroup!.Visibility=endpoint?Visibility.Visible:Visibility.Collapsed;
         _listenApplicationGroup!.Visibility=application?Visibility.Visible:Visibility.Collapsed;
         var selected=SelectedListeningSource();
         var source=active?status.Source:selected;
         if(_displayedListeningSource!=source){_displayedListeningSource=source;_=SetListeningSourceIcon(source);}
-        string key=$"{status.State}|{status.Message}|{_audioBusy}|{application}|{endpoint}|{source}|{status.Format}";
+        string key=$"{status.State}|{status.Message}|{_audioBusy}|{WorkModeChanging}|{refreshing}|{application}|{endpoint}|{source}|{status.Format}";
         if(key==_listenViewKey)return;_listenViewKey=key;
         _clockSlot.Visibility=Visibility.Collapsed;
         _inputName.SetRecording(false,false);
         _stopButton.Width=116;_stopButton.CornerRadius=new CornerRadius(5);
-        _stopButton.IsEnabled=!_audioBusy&&!WorkModeChanging&&(active||selected!=null);
+        _stopButton.IsEnabled=!_audioBusy&&!WorkModeChanging&&(active||!refreshing&&selected!=null);
         _pauseButton.Visibility=Visibility.Collapsed;_discardButton.Visibility=Visibility.Collapsed;_activeButtons.Spacing=0;
         _primaryFade.Stop();_primaryContent.Opacity=1;_primaryContent.Children.Clear();
         _primaryContent.Children.Add(Design.ActionContent(active?"stop":"play",active?"停止侦听":"开始侦听"));
