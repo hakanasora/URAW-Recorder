@@ -1,27 +1,27 @@
-using System.Buffers;
 using System.Runtime.InteropServices;
-using System.Threading.Channels;
 using NAudio.Wave;
 namespace PortableRecorder.Audio;
 
 public sealed class FloatWaveWriter:IRecordingWriter
 {
-    private sealed record Block(float[] Data,int Count);
-    private readonly Channel<Block> _queue=Channel.CreateBounded<Block>(new BoundedChannelOptions(512){SingleReader=true,SingleWriter=true,FullMode=BoundedChannelFullMode.Wait});
-    private readonly Task _worker;
+    private readonly RecordingWriteQueue _queue;
+    private readonly Task _completion;
     private readonly WaveFileWriter _wave;
-    private readonly FileStream _file;
+    private readonly Stream _file;
     private readonly int _channels;
-    private readonly long _budget;
-    private long _queuedBytes,_frames;
-    private Exception? _failure;
+    private long _frames;
     public string Path {get;}
     public long WrittenFrames=>Interlocked.Read(ref _frames);
-    public Exception? Failure=>Volatile.Read(ref _failure);
+    public Exception? Failure=>_queue.Failure;
     public FloatWaveWriter(string path,AudioFormat capture,long? testRf64Threshold=null)
+        :this(path,capture,testRf64Threshold,new FileStream(path,FileMode.CreateNew,FileAccess.ReadWrite,FileShare.Read,65536,FileOptions.SequentialScan)){}
+
+    internal FloatWaveWriter(string path,AudioFormat capture,long? testRf64Threshold,Stream file)
     {
-        Path=path;_channels=capture.Channels;_budget=Math.Min(64L*1024*1024,capture.SampleRate*(long)capture.Channels*4*2);
-        _file=new FileStream(path,FileMode.CreateNew,FileAccess.ReadWrite,FileShare.Read,65536,FileOptions.SequentialScan);
+        Path=path;
+        _channels=capture.Channels;
+        _queue=new(capture,"录制队列溢出，未静默丢样本。");
+        _file=file;
         try{_wave=new WaveFileWriter(_file,WaveFormat.CreateIeeeFloatWaveFormat(capture.SampleRate,capture.Channels),
             new WaveFileWriterOptions{EnableRf64=true,Rf64PromotionThreshold=testRf64Threshold??uint.MaxValue});}
         catch(Exception headerError)
@@ -30,23 +30,16 @@ public sealed class FloatWaveWriter:IRecordingWriter
             catch(Exception cleanupError){throw AudioFailure.Combine(headerError,cleanupError);}
             throw;
         }
-        _worker=Task.Run(WriteLoop);
+        _completion=Task.Run(WriteLoop);
     }
-    public bool TryWrite(ReadOnlySpan<float> samples)
-    {
-        if(Failure!=null)return false;
-        long bytes=samples.Length*4L;
-        if(Interlocked.Add(ref _queuedBytes,bytes)>_budget){Interlocked.Add(ref _queuedBytes,-bytes);return false;}
-        var buffer=ArrayPool<float>.Shared.Rent(samples.Length);samples.CopyTo(buffer);
-        if(_queue.Writer.TryWrite(new(buffer,samples.Length)))return true;
-        ArrayPool<float>.Shared.Return(buffer);Interlocked.Add(ref _queuedBytes,-bytes);return false;
-    }
+    public bool TryWrite(ReadOnlySpan<float> samples)=>_queue.TryWrite(samples);
+
     private async Task WriteLoop()
     {
+        int flush=0;
         try
         {
-            int flush=0;
-            await foreach(var block in _queue.Reader.ReadAllAsync())
+            await foreach(var block in _queue.ReadAllAsync())
             {
                 try
                 {
@@ -54,23 +47,24 @@ public sealed class FloatWaveWriter:IRecordingWriter
                     Interlocked.Add(ref _frames,block.Count/_channels);
                     if(++flush>=32){_wave.Flush();flush=0;}
                 }
-                finally{Interlocked.Add(ref _queuedBytes,-block.Count*4L);ArrayPool<float>.Shared.Return(block.Data);}
+                catch(Exception error){_queue.CloseInput(error);break;}
+                finally{_queue.Release(block);}
             }
         }
-        catch(Exception error){Volatile.Write(ref _failure,error);_queue.Writer.TryComplete(error);}
+        catch(Exception error){_queue.CloseInput(error);}
         finally
         {
-            while(_queue.Reader.TryRead(out var block)){Interlocked.Add(ref _queuedBytes,-block.Count*4L);ArrayPool<float>.Shared.Return(block.Data);}
-            try{_wave.Dispose();}catch(Exception error){RecordCleanupFailure(error);}
-            try{_file.Dispose();}catch(Exception error){RecordCleanupFailure(error);}
+            _queue.DiscardPending();
+            try{_wave.Dispose();}catch(Exception error){_queue.CloseInput(error);}
+            try{_file.Dispose();}catch(Exception error){_queue.CloseInput(error);}
         }
+        if(Failure is Exception failure)throw new IOException("WAV 写入或文件头收尾失败，文件可能不完整："+AudioFailure.Describe(failure),failure);
     }
-    private void RecordCleanupFailure(Exception error)
-        =>Volatile.Write(ref _failure,AudioFailure.Combine(Failure,error));
-    public async Task CompleteAsync()
+
+    public Task CompleteAsync()
     {
-        _queue.Writer.TryComplete();await _worker.ConfigureAwait(false);
-        if(Failure is Exception error)throw new IOException("WAV 写入或文件头收尾失败，文件可能不完整："+AudioFailure.Describe(error),error);
+        _queue.CloseInput();
+        return _completion;
     }
-    public async ValueTask DisposeAsync()=>await CompleteAsync();
+    public ValueTask DisposeAsync()=>new(CompleteAsync());
 }

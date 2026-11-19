@@ -32,10 +32,11 @@ sealed class FakeCapture(CaptureInfo info,Func<CapturePacket,bool> packet,Action
 {
     public CaptureInfo Info=>info;long _frame;bool _closed;
     private bool _pauseTailPending;
+    public Action? BeforeDispose;
     public bool Closed=>_closed;
     public bool PauseTailPending=>Volatile.Read(ref _pauseTailPending);
     public void SetPauseTailPending(bool pending)=>Volatile.Write(ref _pauseTailPending,pending);
-    public void TriggerFault()=>fault(new IOException("Old session fault"));
+    public void TriggerFault(Exception? error=null)=>fault(error??new IOException("Old session fault"));
     public void Push(float[] data,bool gap)
     {
         if(_closed)throw new InvalidOperationException("Closed capture");
@@ -53,7 +54,7 @@ sealed class FakeCapture(CaptureInfo info,Func<CapturePacket,bool> packet,Action
         var block=new CapturePacket(bytes,data.Length*width,data.Length/info.Format.Channels,_frame,false,gap);_frame+=block.Frames;
         if(!packet(block)){block.Dispose();fault(new IOException("queue overflow"));}
     }
-    public ValueTask DisposeAsync(){_closed=true;return ValueTask.CompletedTask;}
+    public ValueTask DisposeAsync(){BeforeDispose?.Invoke();_closed=true;return ValueTask.CompletedTask;}
 }
 
 sealed class FailingWriter:IRecordingWriter

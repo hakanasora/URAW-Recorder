@@ -21,11 +21,13 @@ public sealed class AudioEngine:IAsyncDisposable
     private readonly Func<string,AudioFormat,RecordingEncoding,IRecordingWriter> _createWriter;
     private readonly SemaphoreSlim _commands=new(1,1);
     private IAudioCaptureService? _capture;
+    private Task<Exception>? _nativeCaptureFault;
     private ProcessingPipeline? _pipeline;
     private IRecordingWriter? _writer;
     private TaskCompletionSource<Exception?>? _pauseCompletion;
     private AudioDevice? _device;
     private AudioStatus _status=new(AudioRunState.Stopped,null,"正在枚举输入设备");
+    private AudioStatus? _finalizedRecordingStatus;
     private double _gain=1;
     private bool _normalConsent,_disposed;
     private long _epoch,_decision,_lastWritten;
@@ -72,8 +74,12 @@ public sealed class AudioEngine:IAsyncDisposable
     public long RecordingClippedSamples=>(_writer as CompressedAudioWriter)?.ClippedSamples??0;
     public int RecordingRate=>_writer!=null?Status.Capture?.Format.SampleRate??0:_lastRate;
     public TimeSpan RecordedTime=>RecordingRate>0?TimeSpan.FromSeconds(WrittenFrames/(double)RecordingRate):TimeSpan.Zero;
-    private void Set(AudioRunState state,string message,string? file=null,bool partial=false)
-        =>Volatile.Write(ref _status,new(state,_capture?.Info,message,file,partial));
+    private void Set(AudioRunState state,string message,string? file=null,bool partial=false,long? recordingEpoch=null)
+    {
+        var status=new AudioStatus(state,_capture?.Info,message,file,partial);
+        _finalizedRecordingStatus=recordingEpoch is long epoch&&status.Capture?.Epoch==epoch?status:null;
+        Volatile.Write(ref _status,status);
+    }
     public void SetGain(double db)
     {
         if(!double.IsFinite(db))throw new ArgumentOutOfRangeException(nameof(db),"增益必须为有限数值。");
@@ -172,12 +178,23 @@ public sealed class AudioEngine:IAsyncDisposable
     {
         Set(AudioRunState.Opening,"正在打开输入设备",partialFile,partialFile!=null);long epoch=Interlocked.Increment(ref _epoch);
         Exception? openingFault=null;
-        void OpeningFault(Exception error){Interlocked.CompareExchange(ref openingFault,error,null);ReportFault(epoch,error);}
-        var pipe=new ProcessingPipeline(()=>Volatile.Read(ref _gain),OpeningFault,Trace);
+        void PipelineFault(Exception error)
+        {
+            if(Interlocked.CompareExchange(ref openingFault,error,null)==null)ReportFault(epoch,error);
+        }
+        var nativeFault=new TaskCompletionSource<Exception>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var pipe=new ProcessingPipeline(()=>Volatile.Read(ref _gain),PipelineFault,Trace);
+        void NativeFault(Exception error)
+        {
+            if(pipe.Failure is Exception processingError){PipelineFault(processingError);return;}
+            if(Interlocked.CompareExchange(ref openingFault,error,null)!=null)return;
+            nativeFault.TrySetResult(error);
+            ReportFault(epoch,error);
+        }
         try
         {
             var preferred=exclusive?PreferredInputFormat:null;
-            var capture=await _factory.OpenAsync(_device!,exclusive,raw,epoch,pipe.Submit,OpeningFault,preferred);
+            var capture=await _factory.OpenAsync(_device!,exclusive,raw,epoch,pipe.Submit,NativeFault,preferred);
             try
             {
                 if(preferred!=null&&capture.Info.Format!=preferred)throw new NotSupportedException("采集实际格式与所选独占格式不一致，已拒绝录制。");
@@ -193,7 +210,7 @@ public sealed class AudioEngine:IAsyncDisposable
                 if(Volatile.Read(ref openingFault) is Exception earlyError)throw new IOException("准备校准时采集已停止："+earlyError.Message,earlyError);
                 pipe.Configure(capture.Info,plan);await pipe.Ready;
                 if(Volatile.Read(ref openingFault) is Exception initializationError)throw new IOException("初始化校准处理失败："+initializationError.Message,initializationError);
-                _pipeline=pipe;_capture=capture;
+                _pipeline=pipe;_capture=capture;_nativeCaptureFault=nativeFault.Task;
                 if(Volatile.Read(ref openingFault) is Exception racedError)ReportFault(epoch,racedError);
             }
             catch(Exception openingError)
@@ -222,6 +239,7 @@ public sealed class AudioEngine:IAsyncDisposable
         var capture=_capture;
         var pipeline=_pipeline;
         _capture=null;
+        _nativeCaptureFault=null;
         _pipeline=null;
         Exception? failure=null;
         if(capture!=null)
@@ -431,15 +449,26 @@ public sealed class AudioEngine:IAsyncDisposable
     {
         if(_writer==null)return;
         var writer=_writer;
-        if(interruption!=null)_pauseCompletion?.TrySetResult(interruption);
+        var pauseCompletion=_pauseCompletion;
+        if(interruption!=null)pauseCompletion?.TrySetResult(interruption);
         _pauseCompletion=null;
+        long? recordingEpoch=_capture?.Info.Epoch;
+        var nativeFault=_nativeCaptureFault;
         Set(AudioRunState.Finalizing,"正在完成录音文件",writer.Path);
         Exception? failure=interruption;
-        try{if(_pipeline!=null)await _pipeline.DetachAsync(mathematicalDrain:!restoreMonitor,resetPeak:restoreMonitor);}
+        try{if(_pipeline!=null)await _pipeline.DetachAsync(mathematicalDrain:!restoreMonitor,resetPeak:restoreMonitor,nativeFault);}
         catch(Exception error){failure=AudioFailure.Combine(failure,error);}
         finally{(_capture as IPauseTailCapture)?.SetPauseTailPending(false);}
         try{await writer.CompleteAsync();}
         catch(Exception error){failure=AudioFailure.Combine(failure,error);}
+        // Native interruption up to writer completion belongs to the recording.
+        // Later failures belong to monitoring, even while persisting the recording summary.
+        var nativeError=nativeFault is {IsCompletedSuccessfully:true}?nativeFault.Result:null;
+        if(nativeError!=null)
+        {
+            if(!ReferenceEquals(interruption,nativeError))failure=failure==null?nativeError:AudioFailure.Combine(nativeError,failure);
+            pauseCompletion?.TrySetResult(nativeError);
+        }
         long unconfirmedDiscontinuities=_pipeline?.RecordingUnconfirmedDiscontinuities??0;
         Interlocked.Exchange(ref _lastWritten,writer.WrittenFrames);
         _writer=null;
@@ -447,9 +476,15 @@ public sealed class AudioEngine:IAsyncDisposable
         // A valid saved file and a failed return to monitoring are different outcomes.
         Exception? monitorFailure=null;
         bool exclusive=_capture?.Info.Exclusive==true;
-        if(exclusive&&restoreMonitor&&_pipeline?.Failure is not CaptureGapException)
+        if(restoreMonitor&&nativeError!=null)
+        {
+            try{await CloseCapture();}catch(Exception error){failure=AudioFailure.Combine(failure,error);}
+        }
+        else if(exclusive&&restoreMonitor&&_pipeline?.Failure is not CaptureGapException)
         {
             try{await CloseCapture(preservePeak:false);}catch(Exception error){monitorFailure=error;}
+            if(nativeFault is {IsCompletedSuccessfully:true})
+                monitorFailure=monitorFailure==null?nativeFault.Result:AudioFailure.Combine(nativeFault.Result,monitorFailure);
             await OpenMonitor();
             if(Status.State==AudioRunState.Faulted)
                 monitorFailure=AudioFailure.Combine(monitorFailure,new IOException(Status.Message));
@@ -459,7 +494,7 @@ public sealed class AudioEngine:IAsyncDisposable
         {
             if(monitorFailure!=null)failure=AudioFailure.Combine(failure,monitorFailure);
             Trace("Recording finalization failed: "+failure);
-            Set(AudioRunState.Faulted,"录制结束异常："+Friendly(failure)+(summaryError==null?"":"；校准摘要写入失败："+summaryError),writer.Path,true);
+            Set(AudioRunState.Faulted,"录制结束异常："+Friendly(failure)+(summaryError==null?"":"；校准摘要写入失败："+summaryError),writer.Path,true,recordingEpoch);
             System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(failure).Throw();
         }
         string message="已保存："+System.IO.Path.GetFileName(writer.Path);
@@ -469,10 +504,10 @@ public sealed class AudioEngine:IAsyncDisposable
         if(monitorFailure!=null)
         {
             Trace("Recording saved, but monitoring recovery failed: "+monitorFailure);
-            Set(AudioRunState.Faulted,message+"；恢复监看失败："+Friendly(monitorFailure),writer.Path);
+            Set(AudioRunState.Faulted,message+"；恢复监看失败："+Friendly(monitorFailure),writer.Path,recordingEpoch:recordingEpoch);
             throw new IOException("音频已保存，但恢复监看失败："+Friendly(monitorFailure),monitorFailure);
         }
-        Set(_capture!=null?AudioRunState.Monitoring:AudioRunState.Stopped,message,writer.Path);
+        Set(_capture!=null?AudioRunState.Monitoring:AudioRunState.Stopped,message,writer.Path,recordingEpoch:recordingEpoch);
     }
     private string? SaveCalibrationSummary(IRecordingWriter writer,Exception? error,long unconfirmedDiscontinuities)
     {
@@ -597,11 +632,11 @@ public sealed class AudioEngine:IAsyncDisposable
             {
                 if(_disposed || epoch!=_capture?.Info.Epoch)return;
                 var pipelineFailure=_pipeline?.Failure;
-                var first=pipelineFailure??error;
-                var previous=Status;
-                bool finalizedPartial=pipelineFailure is CaptureGapException&&previous is {State:AudioRunState.Faulted,Partial:true}&&previous.Capture?.Epoch==epoch;
-                string? file=_writer?.Path??(finalizedPartial?previous.FilePath:null);
-                bool partial=_writer!=null||finalizedPartial;
+                var first=_nativeCaptureFault is {IsCompletedSuccessfully:true} nativeFault?nativeFault.Result:pipelineFailure??error;
+                var previous=Volatile.Read(ref _status);
+                bool finalizedRecording=ReferenceEquals(previous,_finalizedRecordingStatus)&&previous.Capture?.Epoch==epoch;
+                string? file=_writer?.Path??(finalizedRecording?previous.FilePath:null);
+                bool partial=_writer!=null||finalizedRecording&&previous.Partial;
                 Exception failure=first;
                 try{await StopWriter(false,first);}
                 catch(Exception finalizationError){failure=finalizationError;}
@@ -614,7 +649,7 @@ public sealed class AudioEngine:IAsyncDisposable
                     if(_capture!=null)Set(AudioRunState.Monitoring,Friendly(failure)+"；已恢复共享监看。",file,true);
                     else Set(AudioRunState.Faulted,Friendly(failure)+"；恢复监看失败："+Status.Message,file,true);
                 }
-                else Set(AudioRunState.Faulted,Friendly(failure),file,partial);
+                else Set(AudioRunState.Faulted,finalizedRecording?previous.Message+"；监看失败："+Friendly(failure):Friendly(failure),file,partial);
             }
             catch(Exception unexpected)
             {

@@ -72,6 +72,7 @@ static class EncodingChecks
                 var a=Signal(48000,1001,1);var b=Signal(48000,203,1);check(writer.TryWrite(a),"First interval");
                 // No writer call during pause, exactly as ProcessingPipeline source-interval gating.
                 check(writer.TryWrite(b),"Continue interval");await writer.CompleteAsync();check(writer.WrittenFrames==1204,"Pause has no silence placeholders");
+                check(!writer.TryWrite([float.NaN,2f])&&writer.Failure==null&&writer.ClippedSamples==0,"Late input after graceful encoder completion does not create a failure or a clip");
                 var decoded=await Decode(path);check(decoded.Length==1204,"Short recording final tail / decoded duration");
                 if(codec==RecordingCodec.Flac)check(decoded.SequenceEqual(a.Concat(b)),"FLAC pause/continue exact content");
             }
@@ -110,7 +111,18 @@ static class EncodingChecks
             foreach(var encoding in new[]{new RecordingEncoding(RecordingCodec.Flac,-1),new RecordingEncoding(RecordingCodec.Flac,9),new RecordingEncoding(RecordingCodec.Mp3,10)})
             {bool invalid=false;try{encoding.Validate(format);}catch(ArgumentOutOfRangeException){invalid=true;}check(invalid,"Invalid compression parameter rejected");}
             string bounded=Path.Combine(directory,"bounded.flac");var writer=new CompressedAudioWriter(bounded,format,new(RecordingCodec.Flac,5),encoder);
-            check(!writer.TryWrite(new float[96001])&&writer.Failure!=null,"Queue budget is bounded independently of encoder speed");try{await writer.DisposeAsync();}catch(IOException){}
+            var prefix=Signal(48000,1200,1);
+            check(writer.TryWrite(prefix),"Compressed saturation fixture accepts its prefix");
+            check(!writer.TryWrite(new float[96001])&&writer.Failure is IOException,"Queue budget is bounded independently of encoder speed");
+            var originalFailure=writer.Failure;
+            check(!writer.TryWrite([2f])&&ReferenceEquals(originalFailure,writer.Failure),"Compressed queue rejects all input after saturation");
+            var complete=writer.CompleteAsync();
+            check(ReferenceEquals(complete,writer.DisposeAsync().AsTask()),"Compressed completion and disposal share one result");
+            IOException? overload=null;
+            try{await complete;}catch(IOException error){overload=error;}
+            check(ReferenceEquals(overload?.InnerException,originalFailure)&&writer.WrittenFrames==prefix.Length&&writer.ClippedSamples==0,
+                "Compressed saturation stays primary and counts only the accepted prefix");
+            check((await Decode(bounded)).SequenceEqual(prefix)&&writer.AuxiliaryPaths.All(p=>!File.Exists(p)),"Compressed saturation finalizes the accepted prefix without leaving staging");
             string crashed=Path.Combine(directory,"encoder-failed.flac");writer=new(crashed,format,new(RecordingCodec.Flac,5),Path.Combine(Environment.SystemDirectory,"where.exe"));
             writer.TryWrite(new float[1200]);bool failed=false;try{await writer.CompleteAsync().WaitAsync(TimeSpan.FromSeconds(10));}catch(IOException){failed=true;}
             check(failed&&writer.Failure!=null,"Premature encoder process exit cannot report success or hang finalization");try{await writer.DisposeAsync();}catch(IOException){}

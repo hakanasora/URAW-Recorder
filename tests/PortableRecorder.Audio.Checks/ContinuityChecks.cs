@@ -91,6 +91,10 @@ static class ContinuityChecks
         await RecordingGapDiagnosis(root,null,0,"音频数据不连续",Assert);
         await GapDuringPendingPauseAndStop(root,RecordingMode.Shared,Assert);
         await GapDuringPendingPauseAndStop(root,RecordingMode.Exclusive,Assert);
+        await NativeFaultDuringStop(root,RecordingMode.Shared,Assert);
+        await NativeFaultDuringStop(root,RecordingMode.Exclusive,Assert);
+        await NativeFaultAfterWriterCompletion(root,RecordingMode.Shared,Assert);
+        await NativeFaultAfterWriterCompletion(root,RecordingMode.Exclusive,Assert);
     }
 
     private static async Task TrustedFlagContinues(string root,RecordingMode mode,Action<bool,string> Assert)
@@ -274,6 +278,81 @@ static class ContinuityChecks
         File.WriteAllText(calibrationPath,"1 -6\n24000 -6");
         var calibration=await engine.ImportCalibrationAsync(calibrationPath);
         await engine.SetCalibrationAsync(calibration.Id);
+    }
+
+    private static async Task NativeFaultDuringStop(string root,RecordingMode mode,Action<bool,string> Assert)
+    {
+        var factory=new FakeFactory();
+        await using var engine=CreateEngine(root,factory);
+        await engine.SelectDeviceAsync(factory.Device);
+        await CalibratePauseFixture(engine,root,$"native-stop-{mode}");
+        await engine.StartRecordingAsync(root,mode);
+        var capture=factory.Current!;
+        string path=engine.Status.FilePath!;
+        const int acceptedFrames=100;
+        var boundary=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        engine.Diagnostic+=message=>
+        {
+            if(message.StartsWith("Recording source boundary: stop",StringComparison.Ordinal))boundary.TrySetResult();
+        };
+
+        factory.Push(Enumerable.Repeat(.25f,acceptedFrames).ToArray());
+        var stop=engine.StopRecordingAsync();
+        await boundary.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        Assert(!stop.IsCompleted && engine.Status.State==AudioRunState.Finalizing,
+            $"{mode} Stop waits for the calibrated tail before the native callback");
+        var nativeError=new IOException("injected native capture callback during Stop");
+        capture.TriggerFault(nativeError);
+
+        Exception? stopError=null;
+        try{await stop.WaitAsync(TimeSpan.FromSeconds(5));}catch(Exception error){stopError=error;}
+        Assert(ReferenceEquals(stopError,nativeError),$"{mode} Stop returned {stopError?.Message??"success"} instead of the original native fault");
+        Assert(capture.Closed && engine.Status is {State:AudioRunState.Faulted,Partial:true} && engine.Status.FilePath==path,
+            $"{mode} native fault closes capture and retains its partial recording path");
+        using var wave=new WaveFileReader(path);
+        Assert(wave.Length==acceptedFrames*sizeof(float),$"{mode} native fault retains exactly the accepted frames");
+        using var metadata=JsonDocument.Parse(File.ReadAllBytes(engine.GetRecordingMetadataPath(path)));
+        Assert(!metadata.RootElement.GetProperty("Completed").GetBoolean()
+            && metadata.RootElement.GetProperty("Frames").GetInt64()==acceptedFrames
+            && metadata.RootElement.GetProperty("Error").GetString()==nativeError.Message,
+            $"{mode} partial recording summary preserves the original native fault and frame count");
+    }
+
+    private static async Task NativeFaultAfterWriterCompletion(string root,RecordingMode mode,Action<bool,string> Assert)
+    {
+        var factory=new FakeFactory();
+        await using var engine=CreateEngine(root,factory);
+        await engine.SelectDeviceAsync(factory.Device);
+        await engine.StartRecordingAsync(root,mode);
+        var capture=factory.Current!;
+        string path=engine.Status.FilePath!;
+        var nativeError=new IOException("injected native callback after writer completed");
+        if(mode==RecordingMode.Exclusive)capture.BeforeDispose=()=>capture.TriggerFault(nativeError);
+
+        factory.Push(new float[480]);
+        Exception? stopError=null;
+        try{await engine.StopRecordingAsync();}catch(IOException error){stopError=error;}
+        if(mode==RecordingMode.Shared)
+        {
+            Assert(stopError==null,"Shared Stop finishes successfully before the monitoring callback");
+            capture.TriggerFault(nativeError);
+            await Until(()=>engine.Status.State==AudioRunState.Faulted,"Shared monitoring callback after successful Stop");
+        }
+        else
+        {
+            Assert(ReferenceEquals(stopError?.InnerException,nativeError),
+                $"Exclusive Stop reports the close-time native event as a monitoring failure: {stopError}");
+            Assert(factory.Current!=capture && factory.Current!.Info.Exclusive==false,"Exclusive Stop restores shared monitoring after the old capture fault");
+        }
+
+        Assert(capture.Closed && engine.Status is {State:AudioRunState.Faulted,Partial:false}
+            && engine.Status.FilePath==path && engine.Status.Message.Contains(nativeError.Message,StringComparison.Ordinal),
+            $"{mode} late monitoring fault retains the saved recording path");
+        using var wave=new WaveFileReader(path);
+        using var metadata=JsonDocument.Parse(File.ReadAllBytes(engine.GetRecordingMetadataPath(path)));
+        Assert(wave.Length==480*sizeof(float) && metadata.RootElement.GetProperty("Completed").GetBoolean()
+            && metadata.RootElement.GetProperty("Error").ValueKind==JsonValueKind.Null,
+            $"{mode} late monitoring fault leaves the audio and summary complete");
     }
 
     private static async Task GapDuringPendingPauseAndStop(string root,RecordingMode mode,Action<bool,string> Assert)

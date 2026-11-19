@@ -237,13 +237,24 @@ internal sealed class ProcessingPipeline:IAsyncDisposable
         });
         return done;
     }
-    public async Task DetachAsync(bool mathematicalDrain,bool resetPeak)
+    public async Task DetachAsync(bool mathematicalDrain,bool resetPeak,Task<Exception>? nativeFault)
     {
         try
         {
             Task<Exception?> boundary=await RequestDetachAsync(mathematicalDrain,resetPeak);
             Exception? error;
-            try{error=await (mathematicalDrain?boundary:boundary.WaitAsync(BoundaryWait));}
+            try
+            {
+                if(mathematicalDrain)error=await boundary;
+                else if(nativeFault==null)error=await boundary.WaitAsync(BoundaryWait);
+                else
+                {
+                    // Native input can stop while the engine holds its command lock waiting for this tail.
+                    var finished=await Task.WhenAny((Task)boundary,nativeFault).WaitAsync(BoundaryWait);
+                    if(finished==nativeFault)boundary=await RequestDetachAsync(mathematicalDrain:true,resetPeak);
+                    error=await boundary;
+                }
+            }
             catch(TimeoutException)
             {
                 var timeout=new IOException("等待校准尾部时采集未继续，本次录音可能不完整。");

@@ -7,6 +7,7 @@ internal static class AudioReliabilityChecks
 {
     public static async Task Run(string root,Action<bool,string> check)
     {
+        await RecordingWriterChecks.Run(check);
         string folder=Path.Combine(root,"audio-reliability");Directory.CreateDirectory(folder);
         async Task Until(Func<bool> ready,string message)
         {
