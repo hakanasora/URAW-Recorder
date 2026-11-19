@@ -82,6 +82,8 @@ static class ContinuityChecks
         await TrustedFlagContinues(root,RecordingMode.Shared,Assert);
         await TrustedFlagContinues(root,RecordingMode.Exclusive,Assert);
         await TrustedFlagDuringPauseBoundary(root,Assert);
+        await PauseTailArrivesAfterDeadline(root,Assert);
+        await StopTimesOutDuringPause(root,Assert);
         await RecordingGapDiagnosis(root,0,0,"音频数据不连续",Assert);
         await RecordingGapDiagnosis(root,240,0,"帧位置前跳 240 帧",Assert);
         await RecordingGapDiagnosis(root,-240,0,"帧位置回跳，差值 -240 帧",Assert);
@@ -166,34 +168,140 @@ static class ContinuityChecks
         Assert(error.Contains($"flags=0x{flags:X}") && error.Contains($"delta={delta?.ToString()??"unknown"}"),"Partial metadata retains native evidence");
     }
 
+    private static async Task PauseTailArrivesAfterDeadline(string root,Action<bool,string> Assert)
+    {
+        var factory=new FakeFactory();
+        await using var engine=CreateEngine(root,factory);
+        await engine.SelectDeviceAsync(factory.Device);
+        await CalibratePauseFixture(engine,root,"pause-timeout");
+        await engine.StartRecordingAsync(root,RecordingMode.Shared);
+        var capture=factory.Current!;
+        string path=engine.Status.FilePath!;
+        long epoch=engine.Status.Capture!.Epoch;
+        int latency=engine.Calibration.LatencyFrames;
+        const int firstFrames=180,resumedFrames=73;
+        int pauseBoundaries=0;
+        bool tailWaitAllowedAtCutoff=false;
+        var stopBoundary=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        engine.Diagnostic+=message=>
+        {
+            if(message.StartsWith("Recording source boundary: pause",StringComparison.Ordinal))
+            {
+                tailWaitAllowedAtCutoff=capture.PauseTailPending;
+                Interlocked.Increment(ref pauseBoundaries);
+            }
+            if(message.StartsWith("Recording source boundary: stop",StringComparison.Ordinal))stopBoundary.TrySetResult();
+        };
+
+        factory.Push(Enumerable.Repeat(.25f,firstFrames).ToArray());
+        await engine.RequestPauseAsync().WaitAsync(TimeSpan.FromSeconds(2));
+        Assert(engine.Status.State==AudioRunState.Pausing && !engine.Status.PauseTailDelayed,"Pause request acknowledges a latched cutoff before its tail arrives");
+        Assert(tailWaitAllowedAtCutoff && capture.PauseTailPending,"Capture tolerates missing packets before acknowledging a pending pause");
+        var waiting=engine.PauseAsync(true);
+        factory.Push(new float[200]);
+        await engine.ResetPeakAsync(); // Ensure the new source frames precede the repeated command.
+        var repeated=engine.PauseAsync(true);
+        await engine.PauseAsync(false);
+        Assert(engine.Status.State==AudioRunState.Pausing,"Resume cannot reopen the interval while the cutoff is pending");
+
+        await Until(()=>engine.Status.PauseTailDelayed,"Pause deadline exposes waiting notice");
+        Assert(engine.Status is {State:AudioRunState.Pausing,Partial:false} && engine.Status.FilePath==path && engine.Status.Capture!.Epoch==epoch && capture.PauseTailPending,
+            "Pause deadline keeps the original recording, capture, and nonpartial status");
+        Assert(!waiting.IsCompleted && !repeated.IsCompleted,"Repeated pause callers still await the same real tail after the deadline");
+        await engine.RequestPauseAsync().WaitAsync(TimeSpan.FromSeconds(2));
+
+        factory.Push(new float[latency]);
+        await Task.WhenAll(waiting,repeated).WaitAsync(TimeSpan.FromSeconds(2));
+        Assert(engine.Status.State==AudioRunState.Paused && !engine.Status.PauseTailDelayed && !capture.PauseTailPending && pauseBoundaries==1,
+            "Late tail automatically finishes a single pause boundary and clears its waiting notice");
+        await engine.PauseAsync(false);
+        factory.Push(Enumerable.Repeat(.5f,resumedFrames).ToArray());
+        var stop=engine.StopRecordingAsync();
+        await stopBoundary.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        factory.Push(new float[latency]);
+        await stop.WaitAsync(TimeSpan.FromSeconds(2));
+        using var wave=new WaveFileReader(path);
+        Assert(wave.Length==(firstFrames+resumedFrames)*sizeof(float),"WAV includes only the two accepted source intervals after a late pause");
+        using var metadata=JsonDocument.Parse(File.ReadAllBytes(engine.GetRecordingMetadataPath(path)));
+        Assert(metadata.RootElement.GetProperty("Completed").GetBoolean() && metadata.RootElement.GetProperty("Frames").GetInt64()==firstFrames+resumedFrames,
+            "Late pause recovery leaves the saved metadata complete with the WAV frame count");
+    }
+
+    private static async Task StopTimesOutDuringPause(string root,Action<bool,string> Assert)
+    {
+        var factory=new FakeFactory();
+        await using var engine=CreateEngine(root,factory);
+        await engine.SelectDeviceAsync(factory.Device);
+        await CalibratePauseFixture(engine,root,"pausing-stop-timeout");
+        await engine.StartRecordingAsync(root,RecordingMode.Shared);
+        var capture=factory.Current!;
+        string path=engine.Status.FilePath!;
+        const int acceptedFrames=100;
+        var stopBoundary=new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+        engine.Diagnostic+=message=>
+        {
+            if(message.StartsWith("Recording source boundary: stop",StringComparison.Ordinal))stopBoundary.TrySetResult(message);
+        };
+
+        factory.Push(Enumerable.Repeat(.25f,acceptedFrames).ToArray());
+        await engine.RequestPauseAsync().WaitAsync(TimeSpan.FromSeconds(2));
+        var pause=engine.PauseAsync(true);
+        factory.Push(new float[50]);
+        var stop=engine.StopRecordingAsync();
+        string boundary=await stopBoundary.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        Assert(boundary.Contains($"frame={acceptedFrames};",StringComparison.Ordinal) && engine.Status.State==AudioRunState.Finalizing,
+            "Stop takes over the original cutoff while the pause still awaits its tail");
+        Assert(capture.PauseTailPending,"Stop retains capture wait tolerance until its drain finishes");
+        Exception? stopError=null;
+        try{await stop.WaitAsync(TimeSpan.FromSeconds(5));}catch(IOException error){stopError=error;}
+        await pause.WaitAsync(TimeSpan.FromSeconds(2));
+        Assert(stopError!=null && engine.Status is {State:AudioRunState.Faulted,Partial:true} && engine.Status.FilePath==path && !capture.PauseTailPending,
+            "Stop without real input keeps the existing bounded-drain partial outcome");
+        using var wave=new WaveFileReader(path);
+        Assert(wave.Length==acceptedFrames*sizeof(float),"Mathematical stop drain writes exactly the original pause interval");
+        using var metadata=JsonDocument.Parse(File.ReadAllBytes(engine.GetRecordingMetadataPath(path)));
+        Assert(!metadata.RootElement.GetProperty("Completed").GetBoolean() && metadata.RootElement.GetProperty("Frames").GetInt64()==acceptedFrames,
+            "Mathematical stop drain records the partial WAV frame count");
+        factory.Push(new float[engine.Calibration.LatencyFrames+32]);
+        await Until(()=>engine.Latest.Valid,"Shared monitoring restarts after mathematical drain");
+        Assert(ReferenceEquals(capture,factory.Current) && engine.WrittenFrames==acceptedFrames && engine.Status.State==AudioRunState.Faulted,
+            "Late capture processing remains detached and does not replace the stop result");
+    }
+
+    private static async Task CalibratePauseFixture(AudioEngine engine,string root,string name)
+    {
+        string calibrationPath=Path.Combine(root,name+".cal");
+        File.WriteAllText(calibrationPath,"1 -6\n24000 -6");
+        var calibration=await engine.ImportCalibrationAsync(calibrationPath);
+        await engine.SetCalibrationAsync(calibration.Id);
+    }
+
     private static async Task GapDuringPendingPauseAndStop(string root,RecordingMode mode,Action<bool,string> Assert)
     {
         var factory=new FakeFactory();
         await using var engine=CreateEngine(root,factory);
         await engine.SelectDeviceAsync(factory.Device);
-        string calibrationPath=Path.Combine(root,$"gap-stop-{mode}.cal");
-        File.WriteAllText(calibrationPath,"1 -6\n24000 -6");
-        var calibration=await engine.ImportCalibrationAsync(calibrationPath);
-        await engine.SetCalibrationAsync(calibration.Id);
+        await CalibratePauseFixture(engine,root,$"gap-stop-{mode}");
         const int acceptedFrames=100;
         Assert(engine.Calibration.LatencyFrames>acceptedFrames,"Calibrated pause requires more source frames");
         await engine.StartRecordingAsync(root,mode);
         var capture=factory.Current!;
         string path=engine.Status.FilePath!;
 
-        var pauseBoundary=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var stopBoundary=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var recoveringStatus=new TaskCompletionSource<AudioStatus>(TaskCreationOptions.RunContinuationsAsynchronously);
         engine.Diagnostic+=message=>
         {
-            if(message.StartsWith("Recording source boundary: pause",StringComparison.Ordinal))pauseBoundary.TrySetResult();
+            if(message.StartsWith("Recording source boundary: stop",StringComparison.Ordinal))stopBoundary.TrySetResult();
             if(capture.Closed&&message.StartsWith("Capture ready:",StringComparison.Ordinal))recoveringStatus.TrySetResult(engine.Status);
         };
         factory.Push(Enumerable.Repeat(.25f,acceptedFrames).ToArray());
+        await engine.RequestPauseAsync().WaitAsync(TimeSpan.FromSeconds(2));
         var pause=engine.PauseAsync(true);
-        await pauseBoundary.Task.WaitAsync(TimeSpan.FromSeconds(2));
-        Assert(!pause.IsCompleted,"Pause still owns the command while it waits for the calibrated tail");
+        Assert(!pause.IsCompleted && engine.Status.State==AudioRunState.Pausing,"Pause remains pending while it waits for the calibrated tail");
         var stop=engine.StopRecordingAsync();
-        Assert(!stop.IsCompleted,"Stop is queued before the capture gap");
+        await stopBoundary.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        Assert(!stop.IsCompleted && engine.Status.State==AudioRunState.Finalizing,"Stop starts draining before the capture gap");
         factory.Push(new float[20],true);
 
         Exception? pauseError=null,stopError=null;
@@ -206,14 +314,14 @@ static class ContinuityChecks
         var metadata=json.RootElement;
         Assert(!metadata.GetProperty("Completed").GetBoolean(),"Queued stop marked the interrupted recording complete");
         Assert(metadata.GetProperty("Frames").GetInt64()==acceptedFrames,"Partial metadata reports the WAV frame count");
-        Assert(stopError is CaptureGapException && metadata.GetProperty("Error").GetString() is string errorDetail
+        Assert(ReferenceEquals(pauseError,stopError) && stopError is CaptureGapException && metadata.GetProperty("Error").GetString() is string errorDetail
             && errorDetail.Contains(AudioEngine.Friendly(stopError),StringComparison.Ordinal),"Stop and metadata report the original capture gap");
         var recovering=await recoveringStatus.Task.WaitAsync(TimeSpan.FromSeconds(2));
         Assert(recovering.Partial && recovering.FilePath==path,"Stopping retains the partial file path while monitoring recovers");
         await Until(()=>engine.Status.State==AudioRunState.Monitoring
             && engine.Status.Capture is {Exclusive:false} current && current.Epoch!=capture.Info.Epoch,
             $"shared monitoring resumes on a fresh capture after the {mode} recording gap");
-        Assert(capture.Closed && engine.Status.Partial && engine.Status.FilePath==path,"Recovered monitoring retains the partial recording path");
+        Assert(capture.Closed && !capture.PauseTailPending && engine.Status.Partial && engine.Status.FilePath==path,"Recovered monitoring retains the partial recording path and releases capture wait tolerance");
 
         factory.Current!.TriggerFault();
         await Until(()=>engine.Status.State==AudioRunState.Faulted,"Unrelated fault on the replacement capture");

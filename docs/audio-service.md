@@ -16,6 +16,7 @@ WASAPI 原始包 / 原生格式 / 设备样本位置 → PCM 解码 → 原始�
 - 独占请求约 30 ms 事件缓冲；共享请求约 100 ms 缓冲余量，事件到达节奏仍由音频引擎决定，避免繁忙电脑上仅 30 ms 余量过小。独占 duration / periodicity 相同，遇 BUFFER_SIZE_NOT_ALIGNED 读取对齐帧数、重建客户端只重试一次；独占不调用共享专用 GetNextPacketSize。[初始化](https://learn.microsoft.com/en-us/windows/win32/api/audioclient/nf-audioclient-iaudioclient-initialize)、[读取约束](https://learn.microsoft.com/en-us/windows/win32/api/audioclient/nf-audioclient-iaudiocaptureclient-getnextpacketsize)。
 - 只有 RAW_MODE_UNSUPPORTED、缺少 IAudioClient2 / 明确不支持该接口才触发降级选择。设备忙、权限、移除、服务停止不归类为 RAW 不支持。ContentDialog 的允许只对当前设备本次运行的普通共享监看有效；关闭等于停止，换设备清除许可，正式录制依然必须 RAW。独占失败恢复共享并显示错误，不静默改用共享录制。
 - 时钟为文件中实际写入的音频帧 / 实际采样率；UI 定时器只取快照。Preparing 等到有效样本写入才进入 Recording。暂停跳过真实样本，不插入静音。停止后排空队列、补齐文件头才成功。
+- 校准尾部尚未到达时显示“正在暂停”。超过 3 秒提示仍在等待输入，保留本次录音和监看。尾部到达后自动暂停，等待期间可停止录制。WASAPI 仅在此次尾部等待期间容许无音频包，实际采集错误仍会触发收尾。
 - 写盘异常保留尽力完成的部分文件并报告失败；暂停时提供“丢弃”：有序关闭本次 WAV 后只移除这一份，清零本次时钟，恢复共享监看；非暂停状态不能丢弃。关闭窗口取消首次关闭，异步收尾后再真正关闭。没有用旧数值或模拟数据填补失败。
 
 ## 测量定义

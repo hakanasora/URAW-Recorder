@@ -23,6 +23,7 @@ public sealed class AudioEngine:IAsyncDisposable
     private IAudioCaptureService? _capture;
     private ProcessingPipeline? _pipeline;
     private IRecordingWriter? _writer;
+    private TaskCompletionSource<Exception?>? _pauseCompletion;
     private AudioDevice? _device;
     private AudioStatus _status=new(AudioRunState.Stopped,null,"正在枚举输入设备");
     private double _gain=1;
@@ -302,15 +303,79 @@ public sealed class AudioEngine:IAsyncDisposable
         }
         finally{_commands.Release();}
     }
+    public async Task RequestPauseAsync()=>_ = await BeginPauseAsync();
+    private async Task<Task<Exception?>> BeginPauseAsync()
+    {
+        await _commands.WaitAsync();
+        try
+        {
+            ThrowIfDisposed();
+            if(_writer==null||Status.State==AudioRunState.Paused)return Task.FromResult<Exception?>(null);
+            if(_pauseCompletion!=null)return _pauseCompletion.Task;
+
+            var pipeline=_pipeline!;
+            var capture=_capture as IPauseTailCapture;
+            capture?.SetPauseTailPending(true);
+            Task<Exception?> boundary;
+            try{boundary=await pipeline.RequestPauseAsync();}
+            catch{capture?.SetPauseTailPending(false);throw;}
+            if(boundary.IsCompletedSuccessfully&&boundary.Result==null&&pipeline.Failure==null)
+            {
+                capture?.SetPauseTailPending(false);
+                Set(AudioRunState.Paused,"暂停中",_writer.Path);
+                return boundary;
+            }
+            Set(AudioRunState.Pausing,"正在暂停",_writer.Path);
+            var completion=new TaskCompletionSource<Exception?>(TaskCreationOptions.RunContinuationsAsynchronously);
+            _pauseCompletion=completion;
+            _=ObservePauseAsync(boundary,completion);
+            return completion.Task;
+        }
+        finally{_commands.Release();}
+    }
+    private async Task ObservePauseAsync(Task<Exception?> boundary,TaskCompletionSource<Exception?> completion)
+    {
+        Exception? error;
+        try{error=await boundary.WaitAsync(ProcessingPipeline.BoundaryWait);}
+        catch(TimeoutException)
+        {
+            await _commands.WaitAsync();
+            try
+            {
+                if(_pauseCompletion==completion&&!boundary.IsCompleted)
+                    Volatile.Write(ref _status,_status with{Message="仍在等待输入以完成暂停，可停止录制。",PauseTailDelayed=true});
+            }
+            finally{_commands.Release();}
+            error=await boundary;
+        }
+        await _commands.WaitAsync();
+        try
+        {
+            if(_pauseCompletion==completion)
+            {
+                _pauseCompletion=null;
+                (_capture as IPauseTailCapture)?.SetPauseTailPending(false);
+                error??=_pipeline!.Failure;
+                if(error==null)Set(AudioRunState.Paused,"暂停中",_writer!.Path);
+            }
+        }
+        finally{_commands.Release();}
+        completion.TrySetResult(error);
+    }
     public async Task PauseAsync(bool pause)
     {
+        if(pause)
+        {
+            var completion=await BeginPauseAsync();
+            if(await completion is Exception error)System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(error);
+            return;
+        }
         await _commands.WaitAsync();try
         {
             ThrowIfDisposed();
-            if(_writer==null)return;
-            if(pause==(Status.State==AudioRunState.Paused))return;
-            await _pipeline!.PauseAsync(pause);
-            Set(pause?AudioRunState.Paused:AudioRunState.Recording,pause?"暂停中":"录制中",_writer.Path);
+            if(_writer==null||Status.State!=AudioRunState.Paused)return;
+            await _pipeline!.ResumeAsync();
+            Set(AudioRunState.Recording,"录制中",_writer.Path);
         }finally{_commands.Release();}
     }
     public async Task StopRecordingAsync()
@@ -361,16 +426,13 @@ public sealed class AudioEngine:IAsyncDisposable
     {
         if(_writer==null)return;
         var writer=_writer;
+        if(interruption!=null)_pauseCompletion?.TrySetResult(interruption);
+        _pauseCompletion=null;
         Set(AudioRunState.Finalizing,"正在完成录音文件",writer.Path);
         Exception? failure=interruption;
         try{if(_pipeline!=null)await _pipeline.DetachAsync(mathematicalDrain:!restoreMonitor,resetPeak:restoreMonitor);}
-        catch(Exception error)
-        {
-            failure=AudioFailure.Combine(failure,error);
-            // A timed-out normal drain must detach before completing the writer.
-            try{if(_pipeline!=null)await _pipeline.DetachAsync(mathematicalDrain:true,resetPeak:restoreMonitor);}
-            catch(Exception cleanupError){failure=AudioFailure.Combine(failure,cleanupError);}
-        }
+        catch(Exception error){failure=AudioFailure.Combine(failure,error);}
+        finally{(_capture as IPauseTailCapture)?.SetPauseTailPending(false);}
         try{await writer.CompleteAsync();}
         catch(Exception error){failure=AudioFailure.Combine(failure,error);}
         long unconfirmedDiscontinuities=_pipeline?.RecordingUnconfirmedDiscontinuities??0;

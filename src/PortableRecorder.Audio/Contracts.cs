@@ -2,7 +2,7 @@ using System.Buffers;
 namespace PortableRecorder.Audio;
 
 public enum RecordingMode { Exclusive, Shared }
-public enum AudioRunState { Stopped, Opening, Monitoring, Preparing, Recording, Paused, Finalizing, Faulted }
+public enum AudioRunState { Stopped, Opening, Monitoring, Preparing, Recording, Paused, Finalizing, Faulted, Pausing }
 public enum PcmEncoding { SignedInteger, Float }
 public sealed record AudioDevice(string Id,string Name,bool IsDefault=false);
 public sealed record AudioFormat(int SampleRate,int Channels,int Bits,int ValidBits,PcmEncoding Encoding)
@@ -27,7 +27,10 @@ public sealed record AudioSnapshot(long Epoch,long FramePosition,int SampleRate,
     public static AudioSnapshot Empty(long epoch=0)=>new(epoch,0,0,0,false,double.NaN,double.NaN,double.NaN,null,
         double.NegativeInfinity,double.NegativeInfinity,null,0,null);
 }
-public sealed record AudioStatus(AudioRunState State,CaptureInfo? Capture,string Message,string? FilePath=null,bool Partial=false);
+public sealed record AudioStatus(AudioRunState State,CaptureInfo? Capture,string Message,string? FilePath=null,bool Partial=false)
+{
+    public bool PauseTailDelayed {get;init;}
+}
 public sealed class RawUnavailableException(string message,Exception? inner=null):Exception(message,inner);
 public sealed class CaptureGapException:IOException
 {
@@ -58,6 +61,10 @@ public sealed class CapturePacket(byte[] data,int length,int frames,long positio
     public void Dispose()=>ArrayPool<byte>.Shared.Return(Data);
 }
 public interface IAudioCaptureService:IAsyncDisposable { CaptureInfo Info {get;} }
+internal interface IPauseTailCapture
+{
+    void SetPauseTailPending(bool pending);
+}
 public interface ICaptureFactory
 {
     IReadOnlyList<AudioDevice> Enumerate();

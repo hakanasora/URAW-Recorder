@@ -16,7 +16,7 @@ public sealed class TransportSession
     public TimeSpan Elapsed {get;private set;}
     public void Update(AudioRunState state,TimeSpan elapsed)
     {
-        Stage=state switch {AudioRunState.Preparing or AudioRunState.Recording or AudioRunState.Finalizing=>RecordingStage.Recording,
+        Stage=state switch {AudioRunState.Preparing or AudioRunState.Recording or AudioRunState.Pausing or AudioRunState.Finalizing=>RecordingStage.Recording,
             AudioRunState.Paused=>RecordingStage.Paused,_=>elapsed>TimeSpan.Zero?RecordingStage.Stopped:RecordingStage.Ready};
         Elapsed=elapsed;
     }

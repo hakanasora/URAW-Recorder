@@ -39,6 +39,7 @@ static class UiStateChecks
             (AudioRunState.Monitoring,false,false,true,false,0,100),
             (AudioRunState.Preparing,true,false,true,false,42,100),
             (AudioRunState.Recording,true,false,true,true,42,100),
+            (AudioRunState.Pausing,true,false,true,false,42,100),
             (AudioRunState.Paused,true,true,true,true,100,42),
             (AudioRunState.Finalizing,true,false,false,false,42,100),
             (AudioRunState.Faulted,false,false,false,false,0,100)};
@@ -53,14 +54,15 @@ static class UiStateChecks
         }
         check(TransportPresentation.From(AudioRunState.Monitoring,false,true).CanStop,"Ready capture can start recording");
         check(!TransportPresentation.From(AudioRunState.Monitoring,false,false).CanStop,"Incomplete calibration blocks recording");
-        check(TransportPresentation.From(AudioRunState.Paused,false,true).StatusText=="暂停中"&&
+        check(TransportPresentation.From(AudioRunState.Pausing,false,true).StatusText=="正在暂停"&&
+            TransportPresentation.From(AudioRunState.Paused,false,true).StatusText=="暂停中"&&
             TransportPresentation.From(AudioRunState.Finalizing,false,true).StatusText=="正在保存","Native status labels retained");
 
         // Calibration keeps Preparing visible while delayed samples reach the writer. Those
         // status changes and command completions must not restart the same transport motion.
         var session=new TransportSession();RecordingStage? previous=null;int motions=0;
         foreach(var state in new[]{AudioRunState.Monitoring,AudioRunState.Preparing,
-            AudioRunState.Preparing,AudioRunState.Recording,AudioRunState.Recording,AudioRunState.Finalizing})
+            AudioRunState.Preparing,AudioRunState.Recording,AudioRunState.Recording,AudioRunState.Pausing,AudioRunState.Finalizing})
         {
             session.Update(state,TimeSpan.Zero);
             if(TransportPresentation.NeedsMotionUpdate(previous,session.Stage,false))motions++;

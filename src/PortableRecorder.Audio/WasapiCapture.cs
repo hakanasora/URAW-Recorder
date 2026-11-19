@@ -48,15 +48,17 @@ public sealed class WasapiCaptureFactory:ICaptureFactory
         return new InputFormatOptions(WasapiCaptureSession.Describe(mix),formats);
     });
 }
-internal sealed class WasapiCaptureSession:IAudioCaptureService
+internal sealed class WasapiCaptureSession:IAudioCaptureService,IPauseTailCapture
 {
     private readonly CancellationTokenSource _stop=new();
     private readonly TaskCompletionSource<CaptureInfo> _ready=new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly TaskCompletionSource _done=new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly object _disposeGate=new();
     private Task? _disposeTask;
+    private bool _pauseTailPending;
     public Task<CaptureInfo> Ready=>_ready.Task;
     public CaptureInfo Info=>_ready.Task.GetAwaiter().GetResult();
+    public void SetPauseTailPending(bool pending)=>Volatile.Write(ref _pauseTailPending,pending);
     public WasapiCaptureSession(AudioDevice device,bool exclusive,bool raw,long epoch,Func<CapturePacket,bool> submit,Action<Exception> fault,AudioFormat? preferredFormat)
     {
         var thread=new Thread(()=>Run(device,exclusive,raw,epoch,submit,fault,preferredFormat)){IsBackground=true,Name="Portable Recorder WASAPI"};
@@ -136,7 +138,11 @@ internal sealed class WasapiCaptureSession:IAudioCaptureService
             {
                 int signaled=WaitHandle.WaitAny(waits,3000);
                 if(signaled==1)break;
-                if(signaled==WaitHandle.WaitTimeout)throw new IOException("采集设备连续 3 秒未提供音频包。");
+                if(signaled==WaitHandle.WaitTimeout)
+                {
+                    if(Volatile.Read(ref _pauseTailPending))continue;
+                    throw new IOException("采集设备连续 3 秒未提供音频包。");
+                }
                 long wake=Stopwatch.GetTimestamp();double wakeGapMs=Stopwatch.GetElapsedTime(lastWake,wake).TotalMilliseconds;lastWake=wake;
                 // GetNextPacketSize is shared-mode only. Exclusive events supply one buffer.
                 do

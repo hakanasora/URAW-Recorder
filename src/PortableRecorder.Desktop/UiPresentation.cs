@@ -12,13 +12,13 @@ internal sealed record TransportPresentation(bool Active, bool Paused, bool CanS
     public static TransportPresentation From(AudioRunState state, bool busy, bool calibrationReady)
     {
         bool paused = state == AudioRunState.Paused;
-        bool active = state is AudioRunState.Preparing or AudioRunState.Recording or AudioRunState.Paused or AudioRunState.Finalizing;
-        bool canStop = !busy && (state is AudioRunState.Preparing or AudioRunState.Recording or AudioRunState.Paused ||
+        bool active = state is AudioRunState.Preparing or AudioRunState.Recording or AudioRunState.Pausing or AudioRunState.Paused or AudioRunState.Finalizing;
+        bool canStop = !busy && (state is AudioRunState.Preparing or AudioRunState.Recording or AudioRunState.Pausing or AudioRunState.Paused ||
             state == AudioRunState.Monitoring && calibrationReady);
         return new(active, paused, canStop,
             !busy && state is AudioRunState.Recording or AudioRunState.Paused,
             !busy && paused,
-            state switch { AudioRunState.Paused => "暂停中", AudioRunState.Preparing => "正在准备",
+            state switch { AudioRunState.Pausing => "正在暂停", AudioRunState.Paused => "暂停中", AudioRunState.Preparing => "正在准备",
                 AudioRunState.Finalizing => "正在保存", _ => "录制中" },
             active ? paused ? 100 : 42 : 0, active && paused ? 42 : 100);
     }

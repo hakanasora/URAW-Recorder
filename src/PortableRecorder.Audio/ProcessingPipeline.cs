@@ -1,13 +1,14 @@
 using System.Diagnostics;
 using System.Buffers;
+using System.Runtime.ExceptionServices;
 using System.Threading.Channels;
 namespace PortableRecorder.Audio;
 
 internal sealed class ProcessingPipeline:IAsyncDisposable
 {
     private sealed record Work(CapturePacket? Packet,Action? Command,TaskCompletionSource? Completion);
-    private sealed class Interval(long start){public long Start=start;public long End=long.MaxValue;}
-    private sealed record Boundary(long End,bool Detach,bool ResetPeak,TaskCompletionSource Done);
+    private enum RecordingState { Detached, Writing, PauseDraining, Paused, StopDraining }
+    internal static readonly TimeSpan BoundaryWait=TimeSpan.FromSeconds(3);
     private readonly Channel<Work> _queue=Channel.CreateBounded<Work>(new BoundedChannelOptions(256){SingleReader=true,FullMode=BoundedChannelFullMode.Wait});
     private readonly TaskCompletionSource<(CaptureInfo Info,CalibrationPlan Plan)> _configured=new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly TaskCompletionSource _ready=new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -22,9 +23,10 @@ internal sealed class ProcessingPipeline:IAsyncDisposable
     private CalibrationPlan _plan=CalibrationPlan.Identity;
     private CaptureInfo? _info;
     private IRecordingWriter? _writer;
-    private readonly List<Interval> _intervals=[];
-    private readonly List<Boundary> _boundaries=[];
-    private bool _paused;
+    private RecordingState _recording;
+    private long _recordingStart,_cutoff;
+    private TaskCompletionSource<Exception?>? _boundary;
+    private bool _resetPeakOnDetach;
     private long _heldPeakStart;
     private Exception? _failure;
     private long _diagnosticTime=Stopwatch.GetTimestamp(),_packetsSinceReport,_queueHighWater;
@@ -79,7 +81,7 @@ internal sealed class ProcessingPipeline:IAsyncDisposable
                 {
                     string detail=$" flags=0x{packet.NativeFlags:X}; position={packet.Position}; delta={packet.PositionDelta?.ToString(System.Globalization.CultureInfo.InvariantCulture)??"unknown"}; qpc={packet.Qpc100ns}; frames={packet.Frames}; rate={_info.Format.SampleRate}; exclusive={_info.Exclusive}; raw={_info.Raw}; wakeMs={packet.WakeGapMs:F3}; bufferHoldMs={packet.BufferHoldMs:F3}; queuedBytes={Interlocked.Read(ref _queuedBytes)}; epoch={_info.Epoch}";
                     _diagnostic("Capture discontinuity:"+detail);
-                    if(_writer!=null&&(!_paused||_boundaries.Count>0))
+                    if(_recording is RecordingState.Writing or RecordingState.PauseDraining or RecordingState.StopDraining)
                     {
                         if(packet.PositionDelta!=0||(packet.NativeFlags&1)==0)throw new CaptureGapException(detail,packet.PositionDelta,packet.NativeFlags);
                         Interlocked.Increment(ref _unconfirmedDiscontinuities);
@@ -102,8 +104,9 @@ internal sealed class ProcessingPipeline:IAsyncDisposable
         finally
         {
             if(_failure!=null)_ready.TrySetException(_failure);else _ready.TrySetCanceled();
-            foreach(var b in _boundaries)b.Done.TrySetException(_failure??new OperationCanceledException());
-            while(_queue.Reader.TryRead(out var pending)){pending.Packet?.Dispose();pending.Completion?.TrySetException(_failure??new OperationCanceledException());}
+            var error=_failure??new OperationCanceledException();
+            _boundary?.TrySetResult(error);
+            while(_queue.Reader.TryRead(out var pending)){pending.Packet?.Dispose();pending.Completion?.TrySetException(error);}
         }
     }
     private void Deliver(ReadOnlySpan<float> samples,CalibrationOutput result)
@@ -112,9 +115,9 @@ internal sealed class ProcessingPipeline:IAsyncDisposable
         if(_writer?.Failure is Exception disk)throw new IOException("录制文件写入失败："+AudioFailure.Describe(disk),disk);
         if(result.Frames>0)
         {
-            if(_writer!=null)foreach(var interval in _intervals)
+            if(_writer!=null&&_recording is RecordingState.Writing or RecordingState.PauseDraining or RecordingState.StopDraining)
             {
-                long a=Math.Max(first,interval.Start),b=Math.Min(last,interval.End);
+                long a=Math.Max(first,_recordingStart),b=_recording==RecordingState.Writing?last:Math.Min(last,_cutoff);
                 if(b>a&&!_writer.TryWrite(samples.Slice(checked((int)(a-first)*channels),checked((int)(b-a)*channels))))
                     throw new IOException(_writer.Failure is Exception failure
                         ? "录制文件写入失败："+AudioFailure.Describe(failure)
@@ -123,14 +126,26 @@ internal sealed class ProcessingPipeline:IAsyncDisposable
             int skipHeldPeak=(int)Math.Clamp(_heldPeakStart-first,0,result.Frames);
             _analyzer!.Process(samples,result.SourcePeak,last,skipHeldPeak);_delivered=last;
         }
-        for(int i=_boundaries.Count-1;i>=0;i--)
+        FinishBoundary();
+    }
+    private void FinishBoundary()
+    {
+        if(_delivered<_cutoff)return;
+        if(_recording==RecordingState.PauseDraining)
         {
-            var b=_boundaries[i];if(_delivered<b.End)continue;
-            if(b.Detach){_writer=null;_intervals.Clear();}
-            if(b.ResetPeak)_analyzer!.ResetPeak();
-            b.Done.TrySetResult();_boundaries.RemoveAt(i);
+            _recording=RecordingState.Paused;
+            _boundary!.TrySetResult(null);
+            _boundary=null;
         }
-        _intervals.RemoveAll(i=>i.End<=_delivered);
+        else if(_recording==RecordingState.StopDraining)DetachWriter();
+    }
+    private void DetachWriter(Exception? error=null)
+    {
+        _writer=null;
+        _recording=RecordingState.Detached;
+        if(error==null&&_resetPeakOnDetach)_analyzer!.ResetPeak();
+        _boundary?.TrySetResult(error);
+        _boundary=null;
     }
     private void Drain()
     {
@@ -144,57 +159,112 @@ internal sealed class ProcessingPipeline:IAsyncDisposable
     {
         if(Failure is Exception failure)return Task.FromException(failure);
         var done=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);return Send();
-        async Task Send(){await _queue.Writer.WriteAsync(new(null,action,done));await done.Task;}
+        async Task Send()
+        {
+            try{await _queue.Writer.WriteAsync(new(null,action,done));}
+            catch(ChannelClosedException) when(Failure is Exception failure){ExceptionDispatchInfo.Throw(failure);}
+            await done.Task;
+        }
     }
     public Task ApplyCalibrationAsync(CalibrationPlan plan)=>Command(()=>{if(_writer!=null)throw new InvalidOperationException("录制或暂停期间不能更换校准。");Rebuild(plan);});
-    public Task AttachAsync(IRecordingWriter writer)=>Command(()=>{_writer=writer;Interlocked.Exchange(ref _unconfirmedDiscontinuities,0);_paused=false;_intervals.Clear();_intervals.Add(new(_frames));_heldPeakStart=_frames;_analyzer!.ResetPeak();});
-    private async Task BoundaryAsync(bool detach,bool drain,bool resetPeak=false)
+    public Task AttachAsync(IRecordingWriter writer)=>Command(()=>
     {
-        var done=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        _writer=writer;
+        _recording=RecordingState.Writing;
+        _recordingStart=_heldPeakStart=_frames;
+        Interlocked.Exchange(ref _unconfirmedDiscontinuities,0);
+        _analyzer!.ResetPeak();
+    });
+    public async Task<Task<Exception?>> RequestPauseAsync()
+    {
+        Task<Exception?> done=Task.FromResult<Exception?>(null);
+        await Command(()=>
+        {
+            if(_recording==RecordingState.Writing)
+            {
+                _recording=RecordingState.PauseDraining;
+                _cutoff=_frames;
+                _boundary=new(TaskCreationOptions.RunContinuationsAsynchronously);
+                TraceBoundary("pause");
+            }
+            if(_boundary!=null)done=_boundary.Task;
+            FinishBoundary();
+        });
+        return done;
+    }
+    public Task ResumeAsync()=>Command(()=>
+    {
+        if(_recording!=RecordingState.Paused)return;
+        _recording=RecordingState.Writing;
+        _recordingStart=_frames;
+    });
+    private void BeginStop(bool resetPeak)
+    {
+        if(_recording==RecordingState.StopDraining)return;
+        if(_recording==RecordingState.Writing)_cutoff=_frames;
+        _recording=RecordingState.StopDraining;
+        _resetPeakOnDetach=resetPeak;
+        _boundary??=new(TaskCreationOptions.RunContinuationsAsynchronously);
+        TraceBoundary("stop");
+    }
+    private void TraceBoundary(string kind)
+        =>_diagnostic($"Recording source boundary: {kind}; frame={_cutoff}; delivered={_delivered}; delay={_plan.LatencyFrames}");
+    private void DrainAndDetach(bool rebuild)
+    {
         try
         {
-            await Command(()=>
+            Drain();
+            if(_recording!=RecordingState.Detached)throw new IOException("校准尾部未完成，录音可能不完整。");
+            // Zero-draining advances convolution beyond real capture. Restart the monitoring clock.
+            if(rebuild)Rebuild(_plan,preservePeak:true);
+        }
+        catch(Exception error)
+        {
+            DetachWriter(error);
+            throw;
+        }
+    }
+    private async Task<Task<Exception?>> RequestDetachAsync(bool mathematicalDrain,bool resetPeak)
+    {
+        Task<Exception?> done=Task.FromResult<Exception?>(null);
+        await Command(()=>
+        {
+            if(_recording==RecordingState.Detached)return;
+            BeginStop(resetPeak);
+            done=_boundary!.Task;
+            if(mathematicalDrain)DrainAndDetach(rebuild:true);
+            else FinishBoundary();
+        });
+        return done;
+    }
+    public async Task DetachAsync(bool mathematicalDrain,bool resetPeak)
+    {
+        try
+        {
+            Task<Exception?> boundary=await RequestDetachAsync(mathematicalDrain,resetPeak);
+            Exception? error;
+            try{error=await (mathematicalDrain?boundary:boundary.WaitAsync(BoundaryWait));}
+            catch(TimeoutException)
             {
-                // Repeated pause commands must not add boundaries or shorten an existing interval.
-                if(!detach&&_paused){done.TrySetResult();return;}
-                long end=_paused?(_intervals.LastOrDefault()?.End??_delivered):_frames;
-                if(!_paused&&_intervals.Count>0)_intervals[^1].End=end;
-                _paused=true;_boundaries.Add(new(end,detach,resetPeak,done));
-                _diagnostic($"Recording source boundary: {(detach?"stop":"pause")}; frame={end}; delivered={_delivered}; delay={_plan.LatencyFrames}");
-                if(drain)
-                {
-                    Drain();
-                    // Zero-draining consumes the processor's future. Shared monitoring must start
-                    // fresh rather than reusing that artificially advanced convolution clock.
-                    if(detach)Rebuild(_plan,preservePeak:true);
-                }
-                else Deliver(ReadOnlySpan<float>.Empty,new(0,0,0));
-            });
-            await done.Task.WaitAsync(TimeSpan.FromSeconds(3));
+                var timeout=new IOException("等待校准尾部时采集未继续，本次录音可能不完整。");
+                try{error=await await RequestDetachAsync(mathematicalDrain:true,resetPeak);}
+                catch(Exception cleanupError) when(Failure==null){error=cleanupError;}
+                throw error==null?timeout:AudioFailure.Combine(timeout,error);
+            }
+            if(error!=null)ExceptionDispatchInfo.Throw(error);
         }
         catch when(Failure is Exception failure)
         {
-            if(detach)
+            await _worker;
+            if(_writer!=null)
             {
-                await _worker;
-                if(_writer!=null)
-                {
-                    try{Drain();}
-                    catch(Exception drainError){throw AudioFailure.Combine(failure,drainError);}
-                    finally{_writer=null;_intervals.Clear();}
-                }
+                BeginStop(resetPeak:false);
+                try{DrainAndDetach(rebuild:false);}
+                catch(Exception drainError){throw AudioFailure.Combine(failure,drainError);}
             }
-            System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(failure).Throw();
+            ExceptionDispatchInfo.Throw(failure);
         }
-        catch(TimeoutException){throw new IOException("等待校准尾部时采集未继续，本次录音可能不完整。");}
     }
-    public Task PauseAsync(bool paused)=>paused?BoundaryAsync(false,false):Command(()=>
-    {
-        if(!_paused||_writer==null)return;
-        _paused=false;
-        _intervals.Add(new(_frames));
-    });
-    public Task DetachAsync(bool mathematicalDrain,bool resetPeak)=>BoundaryAsync(true,mathematicalDrain,resetPeak);
     public Task ResetPeakAsync()=>Command(()=>_analyzer!.ResetPeak());
     public async ValueTask DisposeAsync()
     {_configured.TrySetCanceled();_queue.Writer.TryComplete();await _worker.ConfigureAwait(false);_ = _ready.Task.Exception;_analyzer?.Dispose();}

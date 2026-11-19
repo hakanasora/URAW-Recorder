@@ -191,7 +191,8 @@ public sealed partial class MainWindow : Window
         _primaryContent.Children.Add(Design.ActionContent("record","录制"));
         _stopButton=Design.Button(_primaryContent,"开始录制",Design.Record);
         _stopButton.Width=100;_stopButton.TabIndex=6;
-        _pauseButton.Click+=async(_,_)=>await AudioCommand(()=>_state.Audio.PauseAsync(_state.Session.Stage!=RecordingStage.Paused));
+        _pauseButton.Click+=async(_,_)=>await AudioCommand(()=>_state.Session.Stage==RecordingStage.Paused
+            ?_state.Audio.PauseAsync(false):_state.Audio.RequestPauseAsync());
         _stopButton.Click+=async(_,_)=>await AudioCommand(async()=>
         {
             if(_state.IsListening)await ToggleListening();
@@ -731,12 +732,12 @@ public sealed partial class MainWindow : Window
         if(status.Message!=_lastAudioMessage){_lastAudioMessage=status.Message;StartupLog.Write("Audio: "+status.State+" / "+status.Message);}
         string preferenceWarning=string.Join("；",new[]{_modePreferenceWarning,_encodingPreferenceWarning}.Where(w=>!string.IsNullOrWhiteSpace(w)));
         bool clipped=_state.Audio.RecordingClippedSamples>0;
-        bool unconfirmed=_state.Audio.RecordingUnconfirmedDiscontinuities>0 && status.State is AudioRunState.Recording or AudioRunState.Paused;
+        bool unconfirmed=_state.Audio.RecordingUnconfirmedDiscontinuities>0 && status.State is AudioRunState.Recording or AudioRunState.Pausing or AudioRunState.Paused;
         string noticeKey=$"{status.State}|{status.Message}|{status.FilePath}|{status.Partial}|{preferenceWarning}|{_state.Audio.CalibrationReadyToRecord}|{clipped}|{unconfirmed}";
         if(noticeKey!=_lastNoticeKey)
         {
             _lastNoticeKey=noticeKey;
-            string notice=unconfirmed?"缺帧未确认":clipped?"录音继续中：压缩文件出现削波。降低增益或使用浮点 WAV 可避免超限损失。":status.State==AudioRunState.Monitoring&&!_state.Audio.CalibrationReadyToRecord
+            string notice=status.PauseTailDelayed?status.Message:unconfirmed?"缺帧未确认":clipped?"录音继续中：压缩文件出现削波。降低增益或使用浮点 WAV 可避免超限损失。":status.State==AudioRunState.Monitoring&&!_state.Audio.CalibrationReadyToRecord
                 ?"校准尚未生效，请选择有效文件或禁用校准。":status.State is AudioRunState.Faulted or AudioRunState.Stopped || status.FilePath!=null && ! _state.Session.Active
                 ?status.Message:status.State==AudioRunState.Monitoring && _state.Audio.Latest.RecoveredDiscontinuities>0
                 ?$"监看已恢复（短暂不连续 {_state.Audio.Latest.RecoveredDiscontinuities} 次）":"";

@@ -26,10 +26,13 @@ sealed class FakeFactory:ICaptureFactory
     }
     public void Push(float[] samples,bool gap=false)=>Current!.Push(samples,gap);
 }
-sealed class FakeCapture(CaptureInfo info,Func<CapturePacket,bool> packet,Action<Exception> fault):IAudioCaptureService
+sealed class FakeCapture(CaptureInfo info,Func<CapturePacket,bool> packet,Action<Exception> fault):IAudioCaptureService,IPauseTailCapture
 {
     public CaptureInfo Info=>info;long _frame;bool _closed;
+    private bool _pauseTailPending;
     public bool Closed=>_closed;
+    public bool PauseTailPending=>Volatile.Read(ref _pauseTailPending);
+    public void SetPauseTailPending(bool pending)=>Volatile.Write(ref _pauseTailPending,pending);
     public void TriggerFault()=>fault(new IOException("Old session fault"));
     public void Push(float[] data,bool gap)
     {
