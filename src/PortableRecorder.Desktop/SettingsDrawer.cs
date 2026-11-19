@@ -15,6 +15,7 @@ namespace PortableRecorder.Desktop;
 /// <summary>One persistent XAML overlay. Motion runs on the native compositor; the background stays undimmed.</summary>
 internal sealed class SettingsDrawer : IDisposable
 {
+    private enum DrawerPhase { Closed, Opening, Open, Closing, Disposed }
     private const float Travel = FixedWindowFrame.PaneWidth + 32;
     private readonly Grid _parent, _panel;
     private readonly Grid _layer = new() { Visibility = Visibility.Collapsed,
@@ -31,7 +32,7 @@ internal sealed class SettingsDrawer : IDisposable
     private CompositionScopedBatch? _batch;
     private Vector3KeyFrameAnimation? _slide;
     private int _generation;
-    private bool _open, _disposed;
+    private DrawerPhase _phase;
 
     public SettingsDrawer(Grid parent, Grid panel, Func<bool> animations,
         Action focusPane, Action focusMenu)
@@ -53,28 +54,33 @@ internal sealed class SettingsDrawer : IDisposable
         _layer.SizeChanged += (_, _) => UpdateClip();
     }
 
-    public bool IsOpen => _open;
+    public bool IsOpen => _phase is DrawerPhase.Opening or DrawerPhase.Open;
 
     public void ApplyMotionPreference()
     {
-        if (_disposed || _layer.Visibility != Visibility.Visible || _animations()) return;
-        ++_generation; Finish();
+        if (_phase is not (DrawerPhase.Opening or DrawerPhase.Closing) || _animations()) return;
+        Finish(++_generation);
     }
 
     public void Toggle()
     {
-        if (_disposed) return;
-        if (_open) { Close(); return; }
-        _open = true;
-        _layer.Visibility = Visibility.Visible;
-        _layer.UpdateLayout(); UpdateClip(); EnsureComposition();
+        if (_phase == DrawerPhase.Disposed) return;
+        if (IsOpen) { Close(); return; }
+        bool wasClosed = _phase == DrawerPhase.Closed;
+        _phase = DrawerPhase.Opening;
+        if (wasClosed)
+        {
+            _layer.Visibility = Visibility.Visible;
+            _layer.UpdateLayout();
+            UpdateClip();
+        }
         Animate();
     }
 
     public void Close()
     {
-        if (!_open || _disposed) return;
-        _open = false;
+        if (!IsOpen) return;
+        _phase = DrawerPhase.Closing;
         // Keep keyboard focus inside the sheet until the visual has actually exited.
         Animate();
     }
@@ -99,36 +105,47 @@ internal sealed class SettingsDrawer : IDisposable
 
     private void Animate()
     {
-        EnsureComposition();
         var generation = ++_generation;
         _batch?.Dispose(); _batch = null;
-        if (!_animations()) { Finish(); return; }
+        EnsureComposition();
+        if (!_animations()) { Finish(generation); return; }
         var compositor = _compositor!;
         var batch = compositor.CreateScopedBatch(CompositionBatchTypes.Animation);
         _batch = batch;
         var slide = compositor.CreateVector3KeyFrameAnimation();
         slide.Target = "Translation";
         // Match the installed WinUI SplitView template (Open 200 ms / Close 100 ms).
-        slide.Duration = TimeSpan.FromMilliseconds(_open ? 200 : 100);
+        slide.Duration = TimeSpan.FromMilliseconds(IsOpen ? 200 : 100);
         slide.InsertExpressionKeyFrame(0,"this.StartingValue");
         var ease = compositor.CreateCubicBezierEasingFunction(new(0,.35f),new(.15f,1));
-        slide.InsertKeyFrame(1,new Vector3(_open ? 0 : -Travel,0,0),ease);
+        slide.InsertKeyFrame(1,new Vector3(IsOpen ? 0 : -Travel,0,0),ease);
+        var previousSlide = _slide;
         _slide = slide;
         _sheet.StartAnimation(slide);
-        batch.Completed += (_, _) => _parent.DispatcherQueue.TryEnqueue(() => {
-            if (!_disposed && generation == _generation) Finish();
-        });
+        previousSlide?.Dispose();
+        batch.Completed += (_, _) => _parent.DispatcherQueue.TryEnqueue(() => Finish(generation));
         batch.End();
     }
 
-    private void Finish()
+    private void Finish(int generation)
     {
+        if (generation != _generation || _phase is not (DrawerPhase.Opening or DrawerPhase.Closing)) return;
+        bool open = _phase == DrawerPhase.Opening;
         // Commit base values before stopping native animation fill, avoiding a one-frame snap.
-        _sheet.Translation = new Vector3(_open ? 0 : -Travel,0,0);
-        if (_slide != null) { _sheet.StopAnimation(_slide); _slide = null; }
+        _sheet.Translation = new Vector3(open ? 0 : -Travel,0,0);
+        StopSlide();
         _batch?.Dispose(); _batch = null;
-        if (!_open) { _layer.Visibility = Visibility.Collapsed; _focusMenu(); }
+        _phase = open ? DrawerPhase.Open : DrawerPhase.Closed;
+        if (!open) { _layer.Visibility = Visibility.Collapsed; _focusMenu(); }
         else _focusPane(); // Do not focus a native selector while its presenter is still offscreen.
+    }
+
+    private void StopSlide()
+    {
+        if (_slide == null) return;
+        _sheet.StopAnimation(_slide);
+        _slide.Dispose();
+        _slide = null;
     }
 
     private void KeyDown(object sender, KeyRoutedEventArgs args)
@@ -138,10 +155,11 @@ internal sealed class SettingsDrawer : IDisposable
 
     public void Dispose()
     {
-        if (_disposed) return;
-        _disposed = true; ++_generation;
-        if (_slide != null) _sheet.StopAnimation(_slide);
-        _batch?.Dispose();
+        if (_phase == DrawerPhase.Disposed) return;
+        _phase = DrawerPhase.Disposed;
+        ++_generation;
+        StopSlide();
+        _batch?.Dispose(); _batch = null;
         ElementCompositionPreview.SetElementChildVisual(_shadowHost,null);
         _shadowVisual?.Dispose(); _shadow?.Dispose();
         _sheet.Children.Clear(); _parent.Children.Remove(_layer);
