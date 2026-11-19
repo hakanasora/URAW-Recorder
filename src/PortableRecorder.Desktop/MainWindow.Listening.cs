@@ -98,9 +98,6 @@ public sealed partial class MainWindow
                 if(_state.IsListening)await _state.Listener.StopAsync();
                 else
                 {
-                    _deviceQueryVersion++;
-                    _formatQueryVersion++;
-                    _formatsBusy=false;
                     try{await _state.Audio.SuspendMonitoringAsync();}
                     finally{StopVolumeWatcher();}
                 }
@@ -108,6 +105,7 @@ public sealed partial class MainWindow
             {
                 _listenQuery++;
                 _sourceIconVersion++;
+                if(target==WorkMode.Listening)InvalidateRecordingInputQueries();
                 _state.SetWorkMode(target==WorkMode.Listening);
                 RestoreWorkModeSelection();
                 _lastStage=null;_lastAudioState=null;_listenViewKey=null;_displayedListeningSource=null;

@@ -168,7 +168,71 @@ static class UiStateChecks
         check(current==WorkMode.Listening&&!refreshed,"Closing while the old service stops suppresses late commit and refresh");
         transition.End();
 
+        await CheckInputQueries(check);
         await CalibrationCollectionChecks(root,check);
+    }
+
+    private static async Task CheckInputQueries(Action<bool,string> check)
+    {
+        var queue=new DeviceRefreshQueue();
+        queue.RestartDebounce();
+        check(queue.TryBegin(true,true)==null,"A topology notification waits for debounce");
+        queue.DebounceElapsed();
+        check(queue.TryBegin(false,false)==null,"An expired debounce retains work while blocked");
+        var first=queue.TryBegin(true,true)!;
+        queue.RestartDebounce();queue.DebounceElapsed();
+        queue.RestartDebounce();
+        check(queue.TryBegin(true,true)==null,"Changes during enumeration never start another enumeration");
+        var readyToReconcile=first.WaitUntilReadyAsync();
+        check(queue.TryBegin(false,false)==null&&!readyToReconcile.IsCompleted,"Audio or modal work holds an enumerated result");
+        check(queue.TryBegin(true,true)==null&&readyToReconcile.IsCompleted,"The active reconciliation resumes before a new enumeration starts");
+        queue.Finish(first,Task.CompletedTask);
+        check(queue.TryBegin(true,true)==null,"A change during enumeration waits for the latest debounce");
+        queue.DebounceElapsed();
+        var followUp=queue.TryBegin(true,true)!;
+        check(!followUp.Manual,"Coalesced changes run one automatic follow-up");
+        queue.Finish(followUp,Task.CompletedTask);
+        check(queue.TryBegin(true,true)==null,"Finishing an automatic enumeration does not retry the same notification");
+
+        var priorCompletion=queue.Enqueue(manual:false,modeInitialization:false);
+        var prior=queue.TryBegin(true,true)!;
+        queue.Invalidate();
+        var manual=queue.Enqueue(manual:true,modeInitialization:false);
+        var initialize=queue.Enqueue(manual:true,modeInitialization:true);
+        check(prior.Invalidated&&priorCompletion.IsCompleted,"Changing workspace invalidates callers waiting on the old enumeration");
+        check(queue.TryBegin(false,true)==null&&!initialize.IsCompleted,"Mode initialization waits for the prior enumeration to return");
+        queue.Finish(prior,Task.CompletedTask);
+        var force=queue.TryBegin(false,true)!;
+        check(force.Manual&&force.ModeInitialization&&ReferenceEquals(manual,initialize),"Manual and mode initialization intent coalesce into one forced pass");
+        var formatGate=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        queue.Finish(force,formatGate.Task);
+        check(!initialize.IsCompleted,"Mode initialization still awaits its format refresh");
+        queue.DebounceElapsed();
+        var independent=queue.TryBegin(true,true)!;
+        check(!independent.Manual,"A topology enumeration can proceed while input formats are loading");
+        queue.Finish(independent,Task.CompletedTask);
+        formatGate.SetResult();
+        await initialize.WaitAsync(TimeSpan.FromSeconds(5));
+
+        var format=new AudioFormat(48000,2,32,32,PcmEncoding.Float);
+        var options=new InputFormatOptions(format,[format]);
+        var query=new InputFormatQuery();
+        var a=query.Begin("a");
+        var b=query.Begin("b");
+        check(!query.TryComplete(a,"b",true,null,"late error")&&query.Loading&&query.Error==null,"A stale failure cannot clear the newer request's loading state");
+        check(query.TryComplete(b,"b",true,options,null)&&query.Options==options&&!query.Loading,"The current device can finish and publish its formats first");
+        check(!query.TryComplete(a,"b",true,null,"late error")&&query.Options==options&&query.Error==null,"An older request finishing later cannot replace the current result");
+
+        var switched=query.Begin("a");
+        check(!query.TryComplete(switched,"b",true,null,"wrong device")&&query.Loading&&query.Error==null,"A matching request ID still requires the current selected device");
+        check(!query.TryComplete(switched,"a",false,options,null)&&query.Loading,"A current device still requires a current recording workspace");
+        query.Invalidate();
+        var reopened=query.Begin("a");
+        check(!query.TryComplete(switched,"a",true,options,null)&&query.Loading,"Returning to the same device cannot revive an earlier workspace's result");
+        check(query.TryComplete(reopened,"a",true,null,"current error")&&query.Error=="current error"&&!query.Loading,"Only the current request publishes its error and clears loading");
+        var closing=query.Begin("a");
+        query.Invalidate();
+        check(!query.TryComplete(closing,"a",false,options,null)&&query.Options==null&&!query.Loading,"An input format response arriving after close has no effect");
     }
 
     private static async Task CalibrationCollectionChecks(string root,Action<bool,string> check)

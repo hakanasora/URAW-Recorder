@@ -75,10 +75,9 @@ public sealed partial class MainWindow : Window
     private long _volumeGeneration;
     private EndpointVolumeSnapshot? _liveEndpointVolume;
     private readonly ScrollViewer _inputHost=new(),_fileHost=new();
-    private InputFormatOptions? _inputFormats;
-    private string? _formatsDeviceId,_inputFormatViewKey,_formatError;
-    private int _formatQueryVersion;
-    private bool _updatingInputFormat,_formatsBusy;
+    private readonly InputFormatQuery _formatQuery=new();
+    private string? _inputFormatViewKey;
+    private bool _updatingInputFormat;
     private bool? _calibrationMotionEnabled;
     private (long Revision,string? Device,CalibrationLibrary.Selection Choice,CalibrationStatus Status)? _calibrationViewKey;
     private string _calibrationDescription="";
@@ -112,8 +111,9 @@ public sealed partial class MainWindow : Window
     private readonly SolidColorBrush _normalPeakInk=Design.Brush(Design.White),_overloadPeakInk=Design.Brush(Design.Alert);
     private DeviceTopologyWatcher? _deviceWatcher;
     private readonly DispatcherTimer _deviceRefreshTimer=new(){Interval=TimeSpan.FromMilliseconds(300)};
-    private bool _devicesDirty,_devicesLoaded;
-    private int _deviceVersion,_deviceQueryVersion;
+    private readonly DeviceRefreshQueue _deviceRefresh=new();
+    private bool _devicesLoaded;
+    private bool InRecordingInputContext=>!_closing&&!_state.IsListening;
     private readonly Stopwatch _renderClock=Stopwatch.StartNew();
     private double _lastRender,_nextDisplayProbe;
     private bool _displayProbePending;
@@ -239,7 +239,11 @@ public sealed partial class MainWindow : Window
                 if(!_noCapture)
                 {
                     try{_deviceWatcher=new DeviceTopologyWatcher(()=>DispatcherQueue.TryEnqueue(()=>
-                        {if(_closing)return;_deviceVersion++;_devicesDirty=true;_deviceRefreshTimer.Stop();_deviceRefreshTimer.Start();}));}
+                    {
+                        if(!InRecordingInputContext)return;
+                        _deviceRefresh.RestartDebounce();
+                        _deviceRefreshTimer.Stop();_deviceRefreshTimer.Start();
+                    }));}
                     catch(Exception error){StartupLog.Write("Device watcher unavailable: "+error);}
                     await LoadDevices(manual:false);
                 }
@@ -247,12 +251,12 @@ public sealed partial class MainWindow : Window
             }
             catch(Exception error){StartupLog.Write("Loaded failed: "+error);if(!_closing)throw;}
         };
-        _deviceRefreshTimer.Tick+=async(_,_)=>
+        _deviceRefreshTimer.Tick+=(_,_)=>
         {
-            if(_closing){_deviceRefreshTimer.Stop();return;}
-            if(!_devicesDirty){_deviceRefreshTimer.Stop();return;}
-            if(WorkModeChanging||_audioBusy||_dialogOpen||_dialogs.IsBusy)return;
-            _deviceRefreshTimer.Stop();await LoadDevices(manual:false);
+            _deviceRefreshTimer.Stop();
+            if(!InRecordingInputContext)return;
+            _deviceRefresh.DebounceElapsed();
+            _=DrainDeviceRefreshQueue();
         };
         _root.AddHandler(UIElement.PointerPressedEvent,new PointerEventHandler((_,args)=>_gain.CommitIfOutside(args)),true);
         _main.SizeChanged+=(_,_)=>Layout();_root.KeyDown+=OnKeyDown;_timer.Tick+=(_,_)=>Tick();
@@ -302,8 +306,9 @@ public sealed partial class MainWindow : Window
         {
             try
             {
-                SaveOutputFolder();StopVolumeWatcher();_deviceQueryVersion++;_formatQueryVersion++;
-                _drawer.Dispose();_deviceRefreshTimer.Stop();_deviceWatcher?.Dispose();_deviceWatcher=null;
+                InvalidateRecordingInputQueries();
+                SaveOutputFolder();StopVolumeWatcher();
+                _drawer.Dispose();_deviceWatcher?.Dispose();_deviceWatcher=null;
                 _stopButton.IsEnabled=false;_pauseButton.IsEnabled=false;
             }
             finally
@@ -391,7 +396,8 @@ public sealed partial class MainWindow : Window
         AutomationProperties.SetName(_deviceBox,"输入设备");
         _deviceBox.SelectionChanged+=async(_,_)=>
         {
-            if(_updatingForm || _audioBusy || _deviceBox.SelectedItem is not InputDevice device)return;
+            if(_updatingForm||_audioBusy||WorkModeChanging||!InRecordingInputContext||_deviceBox.SelectedItem is not InputDevice device)return;
+            _formatQuery.Invalidate();
             _state.SelectedInput=device;
             await AudioCommand(()=>_state.Audio.SelectDeviceAsync(new(device.Id,device.FriendlyName)));
             await LoadInputFormats();
@@ -779,6 +785,7 @@ public sealed partial class MainWindow : Window
             _serviceNotice.SetNotice(shown,details,saved?System.IO.Path.GetDirectoryName(status.FilePath):null);
         }
         _=CheckRawDecision();
+        _=DrainDeviceRefreshQueue();
         // CompositionTarget drives drawing separately; the timer only updates XAML and commands.
     }
     private async Task AudioCommand(Func<Task> command,bool modeInitialization=false)
@@ -897,31 +904,69 @@ public sealed partial class MainWindow : Window
         catch(Exception error){StartupLog.Write("Display refresh query failed: "+error);}
         finally{_displayProbePending=false;}
     }
-    private async Task LoadDevices(bool manual=true,bool modeInitialization=false)
+    private void InvalidateRecordingInputQueries()
     {
-        if(_closing||(WorkModeChanging&&!modeInitialization))return;
-        if(_state.IsListening){_devicesDirty=false;_deviceRefreshTimer.Stop();return;}
-        int query=++_deviceQueryVersion,version=_deviceVersion;
+        _deviceRefreshTimer.Stop();
+        _deviceRefresh.Invalidate();
+        _formatQuery.Invalidate();
+        _inputFormatViewKey=null;
+    }
+
+    private Task LoadDevices(bool manual=true,bool modeInitialization=false)
+    {
+        if(!InRecordingInputContext)return Task.CompletedTask;
+        var completion=_deviceRefresh.Enqueue(manual,modeInitialization);
+        _=DrainDeviceRefreshQueue();
+        return completion;
+    }
+
+    private bool CanRefreshDevices(bool modeInitialization)=>InRecordingInputContext&&!_audioBusy&&
+        (modeInitialization||(!WorkModeChanging&&!_dialogOpen&&!_dialogs.IsBusy));
+
+    private async Task DrainDeviceRefreshQueue()
+    {
+        while(_deviceRefresh.TryBegin(CanRefreshDevices(false),CanRefreshDevices(true)) is { } request)
+        {
+            Task completion;
+            try{completion=(await RefreshDevices(request))?LoadInputFormats():Task.CompletedTask;}
+            catch(Exception error)
+            {
+                StartupLog.Write("Device refresh: "+error);
+                completion=Task.FromException(error);
+            }
+            _deviceRefresh.Finish(request,completion);
+        }
+    }
+
+    private async Task<bool> RefreshDevices(DeviceRefreshQueue.Request request)
+    {
         IReadOnlyList<AudioDevice> devices;
         try{devices=await Task.Run(_state.Audio.EnumerateDevices);}
-        catch(Exception error){if(_closing||query!=_deviceQueryVersion)return;if(manual)await Message("输入设备",AudioEngine.Friendly(error));else StartupLog.Write("Device refresh failed: "+error);return;}
-        if(_closing||_state.IsListening||query!=_deviceQueryVersion||(WorkModeChanging&&!modeInitialization))return;
+        catch(Exception error)
+        {
+            if(InRecordingInputContext&&!request.Invalidated)
+            {
+                if(request.Manual)await Message("输入设备",AudioEngine.Friendly(error));
+                else StartupLog.Write("Device refresh failed: "+error);
+            }
+            return false;
+        }
+        if(!InRecordingInputContext||request.Invalidated)return false;
         bool same=_state.Devices.OrderBy(d=>d.Id).Select(d=>(d.Id,d.FriendlyName))
             .SequenceEqual(devices.OrderBy(d=>d.Id).Select(d=>(d.Id,d.Name)));
         // Output-only/default-marker notifications must not flash/disable input controls or reopen capture.
-        if(!manual && _devicesLoaded && same)
-        {
-            _devicesDirty=version!=_deviceVersion;if(_devicesDirty)_deviceRefreshTimer.Start();return;
-        }
-        if(_audioBusy||(!modeInitialization&&(_dialogOpen||_dialogs.IsBusy)))
-        {
-            _devicesDirty=true;_deviceRefreshTimer.Start();return;
-        }
+        if(!request.Manual&&_devicesLoaded&&same)return false;
+
+        while(InRecordingInputContext&&!request.Invalidated&&!CanRefreshDevices(request.ModeInitialization))
+            await request.WaitUntilReadyAsync();
+        if(!InRecordingInputContext||request.Invalidated)return false;
+
+        bool applied=false;
         await AudioCommand(async()=>
         {
-            await _state.Audio.ReconcileDevicesAsync(devices,manual);
-            if(_closing||query!=_deviceQueryVersion)return;
-            _devicesLoaded=true;_devicesDirty=version!=_deviceVersion;if(_devicesDirty)_deviceRefreshTimer.Start();
+            await _state.Audio.ReconcileDevicesAsync(devices,request.Manual);
+            if(!InRecordingInputContext||request.Invalidated)return;
+            _devicesLoaded=true;
             var selected=_state.Audio.SelectedDevice;
             _updatingForm=true;
             try
@@ -931,8 +976,10 @@ public sealed partial class MainWindow : Window
             }
             finally{_updatingForm=false;}
             _state.SelectedInput=selected==null?new("","未选择输入设备"):new(selected.Id,selected.Name);
-        },modeInitialization);
-        if(!_closing&&!_state.Session.Active&&(manual||_formatsDeviceId!=_state.Audio.SelectedDevice?.Id||_inputFormats==null))await LoadInputFormats();
+            applied=true;
+        },request.ModeInitialization);
+        return applied&&InRecordingInputContext&&!_state.Session.Active&&
+            (request.Manual||_formatQuery.DeviceId!=_state.Audio.SelectedDevice?.Id||(!_formatQuery.Loading&&_formatQuery.Options==null));
     }
     private async Task CheckRawDecision()
     {
@@ -992,35 +1039,43 @@ public sealed partial class MainWindow : Window
     }
     private async Task LoadInputFormats()
     {
-        if(_closing)return;
-        int version=++_formatQueryVersion;var device=_state.Audio.SelectedDevice;
-        _formatsDeviceId=device?.Id;_inputFormats=null;_formatError=null;_formatsBusy=device!=null;_inputFormatViewKey=null;SyncInputFormat();
-        if(device==null||_noCapture){_formatsBusy=false;SyncInputFormat();return;}
+        if(!InRecordingInputContext)return;
+        var request=_formatQuery.Begin(_noCapture?null:_state.Audio.SelectedDevice?.Id);
+        _inputFormatViewKey=null;
+        SyncInputFormat();
+        if(request.DeviceId==null)return;
+
+        InputFormatOptions? options=null;
+        string? error=null;
         try
         {
-            var options=await _state.Audio.QueryInputFormatsAsync();
-            if(!_closing&&version==_formatQueryVersion&&device.Id==_state.Audio.SelectedDevice?.Id)_inputFormats=options;
+            options=await _state.Audio.QueryInputFormatsAsync();
         }
         catch(Exception e)
         {
             StartupLog.Write("Input format query: "+e);
-            if(!_closing&&version==_formatQueryVersion)_formatError="输入格式读取失败："+AudioEngine.Friendly(e);
+            error="输入格式读取失败："+AudioEngine.Friendly(e);
         }
-        finally{if(!_closing&&version==_formatQueryVersion){_formatsBusy=false;_inputFormatViewKey=null;SyncInputFormat();}}
+        if(!_formatQuery.TryComplete(request,_state.Audio.SelectedDevice?.Id,InRecordingInputContext,options,error))return;
+        _inputFormatViewKey=null;
+        SyncInputFormat();
     }
     private static string FormatName(AudioFormat format)=>InputFormatPresentation.Name(format);
     private void SyncInputFormat()
     {
-        if(_closing)return;
+        if(!InRecordingInputContext)return;
         var audio=_state.Audio;bool shared=_state.RecordMode==RecordingMode.Shared;
         var hintVisibility=Visibility.Visible;
         if(_inputFormatHint.Visibility!=hintVisibility)_inputFormatHint.Visibility=hintVisibility;
         var actual=audio.Status.Capture;
-        var live=actual is{Exclusive:false}?actual.Format:_inputFormats?.Shared;
+        bool currentDevice=_formatQuery.DeviceId==audio.SelectedDevice?.Id;
+        var formats=currentDevice?_formatQuery.Options:null;
+        var formatError=currentDevice?_formatQuery.Error:null;
+        bool loadingFormats=currentDevice&&_formatQuery.Loading;
+        var live=actual is{Exclusive:false}?actual.Format:formats?.Shared;
         var preferred=audio.PreferredInputFormat;
-        string key=$"{shared}|{_formatsDeviceId}|{_formatsBusy}|{_inputFormats?.GetHashCode()}|{live}|{preferred}|{actual?.Exclusive}|{actual?.Raw}|{_liveEndpointVolume}|{_formatError}";
-        bool available=audio.SelectedDevice!=null&&!_formatsBusy;
-        _inputFormatBox.IsEnabled=InputFormatPresentation.CanSelect(_state.RecordMode,available,_formatsBusy,_inputFormats!=null,_audioBusy||WorkModeChanging,_state.Session.Active);
+        string key=$"{shared}|{audio.SelectedDevice?.Id}|{loadingFormats}|{formats?.GetHashCode()}|{live}|{preferred}|{actual?.Exclusive}|{actual?.Raw}|{_liveEndpointVolume}|{formatError}";
+        _inputFormatBox.IsEnabled=InputFormatPresentation.CanSelect(_state.RecordMode,audio.SelectedDevice!=null,loadingFormats,formats!=null,_audioBusy||WorkModeChanging,_state.Session.Active);
         if(key==_inputFormatViewKey)return;_inputFormatViewKey=key;_updatingInputFormat=true;
         string endpointGain=InputFormatPresentation.EndpointGain(_liveEndpointVolume,actual?.Exclusive==true);
         _inputFormatHint.Text=shared?"共享格式沿用 Windows 设置。":"仅当录制时切换为独占。";
@@ -1039,20 +1094,20 @@ public sealed partial class MainWindow : Window
         ToolTipService.SetToolTip(_modeGainHint,"点击设置软件增益会立即影响监看与录音，可能造成削波。其他处理差异可能使电平不完全一致。");
         try
         {
-            _inputFormatBox.Items.Clear();_inputFormatBox.PlaceholderText=_formatsBusy?"正在读取格式":"无法读取输入格式";
+            _inputFormatBox.Items.Clear();_inputFormatBox.PlaceholderText=loadingFormats?"正在读取格式":"无法读取输入格式";
             if(shared)
             {
                 if(live!=null){_inputFormatBox.Items.Add(new ComboBoxItem{Content=FormatName(live)});_inputFormatBox.SelectedIndex=0;}
             }
-            else if(_inputFormats!=null)
+            else if(formats!=null)
             {
                 var auto=new ComboBoxItem{Content="自动（设备推荐）"};_inputFormatBox.Items.Add(auto);ComboBoxItem selected=auto;
-                foreach(var format in _inputFormats.Exclusive)
+                foreach(var format in formats.Exclusive)
                 {
                     var item=new ComboBoxItem{Content=FormatName(format),Tag=format};ToolTipService.SetToolTip(item,format.Description);_inputFormatBox.Items.Add(item);
                     if(preferred==format)selected=item;
                 }
-                if(preferred!=null&&!_inputFormats.Exclusive.Contains(preferred))
+                if(preferred!=null&&!formats.Exclusive.Contains(preferred))
                 {selected=new ComboBoxItem{Content="所选格式已不可用",Tag=preferred,IsEnabled=false};_inputFormatBox.Items.Add(selected);}
                 _inputFormatBox.SelectedItem=selected;
             }
@@ -1064,7 +1119,7 @@ public sealed partial class MainWindow : Window
         else explanation+="\n当前没有有效监看输入；若显示格式，它是最近查询的系统格式，不代表正在采集。";
         explanation+="\n"+endpointGain+"\nRAW 请求不代表绕过共享软件音量。";
         if(audio.InputFormats.Warning!=null)explanation+="\n"+audio.InputFormats.Warning;
-        if(_formatError!=null)explanation+="\n"+_formatError;
+        if(formatError!=null)explanation+="\n"+formatError;
         ToolTipService.SetToolTip(_inputFormatGroup,explanation);ToolTipService.SetToolTip(_inputFormatBox,explanation);
     }
     private void StopVolumeWatcher()
@@ -1119,11 +1174,11 @@ public sealed partial class MainWindow : Window
     {
         var device=_state.Audio.SelectedDevice;
         if(device==null||_state.RecordMode!=RecordingMode.Exclusive||_closing||_state.IsListening||WorkModeChanging)return;
-        int query=_formatQueryVersion;
+        int query=_formatQuery.Version;
         try
         {
             var volume=await _state.Audio.QueryEndpointVolumeAsync(device);
-            if(_closing||_state.IsListening||WorkModeChanging||query!=_formatQueryVersion)return;
+            if(_closing||_state.IsListening||WorkModeChanging||query!=_formatQuery.Version)return;
             if(_state.Audio.SelectedDevice?.Id!=device.Id||_state.RecordMode!=RecordingMode.Exclusive){await Message("无法对齐增益","设备或录制模式已改变，请重新选择。");return;}
             var error=InputFormatPresentation.AlignmentUnavailable(volume);
             if(error!=null){await Message("无法对齐增益",error);return;}
@@ -1131,7 +1186,7 @@ public sealed partial class MainWindow : Window
         }
         catch(Exception error)
         {
-            if(!_closing&&!_state.IsListening&&!WorkModeChanging&&query==_formatQueryVersion)
+            if(!_closing&&!_state.IsListening&&!WorkModeChanging&&query==_formatQuery.Version)
                 await Message("无法对齐增益","读取 Windows 输入增益失败："+error.Message);
         }
     }
