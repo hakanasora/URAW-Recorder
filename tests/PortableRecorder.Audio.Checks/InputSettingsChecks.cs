@@ -79,5 +79,98 @@ static class InputSettingsChecks
         var dangling=new CalibrationLibrary(library.Folder);
         dangling.Configure("fake",new(false,entry.Id));
         check(dangling.GetSelection("fake")==new CalibrationLibrary.Selection(false,null),"Dangling old binding cannot trap user in enabled calibration");
+        await CalibrationRemovalWriteFailure(directory,check);
+        await CalibrationCaptureFailureAfterSave(directory,source,check);
+    }
+
+    private static async Task CalibrationRemovalWriteFailure(string directory,Action<bool,string> check)
+    {
+        var library=new CalibrationLibrary(Path.Combine(directory,"calibration-write-failure"));
+        var factory=new FakeFactory();
+        string source=Path.Combine(directory,"boost.cal");
+        File.WriteAllText(source,"1 -6\n24000 -6");
+        var entry=library.Import(source);
+        library.Bind(factory.Device.Id,entry.Id);
+        string index=Path.Combine(library.Folder,"calibration-library.json");
+        string backup=index+".bak",copy=library.GetLocalPath(entry.Id);
+        var catalog=library.Snapshot;
+        await using var engine=new AudioEngine(factory,library);
+        await engine.SelectDeviceAsync(factory.Device);
+        factory.Push(TestSupport.Sine(48000,32768,1000,.75));
+        await TestSupport.Until(()=>engine.Latest.Spectrum!=null,"active calibration has spectrum history");
+        var before=engine.Latest;
+        File.Move(index,backup);
+        Directory.CreateDirectory(index);
+        try
+        {
+            bool failed=false;
+            try{await engine.RemoveCalibrationAsync(entry.Id);}
+            catch(Exception error) when(error is IOException or UnauthorizedAccessException){failed=true;}
+            check(failed,"Active calibration removal reports a failed catalog replace");
+            check(ReferenceEquals(library.Snapshot,catalog)&&File.Exists(copy)&&engine.CalibrationSelection==new CalibrationLibrary.Selection(true,entry.Id),
+                "Failed catalog replace preserves selection and owned profile");
+            check(engine.Calibration.Applied&&engine.Calibration.ProfileId==entry.Id&&engine.Latest==before&&engine.Status.State==AudioRunState.Monitoring,
+                "Failed catalog replace preserves live calibration revision, segment, meter and spectrum history");
+        }
+        finally
+        {
+            Directory.Delete(index);
+            File.Move(backup,index);
+        }
+        check(new CalibrationLibrary(library.Folder).GetSelection(factory.Device.Id)==new CalibrationLibrary.Selection(true,entry.Id),
+            "Failed catalog replace leaves the durable selection intact");
+        factory.Push([.125f]);
+        await TestSupport.Until(()=>engine.Latest.FramePosition>before.FramePosition,"buffered convolution output continues after failed catalog save");
+        check(engine.Latest.FramePosition==before.FramePosition+1&&engine.Latest.HeldPeakDbfs==before.HeldPeakDbfs,
+            "Monitoring keeps its delayed frame clock and held peak after failed catalog save");
+        await engine.RemoveCalibrationAsync(entry.Id);
+        check(!engine.Calibration.Applied&&engine.Calibration.Revision==before.CalibrationRevision+1
+            &&engine.CalibrationSelection==new CalibrationLibrary.Selection(false,null)&&!File.Exists(copy)&&File.Exists(source),
+            "Active removal persists and switches once, deleting only the library copy");
+    }
+
+    private static async Task CalibrationCaptureFailureAfterSave(string directory,string source,Action<bool,string> check)
+    {
+        var library=new CalibrationLibrary(Path.Combine(directory,"calibration-capture-failure"));
+        var factory=new FakeFactory();
+        var entry=library.Import(source);
+        library.Bind(factory.Device.Id,entry.Id);
+        string copy=library.GetLocalPath(entry.Id);
+        await using var engine=new AudioEngine(factory,library);
+        await engine.SelectDeviceAsync(factory.Device);
+        var capture=factory.Current!;
+        using var reachedPacket=new ManualResetEventSlim();
+        using var releasePacket=new ManualResetEventSlim();
+        engine.Diagnostic+=message=>
+        {
+            if(!message.StartsWith("Capture discontinuity:",StringComparison.Ordinal))return;
+            reachedPacket.Set();
+            releasePacket.Wait();
+        };
+        // Hold the worker immediately before decoding an invalid packet. The catalog write can finish independently.
+        factory.Push([float.NaN],gap:true);
+        var nativeFault=new IOException("Injected native capture fault");
+        Task? removal=null;
+        try
+        {
+            await TestSupport.Until(()=>reachedPacket.IsSet,"packet worker held before injected PCM failure");
+            removal=engine.RemoveCalibrationAsync(entry.Id);
+            await TestSupport.Until(()=>library.Entries.Count==0,"catalog removal persisted while packet worker held");
+            capture.TriggerFault(nativeFault);
+        }
+        finally {releasePacket.Set();}
+        IOException? failure=null;
+        try{await removal!;}
+        catch(IOException error){failure=error;}
+        check(failure?.InnerException is AggregateException {InnerExceptions: [var first,InvalidDataException]}
+            &&ReferenceEquals(first,nativeFault)&&failure.Message.Contains("校准更改已保存",StringComparison.Ordinal),
+            "Failure after durable calibration removal reports saved settings, original capture fault, and later processing fault");
+        check(capture.Closed&&engine.Status.State==AudioRunState.Faulted&&!engine.Latest.Valid&&!engine.Calibration.Applied,
+            "Processing failure after save closes live capture and clears stale analysis");
+        check(new CalibrationLibrary(library.Folder).Entries.Count==0&&!File.Exists(copy),
+            "Failure after durable removal retains the saved catalog and copy deletion");
+        await engine.SelectDeviceAsync(factory.Device);
+        check(engine.Status.State==AudioRunState.Monitoring&&!engine.CalibrationSelection.Enabled&&!engine.Calibration.Applied,
+            "Reopened monitor uses the saved calibration removal");
     }
 }

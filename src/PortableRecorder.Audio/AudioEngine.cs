@@ -597,18 +597,54 @@ public sealed class AudioEngine:IAsyncDisposable
     }
     private async Task ChangeCalibration(CalibrationLibrary.Selection choice,bool allowUnavailable)
     {
-        var old=CalibrationSelection;var plan=CalibrationPlan.Identity;string? error=null;
+        var plan=CalibrationPlan.Identity;string? error=null;
         if(choice.Enabled)
         {
             if(choice.ProfileId==null)error="校准尚未生效：请选择校准文件，或禁用校准后录制。";
             else try{plan=await Task.Run(()=>CalibrationPlan.Prepare(Calibrations.Read(choice.ProfileId),_capture?.Info.Format.SampleRate??48000));}
             catch(Exception e) when(allowUnavailable){error="所选校准不可用，未应用："+e.Message;}
         }
-        Calibrations.Configure(_device!.Id,choice);
-        try{if(_pipeline!=null)await _pipeline.ApplyCalibrationAsync(plan);}
-        catch{Calibrations.Configure(_device.Id,old);throw;}
-        _calibrationError=error;Volatile.Write(ref _previousPeak,double.NaN);
+        string deviceId=_device!.Id;
+        await PersistCalibrationChange(plan,()=>Calibrations.Configure(deviceId,choice),error);
         if(_capture!=null)Set(AudioRunState.Monitoring,error??(choice.Enabled?$"已启用频响校准：{plan.Profile!.Name}":"校准已禁用；共享监看"));
+    }
+    private async Task PersistCalibrationChange(CalibrationPlan plan,Action persist,string? calibrationError)
+    {
+        var pipeline=_pipeline;
+        var nativeFault=_nativeCaptureFault;
+        bool saved=false;
+        void Save()
+        {
+            if(nativeFault is {IsCompletedSuccessfully:true})throw nativeFault.Result;
+            persist();
+            saved=true;
+        }
+        try
+        {
+            if(pipeline==null)await Task.Run(Save);
+            else await pipeline.ChangeCalibrationAsync(plan,Save);
+            if(nativeFault is {IsCompletedSuccessfully:true})throw nativeFault.Result;
+            if(pipeline?.Failure is Exception processingFailure)throw processingFailure;
+        }
+        catch(Exception error) when(saved)
+        {
+            // A failed capture has no live calibration to restore. Reopening uses the saved catalog.
+            var cause=nativeFault is {IsCompletedSuccessfully:true}?AudioFailure.Combine(nativeFault.Result,error):error;
+            Exception failure=new IOException("校准更改已保存，但监看未能应用。",cause);
+            try{await CloseCapture(preservePeak:false);}
+            catch(Exception cleanupError){failure=AudioFailure.Combine(failure,cleanupError);}
+            Trace("Capture fault after saving calibration: "+failure);
+            Set(AudioRunState.Faulted,Friendly(failure));
+            throw failure;
+        }
+        finally
+        {
+            if(saved)
+            {
+                _calibrationError=calibrationError;
+                Volatile.Write(ref _previousPeak,double.NaN);
+            }
+        }
     }
     public async Task<InputFormatOptions> QueryInputFormatsAsync()
     {
@@ -639,15 +675,12 @@ public sealed class AudioEngine:IAsyncDisposable
         {
             ThrowIfDisposed();if(_writer!=null)throw new InvalidOperationException("录制和暂停期间不能移除校准。");
             bool active=_device!=null&&Calibrations.SelectedId(_device.Id)==id;
-            var old=active?_pipeline?.Plan:null;
-            if(active&&_pipeline!=null)await _pipeline.ApplyCalibrationAsync(CalibrationPlan.Identity);
-            try{Calibrations.Remove(id);}
-            catch{if(old!=null&&_pipeline!=null)await _pipeline.ApplyCalibrationAsync(old);throw;}
             if(active)
             {
-                _calibrationError=null;Volatile.Write(ref _previousPeak,double.NaN);
+                await PersistCalibrationChange(CalibrationPlan.Identity,()=>Calibrations.Remove(id),null);
                 if(_capture!=null)Set(AudioRunState.Monitoring,"已移除当前校准；共享监看未应用校准。");
             }
+            else await Task.Run(()=>Calibrations.Remove(id));
         }
         finally{_commands.Release();}
     }

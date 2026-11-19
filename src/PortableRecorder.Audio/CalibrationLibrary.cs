@@ -80,6 +80,7 @@ public sealed class CalibrationLibrary
     }
     public void Remove(string id)
     {
+        string copy=FilePath(id);
         lock(_gate)
         {
             var activation=new Dictionary<string,bool>(_catalog.Activation!);
@@ -87,7 +88,7 @@ public sealed class CalibrationLibrary
             var next=new Catalog(2,_catalog.Files.Where(f=>f.Id!=id).ToList(),_catalog.Devices.Where(p=>p.Value!=id).ToDictionary(),activation);
             Commit(next);
             // Only the hash-named application copy can be removed, never the imported original.
-            try{File.Delete(FilePath(id));}catch(Exception e) when(e is IOException or UnauthorizedAccessException){PublishSnapshot("校准项目已移除，但应用副本清理失败："+e.Message);}
+            try{File.Delete(copy);}catch(Exception e) when(e is IOException or UnauthorizedAccessException){PublishSnapshot("校准项目已移除，但应用副本清理失败："+e.Message);}
         }
     }
     private string FilePath(string id)=>ProfilePath(Folder,id);
@@ -110,8 +111,9 @@ public sealed class CalibrationLibrary
     }
     private void Commit(Catalog next)
     {
+        var snapshot=new CalibrationLibrarySnapshot(Snapshot.Revision+1,next.Files,next.Devices,next.Activation!,null,Folder);
         AtomicFile.WriteAllBytes(Path.Combine(Folder,"calibration-library.json"),JsonSerializer.SerializeToUtf8Bytes(next),8*1024*1024);
-        _catalog=next;PublishSnapshot();
+        _catalog=next;Volatile.Write(ref _snapshot,snapshot);
     }
     private void PublishSnapshot(string? warning=null)=>Volatile.Write(ref _snapshot,
         new CalibrationLibrarySnapshot(Snapshot.Revision+1,_catalog.Files,_catalog.Devices,_catalog.Activation!,warning,Folder));
