@@ -69,6 +69,43 @@ static class ListeningChecks
         await service.DisposeAsync();bool disposed=false;
         try{await service.StartAsync(source);}catch(ObjectDisposedException){disposed=true;}
         Assert(disposed,"Disposed listener cannot reopen capture");
+        var readOnceFactory=new FakeListeningFactory{SuccessfulFormatReads=1};
+        await using var readOnceService=new ListeningService(readOnceFactory);
+        await readOnceService.StartAsync(source);
+        readOnceFactory.Current!.Push(Sine(480,.1f));
+        await Until(()=>readOnceService.Latest.Valid||readOnceFactory.Current.FormatReads>1,"first packet from capture with a single usable format read");
+        Assert(readOnceService.Latest.Valid&&readOnceFactory.Current.FormatReads==1,
+            "Listening worker and status reuse the initial capture format");
+        readOnceFactory.Current.Fail(new IOException("test format already released"));
+        await Until(()=>readOnceFactory.Current.Disposed,"read-once capture cleanup");
+        Assert(readOnceService.Status is {State:ListeningState.Faulted,Format:not null}&&readOnceFactory.Current.FormatReads==1,
+            "Runtime fault publishes the cached format and releases capture");
+
+        var badFormatFactory=new FakeListeningFactory{SuccessfulFormatReads=0};
+        await using var badFormatService=new ListeningService(badFormatFactory);
+        IOException? formatError=null;
+        try{await badFormatService.StartAsync(source);}catch(IOException error){formatError=error;}
+        Assert(ReferenceEquals(formatError,badFormatFactory.Current!.FormatError)&&badFormatFactory.Current.FormatReads==1,
+            "Unreadable capture format propagates the original failure without rereading it");
+        Assert(badFormatService.Status is {State:ListeningState.Faulted,Format:null}&&
+            badFormatService.Status.Message==formatError!.Message&&badFormatFactory.Current.Disposed,
+            "Unreadable capture format publishes a fault and releases capture");
+
+        var cleanupFactory=new FakeListeningFactory{SuccessfulFormatReads=0,FailDisposal=true};
+        await using var cleanupService=new ListeningService(cleanupFactory);
+        AggregateException? openingFailure=null;
+        try{await cleanupService.StartAsync(source);}catch(AggregateException error){openingFailure=error;}
+        var failedCapture=cleanupFactory.Current!;
+        Assert(openingFailure?.InnerExceptions.SequenceEqual([failedCapture.FormatError,failedCapture.DisposeError])==true&&
+            cleanupService.Status is {State:ListeningState.Faulted}&&cleanupService.Status.Message.StartsWith(failedCapture.FormatError.Message),
+            "Capture cleanup failure preserves the first opening error and appends the cleanup error");
+        cleanupFactory.SuccessfulFormatReads=1;cleanupFactory.FailDisposal=false;
+        await cleanupService.StartAsync(source);
+        Assert(cleanupService.Status.State==ListeningState.Waiting,
+            "Opening failure followed by a failed release does not leave a disposed session attached");
+
+        await CheckWatchdogUsesCurrentPacket(source,Assert);
+
         var backlogFactory=new FakeListeningFactory{BurstBeforeReturn=true};
         await using var backlogService=new ListeningService(backlogFactory);
         await backlogService.StartAsync(source);
@@ -78,11 +115,61 @@ static class ListeningChecks
         Assert(double.IsNegativeInfinity(backlogService.Latest.RmsDbfs)&&backlogService.Latest.Segment>0,
             "Queue overflow resets the first accepted post-gap block, not an older queued block");
     }
-    private static int QueuedPacketCount(ListeningService service)
+    private static async Task CheckWatchdogUsesCurrentPacket(ListeningSource source,Action<bool,string> Assert)
+    {
+        using var clock=new WatchdogClock();
+        var factory=new FakeListeningFactory();
+        await using var service=new ListeningService(factory,clock);
+        await service.StartAsync(source);
+        var capture=factory.Current!;
+        capture.Push(Sine(480,.1f));
+        try
+        {
+            // The watchdog has read the old observation, and the time query is paused.
+            await clock.ObservedOldPacket.Task.WaitAsync(TimeSpan.FromSeconds(4));
+            var oldObservation=SessionField(service,"_observation");
+            capture.Push(Sine(480,.1f));
+            await Until(()=>!ReferenceEquals(oldObservation,SessionField(service,"_observation")),"fresh packet status publication");
+        }
+        finally{clock.ResumeWatchdog.Set();}
+
+        await Until(()=>clock.CheckedAgain.Task.IsCompleted||service.Status.State==ListeningState.Waiting,
+            "watchdog idle check finished");
+        Assert(service.Status.State==ListeningState.Listening&&service.Latest.FramePosition==960,
+            "A stale watchdog observation cannot hide the newer packet");
+    }
+
+    private sealed class WatchdogClock:TimeProvider,IDisposable
+    {
+        private int _reads;
+        public TaskCompletionSource ObservedOldPacket {get;}=new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource CheckedAgain {get;}=new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public ManualResetEventSlim ResumeWatchdog {get;}=new();
+
+        public override long GetTimestamp()
+        {
+            int read=Interlocked.Increment(ref _reads);
+            if(read==1)return 1; // Arrival of the first packet.
+            if(read==2)
+            {
+                ObservedOldPacket.SetResult();
+                if(!ResumeWatchdog.Wait(TimeSpan.FromSeconds(4)))throw new TimeoutException("Watchdog clock was not resumed.");
+            }
+            if(read>3)CheckedAgain.TrySetResult(); // The watchdog has completed the stale check.
+            return TimestampFrequency+1; // First packet is stale; subsequent arrivals are current.
+        }
+
+        public void Dispose()=>ResumeWatchdog.Dispose();
+    }
+    private static object SessionField(ListeningService service,string field)
     {
         const BindingFlags fields=BindingFlags.Instance|BindingFlags.NonPublic;
         var session=typeof(ListeningService).GetField("_session",fields)!.GetValue(service)!;
-        var channel=session.GetType().GetField("_packets",fields)!.GetValue(session)!;
+        return session.GetType().GetField(field,fields)!.GetValue(session)!;
+    }
+    private static int QueuedPacketCount(ListeningService service)
+    {
+        var channel=SessionField(service,"_packets");
         var reader=channel.GetType().GetProperty("Reader")!.GetValue(channel)!;
         return (int)reader.GetType().GetProperty("Count")!.GetValue(reader)!;
     }
@@ -94,11 +181,12 @@ static class ListeningChecks
     }
     private sealed class FakeListeningFactory:IListeningCaptureFactory
     {
-        public FakeListeningCapture? Current;public bool FailOpening,FaultBeforeReturn,BurstBeforeReturn;
+        public FakeListeningCapture? Current;public bool FailOpening,FaultBeforeReturn,BurstBeforeReturn,FailDisposal;
+        public int SuccessfulFormatReads=int.MaxValue;
         public Task<IListeningCaptureSession> OpenAsync(ListeningSource source,Func<CapturePacket,bool> submit,Action<Exception> fault)
         {
             if(FailOpening)throw new IOException("test opening failed");
-            Current=new(submit,fault);
+            Current=new(submit,fault,SuccessfulFormatReads,FailDisposal);
             if(BurstBeforeReturn)for(int i=0;i<65;i++)Current.Push(Sine(480,.1f));
             if(FaultBeforeReturn)
             {
@@ -108,9 +196,15 @@ static class ListeningChecks
             return Task.FromResult<IListeningCaptureSession>(Current);
         }
     }
-    private sealed class FakeListeningCapture(Func<CapturePacket,bool> submit,Action<Exception> fault):IListeningCaptureSession
+    private sealed class FakeListeningCapture(Func<CapturePacket,bool> submit,Action<Exception> fault,
+        int successfulFormatReads,bool failDisposal):IListeningCaptureSession
     {
-        public AudioFormat Format {get;}=new(48000,1,32,32,PcmEncoding.Float);
+        private readonly AudioFormat _format=new(48000,1,32,32,PcmEncoding.Float);
+        private int _formatReads;
+        public IOException FormatError {get;}=new("test capture format unavailable");
+        public IOException DisposeError {get;}=new("test capture cleanup failed");
+        public int FormatReads=>Volatile.Read(ref _formatReads);
+        public AudioFormat Format=>Interlocked.Increment(ref _formatReads)<=successfulFormatReads?_format:throw FormatError;
         public volatile bool Disposed;private long _position;
         public bool Push(float[] samples,bool silent=false)
         {
@@ -119,6 +213,10 @@ static class ListeningChecks
             _position+=samples.Length;bool accepted=submit(packet);if(!accepted)packet.Dispose();return accepted;
         }
         public void Fail(Exception e)=>fault(e);
-        public ValueTask DisposeAsync(){Disposed=true;return ValueTask.CompletedTask;}
+        public ValueTask DisposeAsync()
+        {
+            Disposed=true;
+            return failDisposal?ValueTask.FromException(DisposeError):ValueTask.CompletedTask;
+        }
     }
 }
