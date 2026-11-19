@@ -22,7 +22,10 @@ public sealed partial class MainWindow
     private readonly StackPanel _listenPage=new(){Spacing=16,Margin=new Thickness(0,0,16,0)};
     private StackPanel? _listenTapGroup,_listenEndpointGroup,_listenApplicationGroup;
     private Button? _listenRefresh;
-    private bool _updatingListening,_changingWorkMode;
+    private bool _updatingListening;
+    private readonly WorkModeTransition _workModeTransition=new();
+    private bool WorkModeChanging=>_workModeTransition.Target!=null;
+    private WorkMode CurrentWorkMode=>_state.IsListening?WorkMode.Listening:WorkMode.Recording;
     private int _listenQuery,_sourceIconVersion;
     private string? _listenViewKey;
     private ListeningSource? _displayedListeningSource;
@@ -61,47 +64,76 @@ public sealed partial class MainWindow
         AutomationProperties.SetName(_workModeBox,"工作模式");
         _workModeBox.SelectionChanged+=(_,_)=>
         {
-            if(!_started||_changingWorkMode)return;
-            bool listening=_workModeBox.SelectedIndex==1;
-            if(listening==_state.IsListening)return;
-            if(_audioBusy||_state.Session.Active){RestoreWorkModeSelection();return;}
-            _changingWorkMode=true;
+            if(!_started||_workModeBox.SelectedIndex<0)return;
+            var target=_workModeBox.SelectedIndex==1?WorkMode.Listening:WorkMode.Recording;
+            if(!_workModeTransition.TryBegin(CurrentWorkMode,target,_audioBusy||_state.Session.Active||_closing))
+            {
+                RestoreWorkModeSelection();
+                return;
+            }
             // Return to the native ComboBox before disabling it or replacing its popup's
             // surrounding visual tree. Selecting an item must complete its own transaction.
-            if(!DispatcherQueue.TryEnqueue(async()=>
+            if(!DispatcherQueue.TryEnqueue(async()=>await ApplyWorkMode()))
             {
-              try
-              {
-               StartupLog.Write("Work mode: "+(listening?"listening":"recording"));
-               await AudioCommand(async()=>
-               {
-                // Quiesce the old owner before exposing the next mode. Neither source runs hidden.
-                if(listening){await _state.Audio.SuspendMonitoringAsync();StopVolumeWatcher();}
-                else await _state.Listener.StopAsync();
-                if(_closing)return;
-                _state.SetWorkMode(listening);
-                _lastStage=null;_lastAudioState=null;_listenViewKey=null;_displayedListeningSource=null;
-                UpdateWorkModeSurface();
-                if(listening)await RefreshListeningSources();
-                else if(!_noCapture)
-                {
-                    var devices=await Task.Run(_state.Audio.EnumerateDevices);
-                    if(_closing)return;
-                    await _state.Audio.ReconcileDevicesAsync(devices,true);
-                    var current=_state.Audio.SelectedDevice;
-                    _state.SelectedInput=current==null?new("","未选择输入设备"):new(current.Id,current.Name);
-                }
-               });
-               RestoreWorkModeSelection();
-               if(!_state.IsListening&&!_noCapture)await LoadDevices(manual:false);
-              }
-              finally{_changingWorkMode=false;}
-            }))_changingWorkMode=false;
+                _workModeTransition.End();
+                RestoreWorkModeSelection();
+            }
         };
         _header.Children.Add(_workModeBox);
     }
 
     private void RestoreWorkModeSelection()=>_workModeBox.SelectedIndex=_state.IsListening?1:0;
+
+    private async Task ApplyWorkMode()
+    {
+        try
+        {
+            if(_closing||_audioBusy||_state.Session.Active)return;
+            _workModeBox.IsEnabled=false;
+            _stopButton.IsEnabled=false;
+            foreach(var control in _configuration)control.IsEnabled=false;
+            RestoreWorkModeSelection();
+            await _workModeTransition.ApplyAsync(async()=>
+            {
+                if(_state.IsListening)await _state.Listener.StopAsync();
+                else
+                {
+                    _deviceQueryVersion++;
+                    _formatQueryVersion++;
+                    _formatsBusy=false;
+                    try{await _state.Audio.SuspendMonitoringAsync();}
+                    finally{StopVolumeWatcher();}
+                }
+            },()=>_closing,target=>
+            {
+                _listenQuery++;
+                _sourceIconVersion++;
+                _state.SetWorkMode(target==WorkMode.Listening);
+                RestoreWorkModeSelection();
+                _lastStage=null;_lastAudioState=null;_listenViewKey=null;_displayedListeningSource=null;
+                UpdateWorkModeSurface();
+                StartupLog.Write("Work mode: "+target);
+            },target=>target==WorkMode.Listening ? RefreshListeningSources() :
+                _noCapture ? Task.CompletedTask : LoadDevices(manual:true,modeInitialization:true));
+        }
+        catch(Exception error)
+        {
+            StartupLog.Write("Work mode: "+error);
+            if(!_closing)await Message("工作模式",AudioEngine.Friendly(error));
+        }
+        finally
+        {
+            _workModeTransition.End();
+            if(!_closing)
+            {
+                RestoreWorkModeSelection();
+                _state.Refresh();
+                if(_state.IsListening){_listenViewKey=null;RefreshListening();}
+                else{RefreshSession(true);SyncCalibration();SyncInputFormat();}
+                RefreshValues();
+            }
+        }
+    }
 
     private StackPanel BuildVuReferenceGroup(bool listening)
     {
@@ -195,8 +227,12 @@ public sealed partial class MainWindow
             finally{_updatingListening=false;}
             _listenViewKey=null;RefreshListening();
         }
-        catch(Exception error){StartupLog.Write("Listening sources: "+error);if(!_closing)await Message("侦听来源",AudioEngine.Friendly(error));}
-        finally{if(!_closing&&query==_listenQuery)_listenRefresh!.IsEnabled=true;}
+        catch(Exception error)
+        {
+            StartupLog.Write("Listening sources: "+error);
+            if(!_closing&&_state.IsListening&&query==_listenQuery)await Message("侦听来源",AudioEngine.Friendly(error));
+        }
+        finally{if(!_closing&&_state.IsListening&&query==_listenQuery)RefreshListening();}
     }
 
     private ListeningSource? SelectedListeningSource()
@@ -224,9 +260,9 @@ public sealed partial class MainWindow
         var status=_state.Listener.Status;
         bool active=status.State is ListeningState.Opening or ListeningState.Listening or ListeningState.Waiting;
         bool application=_listenScope.SelectedIndex==1,endpoint=!application&&_listenTap.SelectedIndex==1;
-        _workModeBox.IsEnabled=!_audioBusy;
-        foreach(var box in new[]{_listenScope,_listenTap,_listenEndpoint,_listenApplication})box.IsEnabled=!active&&!_audioBusy;
-        if(_listenRefresh!=null)_listenRefresh.IsEnabled=!active&&!_audioBusy;
+        _workModeBox.IsEnabled=!_audioBusy&&!WorkModeChanging;
+        foreach(var box in new[]{_listenScope,_listenTap,_listenEndpoint,_listenApplication})box.IsEnabled=!active&&!_audioBusy&&!WorkModeChanging;
+        if(_listenRefresh!=null)_listenRefresh.IsEnabled=!active&&!_audioBusy&&!WorkModeChanging;
         _listenTapGroup!.Visibility=application?Visibility.Collapsed:Visibility.Visible;
         _listenEndpointGroup!.Visibility=endpoint?Visibility.Visible:Visibility.Collapsed;
         _listenApplicationGroup!.Visibility=application?Visibility.Visible:Visibility.Collapsed;
@@ -238,7 +274,7 @@ public sealed partial class MainWindow
         _clockSlot.Visibility=Visibility.Collapsed;
         _inputName.SetRecording(false,false);
         _stopButton.Width=116;_stopButton.CornerRadius=new CornerRadius(5);
-        _stopButton.IsEnabled=!_audioBusy&&(active||selected!=null);
+        _stopButton.IsEnabled=!_audioBusy&&!WorkModeChanging&&(active||selected!=null);
         _pauseButton.Visibility=Visibility.Collapsed;_discardButton.Visibility=Visibility.Collapsed;_activeButtons.Spacing=0;
         _primaryFade.Stop();_primaryContent.Opacity=1;_primaryContent.Children.Clear();
         _primaryContent.Children.Add(Design.ActionContent(active?"stop":"play",active?"停止侦听":"开始侦听"));

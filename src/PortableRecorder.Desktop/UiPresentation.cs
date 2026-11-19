@@ -2,6 +2,32 @@ using PortableRecorder.Audio;
 
 namespace PortableRecorder.Desktop;
 
+internal enum WorkMode { Recording, Listening }
+
+internal sealed class WorkModeTransition
+{
+    public WorkMode? Target { get; private set; }
+
+    public bool TryBegin(WorkMode current, WorkMode target, bool blocked)
+    {
+        if (blocked || Target != null || current == target) return false;
+        Target = target;
+        return true;
+    }
+
+    public async Task ApplyAsync(Func<Task> stopCurrent, Func<bool> isClosing,
+        Action<WorkMode> commit, Func<WorkMode, Task> refresh)
+    {
+        if (Target is not WorkMode target || isClosing()) return;
+        await stopCurrent();
+        if (isClosing()) return;
+        commit(target);
+        await refresh(target);
+    }
+
+    public void End() => Target = null;
+}
+
 internal sealed record TransportPresentation(bool Active, bool Paused, bool CanStop, bool CanPause,
     bool CanDiscard, string StatusText, int PauseWidth, int StopWidth)
 {

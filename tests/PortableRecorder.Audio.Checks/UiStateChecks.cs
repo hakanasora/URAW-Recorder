@@ -134,6 +134,40 @@ static class UiStateChecks
         queue.Close();
         check(!queue.IsBusy&&await queue.WaitForPresenterAsync(TimeSpan.Zero),"Cleanup leaves no active or queued dialog");
 
+        var transition=new WorkModeTransition();
+        var current=WorkMode.Recording;
+        check(!transition.TryBegin(current,WorkMode.Listening,blocked:true),"An active recording blocks mode changes");
+        check(transition.TryBegin(current,WorkMode.Listening,blocked:false),"Idle recording accepts a mode change");
+        check(!transition.TryBegin(current,WorkMode.Listening,blocked:false),"A rapid repeat cannot replace the pending target");
+        var stopFailed=Task.FromException(new IOException("Old source failed to stop"));
+        try{await transition.ApplyAsync(()=>stopFailed,()=>false,value=>current=value,_=>Task.CompletedTask);}
+        catch(IOException){}
+        check(current==WorkMode.Recording,"Failed stop preserves the committed mode");
+        transition.End();
+
+        check(transition.TryBegin(current,WorkMode.Listening,blocked:false),"Failed switch can be retried");
+        var stopped=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        bool refreshed=false;
+        var changing=transition.ApplyAsync(()=>stopped.Task,()=>false,value=>current=value,target=>
+        {
+            refreshed=current==target;
+            return Task.FromException(new IOException("New source enumeration failed"));
+        });
+        check(current==WorkMode.Recording&&!refreshed,"The old mode stays committed until its service stops");
+        stopped.SetResult();
+        try{await changing;}catch(IOException){}
+        check(current==WorkMode.Listening&&refreshed,"Failed target refresh preserves the new committed mode");
+        transition.End();
+
+        check(transition.TryBegin(current,WorkMode.Recording,blocked:false),"Return to recording can begin");
+        bool closing=false;refreshed=false;
+        stopped=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        changing=transition.ApplyAsync(()=>stopped.Task,()=>closing,value=>current=value,_=>{refreshed=true;return Task.CompletedTask;});
+        closing=true;stopped.SetResult();
+        await changing;
+        check(current==WorkMode.Listening&&!refreshed,"Closing while the old service stops suppresses late commit and refresh");
+        transition.End();
+
         await CalibrationCollectionChecks(root,check);
     }
 

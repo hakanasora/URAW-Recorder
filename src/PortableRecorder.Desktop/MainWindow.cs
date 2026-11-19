@@ -251,7 +251,7 @@ public sealed partial class MainWindow : Window
         {
             if(_closing){_deviceRefreshTimer.Stop();return;}
             if(!_devicesDirty){_deviceRefreshTimer.Stop();return;}
-            if(_audioBusy || _dialogOpen || _dialogs.IsBusy)return;
+            if(WorkModeChanging||_audioBusy||_dialogOpen||_dialogs.IsBusy)return;
             _deviceRefreshTimer.Stop();await LoadDevices(manual:false);
         };
         _root.AddHandler(UIElement.PointerPressedEvent,new PointerEventHandler((_,args)=>_gain.CommitIfOutside(args)),true);
@@ -757,7 +757,7 @@ public sealed partial class MainWindow : Window
         if(status.State!=_lastAudioState){_lastAudioState=status.State;RefreshSession(true);}
         RefreshValues();_clock.Text=_state.Session.DisplayTime;
         var transport=TransportPresentation.From(status.State,_audioBusy,_state.Audio.CalibrationReadyToRecord);
-        _stopButton.IsEnabled=transport.CanStop;_discardButton.IsEnabled=transport.CanDiscard;_pauseButton.IsEnabled=transport.CanPause;
+        _stopButton.IsEnabled=transport.CanStop&&!WorkModeChanging;_discardButton.IsEnabled=transport.CanDiscard;_pauseButton.IsEnabled=transport.CanPause;
         var capture=status.Capture;
         _inputName.SetChannels(capture?.Format.Channels??0);
         EnsureVolumeWatcher();SyncCalibration();SyncInputFormat();
@@ -781,9 +781,10 @@ public sealed partial class MainWindow : Window
         _=CheckRawDecision();
         // CompositionTarget drives drawing separately; the timer only updates XAML and commands.
     }
-    private async Task AudioCommand(Func<Task> command)
+    private async Task AudioCommand(Func<Task> command,bool modeInitialization=false)
     {
-        if(_audioBusy || _closing)return;_audioBusy=true;
+        if(_audioBusy || _closing || (WorkModeChanging&&!modeInitialization))return;
+        _audioBusy=true;
         _stopButton.IsEnabled=false;_pauseButton.IsEnabled=false;_discardButton.IsEnabled=false;
         foreach(var control in _configuration)control.IsEnabled=false;
         try{await command();}
@@ -896,15 +897,15 @@ public sealed partial class MainWindow : Window
         catch(Exception error){StartupLog.Write("Display refresh query failed: "+error);}
         finally{_displayProbePending=false;}
     }
-    private async Task LoadDevices(bool manual=true)
+    private async Task LoadDevices(bool manual=true,bool modeInitialization=false)
     {
-        if(_closing)return;
+        if(_closing||(WorkModeChanging&&!modeInitialization))return;
         if(_state.IsListening){_devicesDirty=false;_deviceRefreshTimer.Stop();return;}
         int query=++_deviceQueryVersion,version=_deviceVersion;
         IReadOnlyList<AudioDevice> devices;
         try{devices=await Task.Run(_state.Audio.EnumerateDevices);}
         catch(Exception error){if(_closing||query!=_deviceQueryVersion)return;if(manual)await Message("输入设备",AudioEngine.Friendly(error));else StartupLog.Write("Device refresh failed: "+error);return;}
-        if(_closing||query!=_deviceQueryVersion)return;
+        if(_closing||_state.IsListening||query!=_deviceQueryVersion||(WorkModeChanging&&!modeInitialization))return;
         bool same=_state.Devices.OrderBy(d=>d.Id).Select(d=>(d.Id,d.FriendlyName))
             .SequenceEqual(devices.OrderBy(d=>d.Id).Select(d=>(d.Id,d.Name)));
         // Output-only/default-marker notifications must not flash/disable input controls or reopen capture.
@@ -912,7 +913,10 @@ public sealed partial class MainWindow : Window
         {
             _devicesDirty=version!=_deviceVersion;if(_devicesDirty)_deviceRefreshTimer.Start();return;
         }
-        if(_audioBusy || _dialogOpen || _dialogs.IsBusy){_devicesDirty=true;_deviceRefreshTimer.Start();return;}
+        if(_audioBusy||(!modeInitialization&&(_dialogOpen||_dialogs.IsBusy)))
+        {
+            _devicesDirty=true;_deviceRefreshTimer.Start();return;
+        }
         await AudioCommand(async()=>
         {
             await _state.Audio.ReconcileDevicesAsync(devices,manual);
@@ -927,13 +931,14 @@ public sealed partial class MainWindow : Window
             }
             finally{_updatingForm=false;}
             _state.SelectedInput=selected==null?new("","未选择输入设备"):new(selected.Id,selected.Name);
-        });
+        },modeInitialization);
         if(!_closing&&!_state.Session.Active&&(manual||_formatsDeviceId!=_state.Audio.SelectedDevice?.Id||_inputFormats==null))await LoadInputFormats();
     }
     private async Task CheckRawDecision()
     {
         var decision=_state.Audio.RawDecisionId;
-        if(_closing||_dialogOpen||_dialogs.IsBusy||_audioBusy||!_state.Audio.RawDecisionPending||!_rawPrompt.TryBegin(decision))return;
+        if(_closing||WorkModeChanging||_dialogOpen||_dialogs.IsBusy||_audioBusy||
+            !_state.Audio.RawDecisionPending||!_rawPrompt.TryBegin(decision))return;
         try
         {
             var result=await ShowDialog(new ContentDialog{XamlRoot=_root.XamlRoot,Title="此设备未接受 RAW 请求",
@@ -976,7 +981,7 @@ public sealed partial class MainWindow : Window
             ToolTipService.SetToolTip(_calibrationEnabledBox,_calibrationDescription);
             ToolTipService.SetToolTip(_calibrationHeading,_calibrationDescription);
         }
-        _calibrationBox.IsEnabled=choice.Enabled&&_state.Calibrations.Count>0&&!_state.Session.Active&&!_audioBusy;
+        _calibrationBox.IsEnabled=choice.Enabled&&_state.Calibrations.Count>0&&!_state.Session.Active&&!_audioBusy&&!WorkModeChanging;
     }
     private string CalibrationDescription()=>_calibrationDescription;
     private static string DescribeCalibration(CalibrationStatus status,CalibrationLibrary.Selection choice)
@@ -1015,7 +1020,7 @@ public sealed partial class MainWindow : Window
         var preferred=audio.PreferredInputFormat;
         string key=$"{shared}|{_formatsDeviceId}|{_formatsBusy}|{_inputFormats?.GetHashCode()}|{live}|{preferred}|{actual?.Exclusive}|{actual?.Raw}|{_liveEndpointVolume}|{_formatError}";
         bool available=audio.SelectedDevice!=null&&!_formatsBusy;
-        _inputFormatBox.IsEnabled=InputFormatPresentation.CanSelect(_state.RecordMode,available,_formatsBusy,_inputFormats!=null,_audioBusy,_state.Session.Active);
+        _inputFormatBox.IsEnabled=InputFormatPresentation.CanSelect(_state.RecordMode,available,_formatsBusy,_inputFormats!=null,_audioBusy||WorkModeChanging,_state.Session.Active);
         if(key==_inputFormatViewKey)return;_inputFormatViewKey=key;_updatingInputFormat=true;
         string endpointGain=InputFormatPresentation.EndpointGain(_liveEndpointVolume,actual?.Exclusive==true);
         _inputFormatHint.Text=shared?"共享格式沿用 Windows 设置。":"仅当录制时切换为独占。";
@@ -1113,17 +1118,22 @@ public sealed partial class MainWindow : Window
     private async Task ApplyWindowsGain()
     {
         var device=_state.Audio.SelectedDevice;
-        if(device==null||_state.RecordMode!=RecordingMode.Exclusive||_closing)return;
+        if(device==null||_state.RecordMode!=RecordingMode.Exclusive||_closing||_state.IsListening||WorkModeChanging)return;
+        int query=_formatQueryVersion;
         try
         {
             var volume=await _state.Audio.QueryEndpointVolumeAsync(device);
-            if(_closing)return;
+            if(_closing||_state.IsListening||WorkModeChanging||query!=_formatQueryVersion)return;
             if(_state.Audio.SelectedDevice?.Id!=device.Id||_state.RecordMode!=RecordingMode.Exclusive){await Message("无法对齐增益","设备或录制模式已改变，请重新选择。");return;}
             var error=InputFormatPresentation.AlignmentUnavailable(volume);
             if(error!=null){await Message("无法对齐增益",error);return;}
             _state.SetGain(volume.Decibels);_gain.Refresh();
         }
-        catch(Exception error){if(!_closing)await Message("无法对齐增益","读取 Windows 输入增益失败："+error.Message);}
+        catch(Exception error)
+        {
+            if(!_closing&&!_state.IsListening&&!WorkModeChanging&&query==_formatQueryVersion)
+                await Message("无法对齐增益","读取 Windows 输入增益失败："+error.Message);
+        }
     }
     private void RefreshValues()
     {
@@ -1165,7 +1175,7 @@ public sealed partial class MainWindow : Window
     {
         if(_closing)return;
         if(_state.IsListening){RefreshListening();return;}
-        _workModeBox.IsEnabled=!_audioBusy&&!_state.Session.Active;
+        _workModeBox.IsEnabled=!_audioBusy&&!_state.Session.Active&&!WorkModeChanging;
         var stage=_state.Session.Stage;
         var active=_state.Session.Active;
         var paused=stage==RecordingStage.Paused;
@@ -1175,10 +1185,10 @@ public sealed partial class MainWindow : Window
         animate &= _settings.AnimationsEnabled;
         _lastStage=stage;
         _clock.Text=_state.Session.DisplayTime;
-        foreach(var control in _configuration)control.IsEnabled=!active && !_audioBusy;
+        foreach(var control in _configuration)control.IsEnabled=!active && !_audioBusy && !WorkModeChanging;
         SyncCalibration();SyncInputFormat();UpdateQuality();
         var presentation=TransportPresentation.From(_state.Audio.Status.State,_audioBusy,_state.Audio.CalibrationReadyToRecord);
-        _stopButton.IsEnabled=presentation.CanStop;_pauseButton.IsEnabled=presentation.CanPause;_discardButton.IsEnabled=presentation.CanDiscard;
+        _stopButton.IsEnabled=presentation.CanStop&&!WorkModeChanging;_pauseButton.IsEnabled=presentation.CanPause;_discardButton.IsEnabled=presentation.CanDiscard;
         if(!refreshMotion)
         {
             // Calibration makes preparation observable for longer. Keep status and command

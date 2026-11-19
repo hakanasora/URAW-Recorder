@@ -89,10 +89,13 @@ public sealed class AudioEngine:IAsyncDisposable
             ThrowIfDisposed();
             if(_writer!=null)throw new InvalidOperationException("请先结束录制再切换工作模式。");
             RawDecisionPending=false;
-            await CloseCapture();
-            Interlocked.Increment(ref _epoch);
-            Volatile.Write(ref _previousPeak,double.NaN);
-            Set(AudioRunState.Stopped,"麦克风监看已暂停。");
+            try{await CloseCapture();}
+            finally
+            {
+                Interlocked.Increment(ref _epoch);
+                Volatile.Write(ref _previousPeak,double.NaN);
+                Set(AudioRunState.Stopped,"麦克风监看已暂停。");
+            }
         }
         finally{_commands.Release();}
     }
