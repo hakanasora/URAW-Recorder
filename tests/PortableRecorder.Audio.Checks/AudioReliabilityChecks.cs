@@ -104,6 +104,69 @@ internal static class AudioReliabilityChecks
         factory.Push(new float[1]);check(!factory.Current!.LastSubmitAccepted,"Capture release failure still completes the old processing queue");
         await releaseEngine.DisposeAsync();check(factory.Current.DisposeCalls==1,"Repeated engine disposal does not release capture twice");
 
+        var replacement=new AudioDevice("replacement","Replacement fake");
+        factory=new ReliabilityFactory();
+        await using(var engine=Engine(factory,"device-handoff-failure"))
+        {
+            await engine.SelectDeviceAsync(factory.Device);
+            factory.Push(new float[480]);
+            await Until(()=>engine.Latest.Valid,"Live snapshot before device handoff");
+            var old=factory.Current!;
+            old.FailDispose=true;
+            bool failed=false;
+            try{await engine.SelectDeviceAsync(replacement);}catch(IOException){failed=true;}
+            var status=engine.Status;
+            check(failed&&status.State==AudioRunState.Faulted&&status.Capture==null&&engine.SelectedDevice?.Id==factory.Device.Id,
+                $"Failed device switch must keep the prior selection without active capture; observed {status.State}, captured {status.Capture?.Device.Id}, selected {engine.SelectedDevice?.Id}");
+            check(!engine.Latest.Valid&&!engine.RawDecisionPending&&status.Message.Contains("injected-capture-disposal-error"),
+                "Failed device switch clears live readings and reports the cleanup error");
+            await engine.SelectDeviceAsync(replacement);
+            check(engine.Status.State==AudioRunState.Monitoring&&engine.Status.Capture?.Device.Id==replacement.Id&&engine.SelectedDevice?.Id==replacement.Id,
+                "Retrying the device switch starts monitoring on the replacement");
+        }
+
+        factory=new ReliabilityFactory();
+        await using(var engine=Engine(factory,"manual-refresh-handoff-failure"))
+        {
+            await engine.ReconcileDevicesAsync([factory.Device]);
+            factory.Current!.FailDispose=true;
+            bool failed=false;
+            try{await engine.ReconcileDevicesAsync([factory.Device],manualRefresh:true);}catch(IOException){failed=true;}
+            var status=engine.Status;
+            check(failed&&status.State==AudioRunState.Faulted&&status.Capture==null&&engine.SelectedDevice?.Id==factory.Device.Id,
+                $"Failed manual refresh must report unavailable capture for the selected device; observed {status.State}, captured {status.Capture?.Device.Id}");
+            await engine.ReconcileDevicesAsync([factory.Device],manualRefresh:true);
+            check(engine.Status.State==AudioRunState.Monitoring&&engine.Status.Capture?.Device.Id==factory.Device.Id,
+                "Retrying manual refresh restores monitoring on the same input");
+        }
+
+        foreach(bool releaseFails in new[]{true,false})
+        {
+            factory=new ReliabilityFactory();
+            string detail=releaseFails?"injected-capture-disposal-error":"injected-replacement-open-error";
+            await using var engine=Engine(factory,releaseFails?"recording-release-failure":"recording-replacement-open-failure");
+            await engine.ReconcileDevicesAsync([factory.Device]);
+            await engine.StartRecordingAsync(folder,RecordingMode.Shared);
+            string file=engine.Status.FilePath!;
+            factory.Push(new float[200]);
+            await Until(()=>engine.WrittenFrames==200,"Recording frames before device removal");
+            if(releaseFails)factory.Current!.FailDispose=true;
+            else factory.OpenFailure=new IOException(detail);
+            bool failed=false;
+            try{await engine.ReconcileDevicesAsync([replacement]);}catch(IOException){failed=true;}
+            var status=engine.Status;
+            check(failed==releaseFails&&status.State==AudioRunState.Faulted&&status.Capture==null&&engine.SelectedDevice?.Id==replacement.Id,
+                $"Failed reconciliation ({detail}) must select an available endpoint and clear active capture; observed {status.State}, captured {status.Capture?.Device.Id}, selected {engine.SelectedDevice?.Id}");
+            check(status.Partial&&status.FilePath==file&&status.Message.Contains("录制输入设备已移除")&&status.Message.Contains(detail),
+                "Failed reconciliation preserves the partial file path and both failure reasons");
+            using var wave=new WaveFileReader(file);
+            check(wave.Length==800,"Failed reconciliation still finalizes the interrupted recording");
+            factory.OpenFailure=null;
+            await engine.ReconcileDevicesAsync([replacement]);
+            check(engine.Status.State==AudioRunState.Monitoring&&engine.Status.Capture?.Device.Id==replacement.Id,
+                "Retrying reconciliation starts monitoring on the available replacement");
+        }
+
         factory=new ReliabilityFactory();
         await using(var engine=Engine(factory,"stale-fault"))
         {
@@ -163,10 +226,15 @@ internal static class AudioReliabilityChecks
     {
         public AudioDevice Device {get;}=new("reliability","Fake reliability input",true);
         public ReliabilityCapture? Current;
+        public Exception? OpenFailure;
         public IReadOnlyList<AudioDevice> Enumerate()=>[Device];
         public Task<InputFormatOptions> QueryFormatsAsync(AudioDevice device)=>Task.FromResult(new InputFormatOptions(new(48000,1,32,32,PcmEncoding.Float),[]));
         public Task<IAudioCaptureService> OpenAsync(AudioDevice device,bool exclusive,bool raw,long epoch,Func<CapturePacket,bool> packet,Action<Exception> fault,AudioFormat? preferredFormat=null)
-        {Current=new(new(device,new(48000,1,32,32,PcmEncoding.Float),exclusive,raw,epoch),packet,fault);return Task.FromResult<IAudioCaptureService>(Current);}
+        {
+            if(OpenFailure!=null)throw OpenFailure;
+            Current=new(new(device,new(48000,1,32,32,PcmEncoding.Float),exclusive,raw,epoch),packet,fault);
+            return Task.FromResult<IAudioCaptureService>(Current);
+        }
         public void Push(float[] data)=>Current!.Push(data);
     }
     private sealed class ReliabilityCapture(CaptureInfo info,Func<CapturePacket,bool> submit,Action<Exception> fault):IAudioCaptureService

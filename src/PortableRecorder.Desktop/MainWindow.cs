@@ -398,8 +398,11 @@ public sealed partial class MainWindow : Window
         {
             if(_updatingForm||_audioBusy||WorkModeChanging||!InRecordingInputContext||_deviceBox.SelectedItem is not InputDevice device)return;
             _formatQuery.Invalidate();
-            _state.SelectedInput=device;
-            await AudioCommand(()=>_state.Audio.SelectDeviceAsync(new(device.Id,device.FriendlyName)));
+            await AudioCommand(async()=>
+            {
+                try{await _state.Audio.SelectDeviceAsync(new(device.Id,device.FriendlyName));}
+                finally{if(InRecordingInputContext)SyncSelectedInput();}
+            });
             await LoadInputFormats();
         };
         var deviceGroup=new StackPanel{Spacing=0};
@@ -964,23 +967,42 @@ public sealed partial class MainWindow : Window
         bool applied=false;
         await AudioCommand(async()=>
         {
-            await _state.Audio.ReconcileDevicesAsync(devices,request.Manual);
-            if(!InRecordingInputContext||request.Invalidated)return;
-            _devicesLoaded=true;
-            var selected=_state.Audio.SelectedDevice;
-            _updatingForm=true;
+            _devicesLoaded=false;
             try
             {
-                if(!same){_state.Devices.Clear();foreach(var device in devices)_state.Devices.Add(new(device.Id,device.Name));}
-                _deviceBox.SelectedItem=_state.Devices.FirstOrDefault(d=>d.Id==selected?.Id);
+                await _state.Audio.ReconcileDevicesAsync(devices,request.Manual);
+                _devicesLoaded=true;
             }
-            finally{_updatingForm=false;}
-            _state.SelectedInput=selected==null?new("","未选择输入设备"):new(selected.Id,selected.Name);
-            applied=true;
+            finally
+            {
+                if(InRecordingInputContext&&!request.Invalidated)
+                {
+                    SyncSelectedInput(same?null:devices);
+                    applied=true;
+                }
+            }
         },request.ModeInitialization);
         return applied&&InRecordingInputContext&&!_state.Session.Active&&
             (request.Manual||_formatQuery.DeviceId!=_state.Audio.SelectedDevice?.Id||(!_formatQuery.Loading&&_formatQuery.Options==null));
     }
+
+    private void SyncSelectedInput(IReadOnlyList<AudioDevice>? devices=null)
+    {
+        var selected=_state.Audio.SelectedDevice;
+        _updatingForm=true;
+        try
+        {
+            if(devices!=null)
+            {
+                _state.Devices.Clear();
+                foreach(var device in devices)_state.Devices.Add(new(device.Id,device.Name));
+            }
+            _deviceBox.SelectedItem=_state.Devices.FirstOrDefault(d=>d.Id==selected?.Id);
+        }
+        finally{_updatingForm=false;}
+        _state.SelectedInput=selected==null?new("","未选择输入设备"):new(selected.Id,selected.Name);
+    }
+
     private async Task CheckRawDecision()
     {
         var decision=_state.Audio.RawDecisionId;

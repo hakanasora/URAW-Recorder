@@ -116,20 +116,31 @@ public sealed class AudioEngine:IAsyncDisposable
             var current=devices.FirstOrDefault(d=>d.Id==_device?.Id);
             // Recording never changes source mid-file. A removed source is finalized, then monitoring recovers.
             if(_writer!=null && current!=null)return;
-            bool lostRecording=_writer!=null;
-            string? endedPath=_writer?.Path;Exception? endingError=null;
-            if(lostRecording){try{await StopWriter(false,new IOException("录制输入设备已移除。"));}catch(Exception error){endingError=error;}}
+            AudioStatus? interruptedRecording=null;
+            if(_writer!=null)
+            {
+                try{await StopWriter(false,new IOException("录制输入设备已移除。"));}
+                catch{interruptedRecording=Status;}
+            }
             var chosen=(!manualRefresh?added.FirstOrDefault():null)??current??devices.FirstOrDefault(d=>d.IsDefault)??devices.FirstOrDefault();
-            bool changed=chosen?.Id!=_device?.Id;
-            if(!changed && _capture!=null && !manualRefresh && !lostRecording)return;
-            await CloseCapture();
-            if(changed){_normalConsent=false;Volatile.Write(ref _previousPeak,double.NaN);}_device=chosen;RawDecisionPending=false;
-            if(chosen==null)Set(AudioRunState.Stopped,"没有可用输入设备；插入设备后将自动恢复监看。",endedPath,endingError!=null);
+            if(chosen?.Id==_device?.Id && _capture!=null && !manualRefresh && interruptedRecording==null)return;
+            await CloseForDeviceHandoff(chosen);
+            SetSelectedDevice(chosen);
+            if(chosen==null)
+            {
+                string message="没有可用输入设备；插入设备后将自动恢复监看。";
+                if(interruptedRecording!=null)message=interruptedRecording.Message+"；"+message;
+                Set(AudioRunState.Stopped,message,interruptedRecording?.FilePath,interruptedRecording?.Partial??false);
+            }
             else
             {
-                await OpenMonitor();
-                if(lostRecording && _capture!=null)
-                    Set(AudioRunState.Monitoring,endingError==null?"输入设备已断开，本次录音已结束；已切换共享监看。":"输入设备断开，录音收尾异常；已恢复共享监看。",endedPath,endingError!=null);
+                await OpenMonitor(interruptedRecording?.FilePath);
+                if(interruptedRecording!=null)
+                {
+                    var status=Status;
+                    string message=status.State==AudioRunState.Monitoring?"已恢复共享监看。":"恢复监看失败："+status.Message;
+                    Set(status.State,interruptedRecording.Message+"；"+message,interruptedRecording.FilePath,interruptedRecording.Partial);
+                }
             }
         }
         finally{_commands.Release();}
@@ -140,10 +151,35 @@ public sealed class AudioEngine:IAsyncDisposable
         try
         {
             ThrowIfDisposed();if(_writer!=null)throw new InvalidOperationException("录制期间不能更换输入设备。");
-            bool changed=_device?.Id!=device.Id;_device=device;if(changed)_normalConsent=false;
-            RawDecisionPending=false;await CloseCapture();if(changed)Volatile.Write(ref _previousPeak,double.NaN);await OpenMonitor();
+            await CloseForDeviceHandoff(_device);
+            SetSelectedDevice(device);
+            await OpenMonitor();
         }
         finally{_commands.Release();}
+    }
+    private async Task CloseForDeviceHandoff(AudioDevice? selectedOnFailure)
+    {
+        var previous=Status;
+        RawDecisionPending=false;
+        try{await CloseCapture();}
+        catch(Exception error)
+        {
+            SetSelectedDevice(selectedOnFailure);
+            string message="关闭原输入采集失败："+Friendly(error);
+            if(previous.FilePath!=null)message=previous.Message+"；"+message;
+            Set(AudioRunState.Faulted,message,previous.FilePath,previous.Partial);
+            throw;
+        }
+    }
+    private void SetSelectedDevice(AudioDevice? device)
+    {
+        if(_device?.Id!=device?.Id)
+        {
+            _normalConsent=false;
+            _calibrationError=null;
+            Volatile.Write(ref _previousPeak,double.NaN);
+        }
+        _device=device;
     }
     public async Task<bool> DecideRawFallbackAsync(long decisionId,bool allow)
     {
