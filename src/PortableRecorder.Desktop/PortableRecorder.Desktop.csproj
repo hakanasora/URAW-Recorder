@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
-    <Version>1.0.5</Version>
+    <Version>1.0.7</Version>
     <AssemblyTitle>URAW Recorder</AssemblyTitle>
     <Product>URAW Recorder</Product>
     <Description>URAW Recorder</Description>

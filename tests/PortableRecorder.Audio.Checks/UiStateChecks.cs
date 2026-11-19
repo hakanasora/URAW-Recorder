@@ -12,6 +12,11 @@ static class UiStateChecks
         check(NoticePresentation.Details(@"C:\录音；备份\test.wav")==@"C:\录音；备份\test.wav","Paths are preserved verbatim");
         check(NoticePresentation.Title("校准尚未生效，请选择有效文件或禁用校准。")=="校准尚未生效，请选择有效文件或禁用校准","Dialog title describes its notice");
         check(NoticePresentation.Title("录音继续中：压缩文件出现削波。降低增益或使用浮点 WAV 可避免超限损失。")=="录音出现削波","Clipping gets concise specific title");
+        const string denied="无法访问输入或文件，请检查 Windows 麦克风隐私权限及路径权限。";
+        check(NoticePresentation.RepeatsBody(NoticePresentation.Title(denied),denied),"Permission error body already carries the title, even without its final punctuation");
+        check(NoticePresentation.RepeatsBody("等待音频播放","等待音频播放"),"Listening status does not duplicate the body as its heading");
+        check(NoticePresentation.RepeatsBody("缺帧未确认","缺帧未确认\n文件可能不完整。"),"A heading repeated as a standalone detail line is redundant");
+        check(!NoticePresentation.RepeatsBody("录音出现削波","录音继续中：压缩文件出现削波。请降低增益。"),"A distinct summary remains available");
         {
             var factory=new FakeFactory();await using var engine=TestSupport.CreateEngine(root,factory);
             var model=new ShellViewModel(engine);await using var listener=model.Listener;

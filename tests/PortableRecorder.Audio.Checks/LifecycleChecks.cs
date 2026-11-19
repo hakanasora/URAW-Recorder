@@ -32,10 +32,13 @@ static class LifecycleChecks
             await engine.SelectDeviceAsync(factory.Device);Assert(!factory.Current!.Info.Exclusive && factory.Current.Info.Raw,"Startup shared RAW");
             factory.Push(Sine(48000,480,1000,.1));await Until(()=>engine.Latest.Valid,"initial frame");
             engine.SetGain(30);await engine.StartRecordingAsync(root,RecordingMode.Shared);
+            Assert(engine.Latest.HeldPeakDbfs==null,"Shared recording starts with empty PEAK");
             string path=engine.Status.FilePath!;factory.Push(new float[480].Select(_=>.1f).ToArray());await Until(()=>engine.WrittenFrames==480,"first write");
             await engine.PauseAsync(true);factory.Push(new float[480]);await Task.Delay(40);Assert(engine.WrittenFrames==480,"Pause excludes samples");
+            Assert(engine.Latest.HeldPeakDbfs is >9.99,"Pause preserves recording PEAK");
             await engine.PauseAsync(false);factory.Push(new float[240]);await Until(()=>engine.WrittenFrames==720,"resume write");
-            await engine.StopRecordingAsync();Assert(engine.WrittenFrames==720,"stop exact tail");Near(engine.RecordedTime.TotalSeconds,.015,1e-9,"sample clock");
+            await engine.StopRecordingAsync();Assert(engine.WrittenFrames==720,"stop exact tail");
+            Assert(engine.Latest.HeldPeakDbfs==null,"Shared stop clears held PEAK without closing the monitor");Near(engine.RecordedTime.TotalSeconds,.015,1e-9,"sample clock");
             using var reader=new WaveFileReader(path);var first=new float[1];reader.ToSampleProvider().Read(first);Near(first[0],.1*Math.Pow(10,30d/20),1e-6,"Recorded +30 dB gain preserves float overrange");Assert(reader.Length==720*4,"Pause file length");
             await engine.StartRecordingAsync(root,RecordingMode.Exclusive);Assert(factory.Current!.Info.Exclusive,"Exclusive only on record");
             factory.Push(new float[480]);await Until(()=>engine.WrittenFrames==480,"exclusive write");await engine.StopRecordingAsync();Assert(!factory.Current!.Info.Exclusive,"Restore shared");
@@ -85,12 +88,17 @@ static class LifecycleChecks
             await engine.StartRecordingAsync(root,RecordingMode.Exclusive);
             factory.Push(new float[480]);await Until(()=>engine.WrittenFrames==480,"new epoch record");
             old.TriggerFault();await Task.Delay(40);Assert(engine.Status.State==AudioRunState.Recording,"Stale capture error cannot end new session");
-            Near(engine.Latest.HeldPeakDbfs!.Value,20*Math.Log10(.8),.01,"Historical peak survives capture switch");
-            await engine.ResetPeakAsync();factory.Push(new float[480]);await Until(()=>engine.Latest.FramePosition>=960,"reset sample boundary");
-            Assert(double.IsNegativeInfinity(engine.Latest.HeldPeakDbfs!.Value),"Reset clears history across capture epochs");
+            Assert(engine.Latest.HeldPeakDbfs==double.NegativeInfinity,"Exclusive start clears the previous shared capture PEAK");
+            factory.Push(new float[480].Select(_=>.4f).ToArray());
+            await Until(()=>engine.Latest.HeldPeakDbfs is >(-8),"exclusive PEAK accumulates");
+            await engine.ResetPeakAsync();
+            Assert(engine.Latest.HeldPeakDbfs==null,"Manual reset clears active recording PEAK");
+            factory.Push(new float[480].Select(_=>.3f).ToArray());
+            await Until(()=>engine.Latest.HeldPeakDbfs is >(-11),"exclusive PEAK before stop");
             await engine.StopRecordingAsync();
             factory.Push(new float[480]);await Until(()=>engine.Latest.Valid,"shared after stop");
             Assert(double.IsNegativeInfinity(engine.Latest.RmsDbfs),"Stopped shared stream has real silence");
+            Assert(engine.Latest.HeldPeakDbfs==double.NegativeInfinity,"Exclusive stop clears PEAK when it restores shared capture");
         }
         {
             var factory=new FakeFactory();var disk=new FailingWriter();await using var engine=CreateEngine(root,factory,writerFactory:(_,_,_)=>disk);

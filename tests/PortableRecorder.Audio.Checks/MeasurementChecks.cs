@@ -15,6 +15,14 @@ static class MeasurementChecks
     {
         void Near(double actual,double expected,double tolerance,string name)=>Assert(Math.Abs(actual-expected)<=tolerance,$"{name}: {actual} expected {expected} ± {tolerance}");
         var mono=new AudioFormat(48000,1,32,32,PcmEncoding.Float);
+        {
+            using var analyzer=new AudioAnalyzer(mono,1,false);
+            analyzer.Process([1f],1,1,skipHeldPeakFrames:1);
+            Assert(analyzer.Latest.HeldPeakDbfs==null,"Delayed pre-recording output does not recreate held PEAK");
+            analyzer.Process([1f,.25f],1,3,skipHeldPeakFrames:1);
+            Near(analyzer.Latest.OutputPeakDbfs,0,.001,"Live peak still includes the complete processed block");
+            Near(analyzer.Latest.HeldPeakDbfs!.Value,20*Math.Log10(.25),.001,"Held PEAK starts at the recording boundary within the block");
+        }
         foreach(int bits in new[]{16,24,32})
         {
             var format=new AudioFormat(48000,1,bits,bits,PcmEncoding.SignedInteger);var bytes=new byte[3*bits/8];

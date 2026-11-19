@@ -11,7 +11,7 @@ WASAPI 原始包 / 原生格式 / 设备样本位置 → PCM 解码 → 原始�
 ## 模式与异常
 
 - 启动读取当前默认输入；不因仅有默认设备标记变化而更换有效输入。原生 Core Audio 设备通知经 300 ms 合并后刷新列表，待机中新接入的有效输入优先；录制中保持原输入，移除后先完成本次文件，再在剩余设备中恢复共享监看，绝不接着往同一文件录另一支麦克风。
-- 启动、待机及停止后为共享，使用设备 MixFormat；菜单模式只决定正式录制，首次默认独占；此后从独立偏好文件读取用户上次选择，与设备无关。暂停保持当前模式和监看。
+- 启动、待机及停止后为共享，使用设备 MixFormat；菜单模式只决定正式录制，首次默认共享；此后从独立偏好文件读取用户上次选择，与设备无关。暂停保持当前模式和监看。
 - 独占模式优先现有格式，其后当前采样率、48k / 44.1k / 96k / 88.2k / 192k / 176.4k；同声道按原格式、24 PCM（含 24-in-32）、float32、PCM32、PCM16 探测，兼顾 WAVEFORMATEXTENSIBLE。只接受驱动 IsFormatSupported 支持的格式。
 - 独占请求约 30 ms 事件缓冲；共享请求约 100 ms 缓冲余量，事件到达节奏仍由音频引擎决定，避免繁忙电脑上仅 30 ms 余量过小。独占 duration / periodicity 相同，遇 BUFFER_SIZE_NOT_ALIGNED 读取对齐帧数、重建客户端只重试一次；独占不调用共享专用 GetNextPacketSize。[初始化](https://learn.microsoft.com/en-us/windows/win32/api/audioclient/nf-audioclient-iaudioclient-initialize)、[读取约束](https://learn.microsoft.com/en-us/windows/win32/api/audioclient/nf-audioclient-iaudiocaptureclient-getnextpacketsize)。
 - 只有 RAW_MODE_UNSUPPORTED、缺少 IAudioClient2 / 明确不支持该接口才触发降级选择。设备忙、权限、移除、服务停止不归类为 RAW 不支持。ContentDialog 的允许只对当前设备本次运行的普通共享监看有效；关闭等于停止，换设备清除许可，正式录制依然必须 RAW。独占失败恢复共享并显示错误，不静默改用共享录制。
@@ -20,7 +20,7 @@ WASAPI 原始包 / 原生格式 / 设备样本位置 → PCM 解码 → 原始�
 
 ## 测量定义
 
-**RMS**：300 ms 逐帧滚动，声道样本平方和 / 实际声道数，20log10(sqrt(mean power))，没有 +3 dB。PEAK 为增益后逐样本最大绝对值并历史保持；另留入口峰值及满刻度标志以区分原始削波（整数正满刻度为 1−2^(1−有效位数)，浮点为 ±1）。更换捕获会话保留历史输出 PEAK；重置在队列命令的样本边界执行。无有效输入为破折号；有效全零为负无穷。
+**RMS**：300 ms 逐帧滚动，声道样本平方和 / 实际声道数，20log10(sqrt(mean power))，没有 +3 dB。PEAK 为增益后逐样本最大绝对值并历史保持；另留入口峰值及满刻度标志以区分原始削波（整数正满刻度为 1−2^(1−有效位数)，浮点为 ±1）。开始和停止录制时清除历史 PEAK，暂停时继续保持。侦听的 PEAK 随侦听会话重新开始，停止即清除。录制手动重置在队列命令的样本边界执行。无有效输入为破折号；有效全零为负无穷。
 
 **VU**：平均整流进双精度二阶低通，阻尼比约 0.81526、自然频率约 2.16406 Hz，模拟表头而非峰值映射。低频 biquad 如果直接使用单精度系数会产生约 0.26 dB DC 误差，因此表头系数 / 状态使用双精度；FFT 与 Hann 继续复用 NAudio。以 −18 dBFS 峰值正弦的平均整流值 `2/π × 10^(−18/20)` 为 0 VU，原刻度逐段映射指针。按 [VUMT 公开行为](https://klanghelm.com/docs/VUMT_manual.pdf) 核对 300 ms / 99% 和 1%–1.5% 过冲，不宣称认证。
 

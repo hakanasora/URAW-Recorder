@@ -52,6 +52,7 @@ public sealed class ShellViewModel:INotifyPropertyChanged
     public RecordingMode RecordMode {get;set;}
     internal EncodingPreferences EncodingSettings {get;}
     internal string? ModePreferenceWarning {get;}
+    internal bool ExclusiveNoticeShown {get;}
     internal string? EncodingPreferenceWarning {get;}
     public double GainDb {get;private set;}
     public double? HeldPeak {get;private set;}
@@ -66,7 +67,8 @@ public sealed class ShellViewModel:INotifyPropertyChanged
     public ShellViewModel(AudioEngine? audio=null)
     {
         Audio=audio??new AudioEngine();
-        RecordMode=RecordingPreferences.Load(out var modeWarning);ModePreferenceWarning=modeWarning;
+        RecordMode=RecordingPreferences.Load(out var modeWarning,out var exclusiveNoticeShown);
+        ModePreferenceWarning=modeWarning;ExclusiveNoticeShown=exclusiveNoticeShown;
         EncodingSettings=EncodingPreferences.Load(out var encodingWarning);EncodingPreferenceWarning=encodingWarning;
         Encoding=EncodingSettings.Encoding;RefreshCalibrations();
     }

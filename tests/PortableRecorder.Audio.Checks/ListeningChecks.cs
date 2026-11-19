@@ -36,7 +36,9 @@ static class ListeningChecks
         long oldEpoch=service.Latest.Epoch;
         await service.StopAsync();
         Assert(first.Disposed&&!service.Latest.Valid&&service.Status.State==ListeningState.Stopped,"Stop releases native capture and invalidates meters");
+        Assert(service.Latest.HeldPeakDbfs==null,"Stopping listening clears PEAK");
         await service.StartAsync(source);
+        Assert(service.Latest.HeldPeakDbfs==null,"Starting listening has no prior PEAK before new audio");
         Assert(!first.Push(Sine(480,.9f)),"Retired capture callbacks cannot enter a new session");
         factory.Current!.Push(Sine(480,.001f));
         await Until(()=>service.Latest.Valid,"new session");

@@ -206,10 +206,10 @@ public sealed class AudioEngine:IAsyncDisposable
             throw;
         }
     }
-    private async Task CloseCapture()
+    private async Task CloseCapture(bool preservePeak=true)
     {
-        var peak=Latest.HeldPeakDbfs;
-        if(peak is double held)Volatile.Write(ref _previousPeak,held);
+        if(!preservePeak)Volatile.Write(ref _previousPeak,double.NaN);
+        else if(Latest.HeldPeakDbfs is double held)Volatile.Write(ref _previousPeak,held);
         Interlocked.Increment(ref _epoch);
         // Detach ownership first: a failing native release cannot leave a valid old snapshot
         // or prevent the analysis worker from being stopped.
@@ -228,7 +228,16 @@ public sealed class AudioEngine:IAsyncDisposable
             System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(failure).Throw();
         }
     }
-    public static string DefaultRecordingFolder=>System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyMusic),"Portable Recorder");
+    public static string DefaultRecordingFolder
+    {
+        get
+        {
+            var desktop=Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory,Environment.SpecialFolderOption.DoNotVerify);
+            if(string.IsNullOrEmpty(desktop))
+                desktop=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),"Desktop");
+            return Path.Combine(desktop,"URAW Recorder Recordings");
+        }
+    }
     public async Task StartRecordingAsync(string directory,RecordingMode mode,RecordingEncoding? encoding=null)
     {
         await _commands.WaitAsync();
@@ -268,6 +277,7 @@ public sealed class AudioEngine:IAsyncDisposable
                 Processing="raw → frequency correction → software gain → monitoring / selected encoder",LinearPhase=true,
                 FftRule="nextpow2(Fs*0.34); taps=7*N/8+1; designFFT=4*N; Hamming",AbsoluteSpl=false};
             await _pipeline!.AttachAsync(_writer);
+            Volatile.Write(ref _previousPeak,double.NaN);
             Set(AudioRunState.Preparing,"等待首批录音样本",_writer.Path);
         }
         catch(Exception preparationError) when(preparationStarted)
@@ -353,12 +363,12 @@ public sealed class AudioEngine:IAsyncDisposable
         var writer=_writer;
         Set(AudioRunState.Finalizing,"正在完成录音文件",writer.Path);
         Exception? failure=interruption;
-        try{if(_pipeline!=null)await _pipeline.DetachAsync(mathematicalDrain:!restoreMonitor);}
+        try{if(_pipeline!=null)await _pipeline.DetachAsync(mathematicalDrain:!restoreMonitor,resetPeak:restoreMonitor);}
         catch(Exception error)
         {
             failure=AudioFailure.Combine(failure,error);
             // A timed-out normal drain must detach before completing the writer.
-            try{if(_pipeline!=null)await _pipeline.DetachAsync(mathematicalDrain:true);}
+            try{if(_pipeline!=null)await _pipeline.DetachAsync(mathematicalDrain:true,resetPeak:restoreMonitor);}
             catch(Exception cleanupError){failure=AudioFailure.Combine(failure,cleanupError);}
         }
         try{await writer.CompleteAsync();}
@@ -372,7 +382,7 @@ public sealed class AudioEngine:IAsyncDisposable
         bool exclusive=_capture?.Info.Exclusive==true;
         if(exclusive&&restoreMonitor&&_pipeline?.Failure is not CaptureGapException)
         {
-            try{await CloseCapture();}catch(Exception error){monitorFailure=error;}
+            try{await CloseCapture(preservePeak:false);}catch(Exception error){monitorFailure=error;}
             await OpenMonitor();
             if(Status.State==AudioRunState.Faulted)
                 monitorFailure=AudioFailure.Combine(monitorFailure,new IOException(Status.Message));

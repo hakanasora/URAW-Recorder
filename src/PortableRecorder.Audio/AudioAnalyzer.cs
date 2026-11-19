@@ -105,19 +105,22 @@ public sealed class AudioAnalyzer:IDisposable
         _analysisTask=background?Task.Run(Loop):Task.CompletedTask;
     }
     private static int PowerOfTwo(double n){int size=256;while(size<n)size<<=1;return size;}
-    public void Process(ReadOnlySpan<float> samples,double sourcePeak,long endFrame)
+    public void Process(ReadOnlySpan<float> samples,double sourcePeak,long endFrame,int skipHeldPeakFrames=0)
     {
         lock(_gate)
         {
             if(Failure!=null)throw new IOException("音频分析已停止。",Failure);
-            double peak=0;int channels=_format.Channels;
+            double peak=0,heldPeak=0;int channels=_format.Channels;
+            int heldStart=skipHeldPeakFrames*channels;
             for(int i=0;i<samples.Length;i+=channels)
             {
                 double power=0;
                 for(int c=0;c<channels;c++)
                 {
                     float x=samples[i+c];if(!float.IsFinite(x))throw new InvalidDataException("Non-finite processed sample.");
-                    peak=Math.Max(peak,Math.Abs(x));power+=(double)x*x/channels;_ring[c][_write]=x;
+                    double amplitude=Math.Abs(x);peak=Math.Max(peak,amplitude);
+                    if(i>=heldStart)heldPeak=Math.Max(heldPeak,amplitude);
+                    power+=(double)x*x/channels;_ring[c][_write]=x;
                     if(c<_vu.Length)_vu[c].Push(x);
                 }
                 if(_rmsCount==_rmsPower.Length)_rmsSum-=_rmsPower[_rmsIndex];else _rmsCount++;
@@ -131,7 +134,8 @@ public sealed class AudioAnalyzer:IDisposable
                 Epoch=_epoch,FramePosition=endFrame,SampleRate=_format.SampleRate,Channels=channels,Valid=true,
                 RmsDbfs=Db(Math.Sqrt(Math.Max(0,_rmsSum/_rmsCount))),SourcePeakDbfs=Db(sourcePeak),OutputPeakDbfs=output,
                 InputFullScale=sourcePeak>=(_format.Encoding==PcmEncoding.Float?1:1-Math.Pow(2,1-_format.ValidBits)),OutputOverload=peak>=1,
-                HeldPeakDbfs=old.HeldPeakDbfs is double held?Math.Max(held,output):output,
+                HeldPeakDbfs=heldStart>=samples.Length?old.HeldPeakDbfs:
+                    old.HeldPeakDbfs is double held?Math.Max(held,Db(heldPeak)):Db(heldPeak),
                 VuLeft=_vu[0].Vu,VuRight=_vu.Length==1?_vu[0].Vu:_vu[1].Vu
             });
         }

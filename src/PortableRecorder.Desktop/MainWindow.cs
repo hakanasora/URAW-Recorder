@@ -30,6 +30,7 @@ public sealed partial class MainWindow : Window
     private readonly ShellViewModel _state=new();
     private readonly MonitorRenderer _renderer=new();
     private readonly UISettings _settings=new();
+    private readonly AccessibilitySettings _accessibility=new();
     private readonly DispatcherTimer _timer=new(){Interval=TimeSpan.FromMilliseconds(16.67)};
     private readonly Grid _root=new(),_body=new(),_main=new(),_header=new(),_monitor=new(),_transport=new();
     private readonly Grid _inspector=new(){Background=Design.Brush(Design.Inspector),Width=264};
@@ -42,6 +43,8 @@ public sealed partial class MainWindow : Window
     private readonly StartupPresentation _startupPresentation;
     private readonly Grid _primaryContent=new();
     private readonly NativeFade _monitorFade,_clockFade,_statusFade,_primaryFade,_pauseFade;
+    private readonly Border _dialogShade=new(){Background=Design.Brush(MaterialSurface.Tint(Colors.Black,0x4D)),Opacity=0,IsHitTestVisible=false};
+    private readonly NativeFade _dialogShadeFade;
     private RecordingStage? _lastStage;
     private int _transportGeneration;
     private readonly StackPanel _level=new(),_pitch=new(),_inputPage=new(){Spacing=24},_filePage=new(){Spacing=24};
@@ -92,7 +95,7 @@ public sealed partial class MainWindow : Window
     private Storyboard? _widthAnimation;
     private bool _firstFrameLogged,_updatingForm,_started,_updatingCalibration,_alternateTypography;
     private TextBlock? _managerError;
-    private bool _audioBusy,_closing,_closeAllowed,_dialogOpen;
+    private bool _audioBusy,_closing,_closeAllowed,_dialogOpen,_exclusiveNoticeShown,_exclusiveNoticePending;
     private AudioRunState? _lastAudioState;
     private readonly DialogQueue _dialogs=new();
     private readonly RawDecisionPrompt _rawPrompt=new();
@@ -121,6 +124,7 @@ public sealed partial class MainWindow : Window
         _encodingPreferences=_state.EncodingSettings;
         ApplyTypography(false);
         _modePreferenceWarning=_state.ModePreferenceWarning;_encodingPreferenceWarning=_state.EncodingPreferenceWarning;
+        _exclusiveNoticeShown=_state.ExclusiveNoticeShown;
         Title="URAW Recorder";ExtendsContentIntoTitleBar=true;
         AppWindow.SetIcon(System.IO.Path.Combine(AppContext.BaseDirectory,"Assets","URAWRecorder.ico"));
         _state.Audio.Diagnostic+=StartupLog.Write;
@@ -131,22 +135,18 @@ public sealed partial class MainWindow : Window
         _clockFade=new NativeFade(_clockSlot,()=>_settings.AnimationsEnabled);
         _statusFade=new NativeFade(_sessionLabel,()=>_settings.AnimationsEnabled);
         _primaryFade=new NativeFade(_primaryContent,()=>_settings.AnimationsEnabled);
+        _dialogShadeFade=new NativeFade(_dialogShade,()=>_settings.AnimationsEnabled);
         _root.RequestedTheme=ElementTheme.Dark;
         var micaSupported=MicaController.IsSupported();
         if(micaSupported)SystemBackdrop=new MicaBackdrop{Kind=MicaKind.Base};
         _root.Background=Design.Brush(micaSupported?Colors.Transparent:Design.Display);
         // Neutral veils preserve the gray/near-black hierarchy while allowing visible Mica tint.
         var displaySurface=MaterialSurface.Tint(Design.Display,micaSupported?MaterialSurface.DisplayVeilAlpha:255);
-        var transportSurface=MaterialSurface.Tint(Design.Transport,micaSupported?MaterialSurface.TransportVeilAlpha:255);
-        StartupLog.Write($"Material: Mica={micaSupported}; neutral veils display={MaterialSurface.DisplayVeilAlpha}/255, transport={MaterialSurface.TransportVeilAlpha}/255");
+        StartupLog.Write($"Material: Mica={micaSupported}; neutral veil display={MaterialSurface.DisplayVeilAlpha}/255");
         _root.RowDefinitions.Add(new(){Height=new GridLength(32)});_root.RowDefinitions.Add(new(){Height=new GridLength(1,GridUnitType.Star)});
-        var title=new Grid{Background=Design.Brush(transportSurface),Height=32};
-        title.Children.Add(new TextBlock{Text=Title,FontSize=12,Foreground=Design.Brush(Design.Muted),Margin=new Thickness(16,0,140,0),VerticalAlignment=VerticalAlignment.Center});
-        _root.Children.Add(title);SetTitleBar(title);
-        AppWindow.TitleBar.BackgroundColor=Colors.Transparent;AppWindow.TitleBar.ButtonBackgroundColor=Colors.Transparent;
-        AppWindow.TitleBar.ButtonForegroundColor=Design.Muted;AppWindow.TitleBar.ButtonInactiveBackgroundColor=Colors.Transparent;
-        AppWindow.TitleBar.ButtonHoverBackgroundColor=Design.Selected;
+        BuildTitleBar();
         _root.Children.Add(_body);Grid.SetRow(_body,1);
+        _root.Children.Add(_dialogShade);Grid.SetRowSpan(_dialogShade,2);
         _main.Width=FixedWindowFrame.MainWidth;_main.Height=384;
         _main.HorizontalAlignment=HorizontalAlignment.Right;
         _main.Clip=new RectangleGeometry{Rect=new Rect(0,0,820,384)};
@@ -155,11 +155,10 @@ public sealed partial class MainWindow : Window
         _main.RowDefinitions.Add(new(){Height=new GridLength(84)});
         var displayPanel=MaterialSurface.DisplayPanel(displaySurface);
         _main.Children.Add(displayPanel);Grid.SetRow(displayPanel,1);
-        _header.Background=Design.Brush(transportSurface);
         _main.Children.Add(_header);_main.Children.Add(_monitor);Grid.SetRow(_monitor,1);
         _main.Children.Add(_transport);Grid.SetRow(_transport,2);
         _body.Children.Add(_main);
-        _settingsButton=Design.Button(MenuGlyph(),"输入与文件设置",Colors.Transparent);_settingsButton.Width=40;_settingsButton.Height=44;_settingsButton.Padding=new Thickness(0);
+        _settingsButton=Design.Button(MenuGlyph(),"输入与文件设置",Colors.Transparent,Design.Selected);_settingsButton.Width=40;_settingsButton.Height=44;_settingsButton.Padding=new Thickness(0);
         _settingsButton.HorizontalAlignment=HorizontalAlignment.Left;_settingsButton.VerticalAlignment=VerticalAlignment.Center;_settingsButton.Margin=new Thickness(28,0,0,0);_settingsButton.TabIndex=0;
         _settingsButton.Click+=(_,_)=>TogglePane();_header.Children.Add(_settingsButton);
         BuildWorkModeSelector();
@@ -258,15 +257,47 @@ public sealed partial class MainWindow : Window
         AppWindow.Closing+=async(_,args)=>
         {
             if(_closeAllowed)return;
-            SaveOutputFolder();
-            args.Cancel=true;if(_closing)return;_closing=true;StopVolumeWatcher();_deviceQueryVersion++;_formatQueryVersion++;_activeDialog?.Hide();_drawer.Dispose();_deviceRefreshTimer.Stop();_deviceWatcher?.Dispose();_deviceWatcher=null;
-            _stopButton.IsEnabled=false;_pauseButton.IsEnabled=false;
-            try{try{await _state.Listener.DisposeAsync();}finally{await _state.Audio.DisposeAsync();}}
-            catch(Exception error){StartupLog.Write("Audio close: "+error);await Message("录音收尾异常",AudioEngine.Friendly(error),duringClose:true);}
-            finally{_closeAllowed=true;Close();}
+            args.Cancel=true;
+            await CloseWithAudioCleanup();
         };
-        Closed+=(_,_)=>{_dialogs.Close();_drawer.Dispose();_settings.ColorValuesChanged-=OnSystemColorsChanged;_settings.AnimationsEnabledChanged-=OnAnimationsChanged;_settings.TextScaleFactorChanged-=OnTextScaleChanged;if(_root.XamlRoot!=null)_root.XamlRoot.Changed-=OnXamlRootChanged;CompositionTarget.Rendering-=OnRendering;_inputName.ReleaseResources();_serviceNotice.ReleaseResources();_timer.Stop();_widthAnimation?.Stop();_monitorFade.Stop();_clockFade.Stop();_statusFade.Stop();_primaryFade.Stop();_pauseFade.Stop();ReleaseRenderSurface();_renderer.Dispose();};Content=_root;
+        Closed+=(_,_)=>{_dialogs.Close();_drawer.Dispose();_settings.ColorValuesChanged-=OnSystemColorsChanged;_settings.AnimationsEnabledChanged-=OnAnimationsChanged;_settings.TextScaleFactorChanged-=OnTextScaleChanged;if(_root.XamlRoot!=null)_root.XamlRoot.Changed-=OnXamlRootChanged;CompositionTarget.Rendering-=OnRendering;_inputName.ReleaseResources();_serviceNotice.ReleaseResources();_timer.Stop();_widthAnimation?.Stop();_monitorFade.Stop();_clockFade.Stop();_statusFade.Stop();_primaryFade.Stop();_pauseFade.Stop();_dialogShadeFade.Stop();ReleaseRenderSurface();_renderer.Dispose();};Content=_root;
     }
+    private void BuildTitleBar()
+    {
+        var title=new Grid();
+        title.ColumnDefinitions.Add(new(){Width=new GridLength(1,GridUnitType.Star)});
+        title.ColumnDefinitions.Add(new(){Width=GridLength.Auto});
+        var dragRegion=new Grid{Background=Design.Brush(Colors.Transparent)};
+        dragRegion.Children.Add(new TextBlock{Text=Title,FontSize=12,Foreground=Design.Brush(Design.Muted),Margin=new Thickness(16,0,0,0),VerticalAlignment=VerticalAlignment.Center});
+        title.Children.Add(dragRegion);
+        var buttons=new StackPanel{Orientation=Orientation.Horizontal};
+        var minimize=CaptionButton("\uE921","最小化",Design.Selected);
+        minimize.Click+=(_,_)=>{if(AppWindow.Presenter is OverlappedPresenter presenter)presenter.Minimize();};
+        var close=CaptionButton("\uE8BB","关闭",Design.Record);
+        close.Click+=async(_,_)=>await CloseWithAudioCleanup();
+        buttons.Children.Add(minimize);buttons.Children.Add(close);
+        Grid.SetColumn(buttons,1);title.Children.Add(buttons);
+        _root.Children.Add(title);SetTitleBar(dragRegion);
+        AppWindow.TitleBar.PreferredHeightOption=TitleBarHeightOption.Collapsed;
+    }
+
+    private static Button CaptionButton(string glyph,string name,Windows.UI.Color hover)
+    {
+        var button=Design.Button(Design.Icon(glyph,10,Design.White),name,Colors.Transparent,hover);
+        button.Width=46;button.Height=32;button.Padding=new Thickness(0);button.CornerRadius=new CornerRadius(0);
+        return button;
+    }
+
+    private async Task CloseWithAudioCleanup()
+    {
+        if(_closing)return;
+        _closing=true;SaveOutputFolder();StopVolumeWatcher();_deviceQueryVersion++;_formatQueryVersion++;_activeDialog?.Hide();_drawer.Dispose();_deviceRefreshTimer.Stop();_deviceWatcher?.Dispose();_deviceWatcher=null;
+        _stopButton.IsEnabled=false;_pauseButton.IsEnabled=false;
+        try{try{await _state.Listener.DisposeAsync();}finally{await _state.Audio.DisposeAsync();}}
+        catch(Exception error){StartupLog.Write("Audio close: "+error);await Message("录音收尾异常",AudioEngine.Friendly(error),duringClose:true);}
+        finally{_closeAllowed=true;Close();}
+    }
+
     private void OnXamlRootChanged(XamlRoot sender,XamlRootChangedEventArgs args){if(!_closing)_frame.RefreshDpi();}
     private void OnAnimationsChanged(UISettings sender,object args)=>DispatcherQueue.TryEnqueue(()=>
     {if(_closing)return;UpdateTextScale();RefreshSession(false);_drawer.ApplyMotionPreference();_serviceNotice.ApplyMotionPreference();_modeSelector.ApplyMotionPreference();_paneSelector.ApplyMotionPreference();});
@@ -328,7 +359,7 @@ public sealed partial class MainWindow : Window
         _inputPage.Spacing=16;
         StyleField(_recordModeBox);_recordModeBox.ItemsSource=new[]{"独占","共享"};
         _recordModeBox.SelectedIndex=_state.RecordMode==RecordingMode.Exclusive?0:1;
-        _recordModeBox.SelectionChanged+=(_,_)=>{SetRecordingMode(_recordModeBox.SelectedIndex==0?RecordingMode.Exclusive:RecordingMode.Shared);_inputFormatViewKey=null;SyncInputFormat();};
+        _recordModeBox.SelectionChanged+=(_,_)=>SetRecordingMode(_recordModeBox.SelectedIndex);
         AutomationProperties.SetName(_recordModeBox,"录制模式");
         var modeGroup=Group("录制模式","\uE713",_recordModeBox,4);
         _modeGainHint.TextWrapping=TextWrapping.Wrap;modeGroup.Children.Add(_modeGainHint);_inputPage.Children.Add(modeGroup);
@@ -468,7 +499,7 @@ public sealed partial class MainWindow : Window
             RecordingCodec.Mp3=>"有损 VBR；V 值越小，品质越高。\n限单／双声道、标准 8–48 kHz 输入。\n不自动混音或重采样。",
             _=>"32 位浮点 WAV / RF64，保留超限数值。\n采样率、声道数沿用实际输入。"
         };
-        ToolTipService.SetToolTip(_fileHint,"未设置路径时保存到‘音乐\\Portable Recorder’。\n压缩格式会在停止时完成编码和文件收尾；保存成功前请等待。\nFLAC 对量化后的 24 位 PCM 无损；MP3 有损，监看仍基于编码前信号。");
+        ToolTipService.SetToolTip(_fileHint,"未设置路径时保存到‘桌面\\URAW Recorder Recordings’。\n压缩格式会在停止时完成编码和文件收尾；保存成功前请等待。\nFLAC 对量化后的 24 位 PCM 无损；MP3 有损，监看仍基于编码前信号。");
     }
     private void SaveEncoding()
     {
@@ -582,6 +613,8 @@ public sealed partial class MainWindow : Window
     }
     private async Task<ContentDialogResult> ShowDialog(ContentDialog dialog,bool duringClose=false)
     {
+        if(dialog.Title is string title && dialog.Content is string body && NoticePresentation.RepeatsBody(title,body))
+            dialog.Title=null;
         if(_closeAllowed||(_closing&&!duringClose))return ContentDialogResult.None;
         try
         {
@@ -590,8 +623,73 @@ public sealed partial class MainWindow : Window
                 if(_closeAllowed||(_closing&&!duringClose))return ContentDialogResult.None;
                 _activeDialog=dialog;
                 using var registration=cancellation.Register(()=>DispatcherQueue.TryEnqueue(()=>dialog.Hide()));
-                try{return await dialog.ShowAsync();}
-                finally{if(ReferenceEquals(_activeDialog,dialog))_activeDialog=null;}
+                var replaceShade=!_accessibility.HighContrast;
+                var existingPopups=replaceShade?VisualTreeHelper.GetOpenPopupsForXamlRoot(dialog.XamlRoot).ToHashSet():null;
+                bool useWindowShade=false;
+                bool shadeClosing=false;
+                Brush? normalShade=null;
+                var dialogFade=new NativeFade(dialog,()=>_settings.AnimationsEnabled);
+                void UpdateShadeTheme()
+                {
+                    if(!useWindowShade||shadeClosing||!ReferenceEquals(_activeDialog,dialog))return;
+                    _dialogShade.Background=_accessibility.HighContrast
+                        ?new SolidColorBrush(_settings.GetColorValue(UIColorType.Background)){Opacity=.8}
+                        :normalShade;
+                }
+                void ShadeThemeChanged(UISettings sender,object args)
+                    =>DispatcherQueue.TryEnqueue(UpdateShadeTheme);
+                void TryReplaceNativeShade(int fadeIn)
+                {
+                    if(existingPopups is null||useWindowShade)return;
+                    var added=VisualTreeHelper.GetOpenPopupsForXamlRoot(dialog.XamlRoot)
+                        .Where(popup=>!existingPopups.Contains(popup)).ToArray();
+                    var dialogPopup=added.FirstOrDefault(popup=>ReferenceEquals(popup.Child,dialog));
+                    if(dialogPopup is null)return;
+                    var shades=added.Select(popup=>popup.Child).OfType<Microsoft.UI.Xaml.Shapes.Rectangle>()
+                        .Where(rectangle=>rectangle.Name is "" or "SmokeLayerBackground"
+                            &&rectangle.Fill is SolidColorBrush brush
+                            &&brush.Color.R==0&&brush.Color.G==0&&brush.Color.B==0
+                            &&brush.Color.A is 0x4D or 0x99).ToArray();
+                    if(shades.Length!=1)return;
+                    // WinUI may present its detached smoke popup again after the dialog card closes.
+                    normalShade=shades[0].Fill;
+                    shades[0].Fill=Design.Brush(Colors.Transparent);
+                    dialogPopup.ChildTransitions.Clear();
+                    useWindowShade=true;
+                    UpdateShadeTheme();
+                    _settings.ColorValuesChanged+=ShadeThemeChanged;
+                    dialog.Closing+=FadeOutShade;
+                    _dialogShadeFade.To(1,fadeIn);
+                }
+                void PrepareShade(ContentDialog sender,ContentDialogOpenedEventArgs args)=>TryReplaceNativeShade(0);
+                void FadeOutShade(ContentDialog sender,ContentDialogClosingEventArgs args)
+                {
+                    if(args.Cancel)return;
+                    shadeClosing=true;
+                    var deferral=args.GetDeferral();
+                    _dialogShadeFade.To(0,_closing?0:140);
+                    dialogFade.To(0,_closing?0:140,()=>deferral.Complete());
+                }
+
+                try
+                {
+                    if(replaceShade)dialog.Opened+=PrepareShade;
+                    var showing=dialog.ShowAsync();
+                    TryReplaceNativeShade(140);
+                    return await showing;
+                }
+                finally
+                {
+                    dialogFade.Stop();
+                    if(replaceShade)dialog.Opened-=PrepareShade;
+                    if(useWindowShade)
+                    {
+                        dialog.Closing-=FadeOutShade;
+                        _settings.ColorValuesChanged-=ShadeThemeChanged;
+                    }
+                    if(!shadeClosing)_dialogShadeFade.To(0,0);
+                    if(ReferenceEquals(_activeDialog,dialog))_activeDialog=null;
+                }
             });
         }
         catch(OperationCanceledException)when(_closing){return ContentDialogResult.None;}
@@ -659,10 +757,41 @@ public sealed partial class MainWindow : Window
         catch(Exception error){StartupLog.Write("Audio command: "+error);if(_dialogOpen&&_managerError!=null){_managerError.Text=AudioEngine.Friendly(error);_managerError.Visibility=Visibility.Visible;}else await Message("音频服务",AudioEngine.Friendly(error));}
         finally{_audioBusy=false;if(!_closing){_state.Refresh();RefreshSession(true);RefreshValues();SyncCalibration();SyncInputFormat();}}
     }
-    private void SetRecordingMode(RecordingMode mode)
+    private void SetRecordingMode(int index)
     {
+        if(index<0||_closing)return;
+        var mode=index==0?RecordingMode.Exclusive:RecordingMode.Shared;
+        if(mode==_state.RecordMode)return;
         _state.RecordMode=mode;
-        try{RecordingPreferences.Save(mode);_modePreferenceWarning=null;}catch(Exception error){_modePreferenceWarning="录制模式偏好未保存："+error.Message;StartupLog.Write(_modePreferenceWarning);}
+        SaveRecordingMode();
+        _inputFormatViewKey=null;SyncInputFormat();
+        if(mode!=RecordingMode.Exclusive||_exclusiveNoticeShown||_exclusiveNoticePending)return;
+        _exclusiveNoticePending=DispatcherQueue.TryEnqueue(async()=>await ShowExclusiveNotice());
+    }
+
+    private async Task ShowExclusiveNotice()
+    {
+        try
+        {
+            if(_closing||_state.RecordMode!=RecordingMode.Exclusive)return;
+            var body=Design.Text("独占录制期间，Windows 和其他应用将无法同时使用这个麦克风。Windows 的麦克风软件增益也会失效，输入电平可能明显降低。如果电平偏低，请在主界面手动调高增益，并留意峰值，避免削波。");
+            body.TextWrapping=TextWrapping.Wrap;
+            var dialog=new ContentDialog{XamlRoot=_root.XamlRoot,Content=body,CloseButtonText="关闭",RequestedTheme=ElementTheme.Dark};
+            dialog.Opened+=(_,_)=>
+            {
+                _exclusiveNoticeShown=true;
+                SaveRecordingMode();
+            };
+            await ShowDialog(dialog);
+        }
+        catch(Exception error){StartupLog.Write("Exclusive notice dialog failed: "+error);}
+        finally{_exclusiveNoticePending=false;}
+    }
+
+    private void SaveRecordingMode()
+    {
+        try{RecordingPreferences.Save(_state.RecordMode,exclusiveNoticeShown:_exclusiveNoticeShown);_modePreferenceWarning=null;}
+        catch(Exception error){_modePreferenceWarning="录制模式偏好未保存："+error.Message;StartupLog.Write(_modePreferenceWarning);}
     }
     private void ReleaseRenderSurface()
     {

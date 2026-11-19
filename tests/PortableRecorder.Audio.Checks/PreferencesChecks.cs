@@ -15,16 +15,21 @@ static class PreferencesChecks
     {
         {
             string settings=Path.Combine(root,"preferences.json");
-            Assert(RecordingPreferences.Load(settings)==RecordingMode.Exclusive,"Missing mode preference uses default");
-            RecordingPreferences.Save(RecordingMode.Shared,settings);Assert(RecordingPreferences.Load(settings)==RecordingMode.Shared,"Shared choice survives process reload");
-            RecordingPreferences.Save(RecordingMode.Exclusive,settings);Assert(RecordingPreferences.Load(settings)==RecordingMode.Exclusive,"Exclusive choice survives process reload");
-            File.WriteAllText(settings,"{broken");Assert(RecordingPreferences.Load(settings)==RecordingMode.Exclusive,"Invalid preference safely falls back");
+            Assert(RecordingPreferences.Load(out var warning,out bool shown,settings)==RecordingMode.Shared&&warning==null&&!shown,"A new install starts in shared mode with the exclusive notice unseen");
+            File.WriteAllText(settings,"{\"RecordingMode\":\"Exclusive\"}");
+            Assert(RecordingPreferences.Load(out warning,out shown,settings)==RecordingMode.Exclusive&&warning==null&&!shown,"Old exclusive preference survives without assuming the notice was shown");
+            RecordingPreferences.Save(RecordingMode.Exclusive,settings,exclusiveNoticeShown:true);
+            Assert(RecordingPreferences.Load(out warning,out shown,settings)==RecordingMode.Exclusive&&warning==null&&shown,"Exclusive choice and notice survive process reload");
+            RecordingPreferences.Save(RecordingMode.Shared,settings,exclusiveNoticeShown:shown);
+            Assert(RecordingPreferences.Load(out warning,out shown,settings)==RecordingMode.Shared&&warning==null&&shown,"Returning to shared mode preserves the notice across restarts");
+            File.WriteAllText(settings,"{broken");Assert(RecordingPreferences.Load(settings)==RecordingMode.Shared,"Invalid preference safely falls back");
             Assert(!Directory.GetFiles(root,"*.tmp").Any(),"Atomic preference save cleans temporary file");
         }
         {
             string settings=Path.Combine(root,"output-folder.json");
             Assert(OutputFolderPreferences.Load(out var warning,settings)==""&&warning==null,"New install keeps the default recording folder");
-            Assert(OutputFolderPreferences.DisplayFolder("")==AudioEngine.DefaultRecordingFolder,"Empty preference displays the recording engine default");
+            string desktopFolder=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory),"URAW Recorder Recordings");
+            Assert(OutputFolderPreferences.DisplayFolder("")==desktopFolder&&AudioEngine.DefaultRecordingFolder==desktopFolder,"Empty preference displays the Windows desktop recording folder");
             string folder=Path.Combine(root,"录音 空间");
             OutputFolderPreferences.Save(folder,settings);
             Assert(OutputFolderPreferences.Load(out warning,settings)==folder&&warning==null,"Chosen Unicode output folder survives process reload");

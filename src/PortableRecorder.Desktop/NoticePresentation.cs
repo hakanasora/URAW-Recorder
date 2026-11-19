@@ -2,6 +2,17 @@ namespace PortableRecorder.Desktop;
 
 internal static class NoticePresentation
 {
+    public static bool RepeatsBody(string title, string body)
+    {
+        static string Normalize(string text) =>
+            string.Join(" ", text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries))
+                .TrimEnd('。', '．', '.', '！', '!', '？', '?');
+
+        var heading = Normalize(title);
+        return heading.Length > 0 && (Normalize(body) == heading ||
+            body.Split('\n').Any(line => Normalize(line) == heading));
+    }
+
     public static string Title(string text)
     {
         if (text.StartsWith("录音继续中：压缩文件出现削波", StringComparison.Ordinal)) return "录音出现削波";

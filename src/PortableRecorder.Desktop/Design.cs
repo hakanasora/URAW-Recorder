@@ -29,7 +29,7 @@ public static class Design
         Typography.SetNumeralStyle(t,FontNumeralStyle.Lining);
         return t;
     }
-    public static Button Button(object content, string name, Color? fill=null)
+    public static Button Button(object content, string name, Color? fill=null, Color? hover=null)
     {
         var b=new Button { Content=content, Height=42, MinWidth=0, MinHeight=0, Padding=new Thickness(12,0,12,0),
             Background=Brush(fill??Action), Foreground=Brush(White), BorderThickness=new Thickness(0),
@@ -44,7 +44,7 @@ public static class Design
             </ControlTemplate>
             """);
         AutomationProperties.SetName(b,name); ToolTipService.SetToolTip(b,name);
-        b.PointerEntered+=(_,_)=> { if(b.IsEnabled) b.Background=Brush(BaseFill(b)==Record?Hex("D9242D"):BaseFill(b)==TransportAction?Hex("434347"):Hex("29292C")); };
+        b.PointerEntered+=(_,_)=> { if(b.IsEnabled) b.Background=Brush(BaseFill(b)==Record?Hex("D9242D"):BaseFill(b)==TransportAction?Hex("434347"):hover??Grid); };
         b.PointerExited+=(_,_)=> b.Background=Brush(BaseFill(b));
         b.PointerPressed+=(_,_)=> { if(b.IsEnabled) b.Background=Brush(BaseFill(b)==Record?Hex("B91C25"):BaseFill(b)==TransportAction?Hex("2B2B2E"):Hex("151517")); };
         b.PointerReleased+=(_,_)=> b.Background=Brush(BaseFill(b));

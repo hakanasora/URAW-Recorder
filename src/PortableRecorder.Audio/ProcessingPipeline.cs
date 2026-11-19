@@ -7,7 +7,7 @@ internal sealed class ProcessingPipeline:IAsyncDisposable
 {
     private sealed record Work(CapturePacket? Packet,Action? Command,TaskCompletionSource? Completion);
     private sealed class Interval(long start){public long Start=start;public long End=long.MaxValue;}
-    private sealed record Boundary(long End,bool Detach,TaskCompletionSource Done);
+    private sealed record Boundary(long End,bool Detach,bool ResetPeak,TaskCompletionSource Done);
     private readonly Channel<Work> _queue=Channel.CreateBounded<Work>(new BoundedChannelOptions(256){SingleReader=true,FullMode=BoundedChannelFullMode.Wait});
     private readonly TaskCompletionSource<(CaptureInfo Info,CalibrationPlan Plan)> _configured=new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly TaskCompletionSource _ready=new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -25,6 +25,7 @@ internal sealed class ProcessingPipeline:IAsyncDisposable
     private readonly List<Interval> _intervals=[];
     private readonly List<Boundary> _boundaries=[];
     private bool _paused;
+    private long _heldPeakStart;
     private Exception? _failure;
     private long _diagnosticTime=Stopwatch.GetTimestamp(),_packetsSinceReport,_queueHighWater;
     private double _maxWakeGapMs,_maxBufferHoldMs;
@@ -119,12 +120,15 @@ internal sealed class ProcessingPipeline:IAsyncDisposable
                         ? "录制文件写入失败："+AudioFailure.Describe(failure)
                         : "录制队列溢出，未静默丢样本。",_writer.Failure);
             }
-            _analyzer!.Process(samples,result.SourcePeak,last);_delivered=last;
+            int skipHeldPeak=(int)Math.Clamp(_heldPeakStart-first,0,result.Frames);
+            _analyzer!.Process(samples,result.SourcePeak,last,skipHeldPeak);_delivered=last;
         }
         for(int i=_boundaries.Count-1;i>=0;i--)
         {
             var b=_boundaries[i];if(_delivered<b.End)continue;
-            if(b.Detach){_writer=null;_intervals.Clear();}b.Done.TrySetResult();_boundaries.RemoveAt(i);
+            if(b.Detach){_writer=null;_intervals.Clear();}
+            if(b.ResetPeak)_analyzer!.ResetPeak();
+            b.Done.TrySetResult();_boundaries.RemoveAt(i);
         }
         _intervals.RemoveAll(i=>i.End<=_delivered);
     }
@@ -143,8 +147,8 @@ internal sealed class ProcessingPipeline:IAsyncDisposable
         async Task Send(){await _queue.Writer.WriteAsync(new(null,action,done));await done.Task;}
     }
     public Task ApplyCalibrationAsync(CalibrationPlan plan)=>Command(()=>{if(_writer!=null)throw new InvalidOperationException("录制或暂停期间不能更换校准。");Rebuild(plan);});
-    public Task AttachAsync(IRecordingWriter writer)=>Command(()=>{_writer=writer;Interlocked.Exchange(ref _unconfirmedDiscontinuities,0);_paused=false;_intervals.Clear();_intervals.Add(new(_frames));});
-    private async Task BoundaryAsync(bool detach,bool drain)
+    public Task AttachAsync(IRecordingWriter writer)=>Command(()=>{_writer=writer;Interlocked.Exchange(ref _unconfirmedDiscontinuities,0);_paused=false;_intervals.Clear();_intervals.Add(new(_frames));_heldPeakStart=_frames;_analyzer!.ResetPeak();});
+    private async Task BoundaryAsync(bool detach,bool drain,bool resetPeak=false)
     {
         var done=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         try
@@ -155,7 +159,7 @@ internal sealed class ProcessingPipeline:IAsyncDisposable
                 if(!detach&&_paused){done.TrySetResult();return;}
                 long end=_paused?(_intervals.LastOrDefault()?.End??_delivered):_frames;
                 if(!_paused&&_intervals.Count>0)_intervals[^1].End=end;
-                _paused=true;_boundaries.Add(new(end,detach,done));
+                _paused=true;_boundaries.Add(new(end,detach,resetPeak,done));
                 _diagnostic($"Recording source boundary: {(detach?"stop":"pause")}; frame={end}; delivered={_delivered}; delay={_plan.LatencyFrames}");
                 if(drain)
                 {
@@ -190,7 +194,7 @@ internal sealed class ProcessingPipeline:IAsyncDisposable
         _paused=false;
         _intervals.Add(new(_frames));
     });
-    public Task DetachAsync(bool mathematicalDrain=false)=>BoundaryAsync(true,mathematicalDrain);
+    public Task DetachAsync(bool mathematicalDrain,bool resetPeak)=>BoundaryAsync(true,mathematicalDrain,resetPeak);
     public Task ResetPeakAsync()=>Command(()=>_analyzer!.ResetPeak());
     public async ValueTask DisposeAsync()
     {_configured.TrySetCanceled();_queue.Writer.TryComplete();await _worker.ConfigureAwait(false);_ = _ready.Task.Exception;_analyzer?.Dispose();}

@@ -71,7 +71,7 @@ static class StorageReliabilityChecks
     private static void PreferenceChecks(string folder,Action<bool,string> check)
     {
         string modePath=Path.Combine(folder,"mode.json"),encodingPath=Path.Combine(folder,"encoding.json"),formatsPath=Path.Combine(folder,"formats.json");
-        check(RecordingPreferences.Load(out var modeWarning,modePath)==RecordingMode.Exclusive&&modeWarning==null,"New install uses default mode without corruption warning");
+        check(RecordingPreferences.Load(out var modeWarning,modePath)==RecordingMode.Shared&&modeWarning==null,"New install uses default mode without corruption warning");
         check(EncodingPreferences.Load(out var encodingWarning,encodingPath)==new EncodingPreferences()&&encodingWarning==null,"New install uses WAV without corruption warning");
         RecordingPreferences.Save(RecordingMode.Shared,modePath);
         check(RecordingPreferences.Load(out modeWarning,modePath)==RecordingMode.Shared&&modeWarning==null,"Recording mode JSON remains compatible");
@@ -87,12 +87,12 @@ static class StorageReliabilityChecks
         foreach(string path in new[]{modePath,encodingPath,formatsPath})
         {
             using(var oversized=new FileStream(path,FileMode.Create))oversized.SetLength((path==formatsPath?1024*1024:64*1024)+1);
-            if(path==modePath)check(RecordingPreferences.Load(out modeWarning,path)==RecordingMode.Exclusive&&modeWarning?.Contains("过大")==true,"Mode preference size bound is explicit");
+            if(path==modePath)check(RecordingPreferences.Load(out modeWarning,path)==RecordingMode.Shared&&modeWarning?.Contains("过大")==true,"Mode preference size bound is explicit");
             else if(path==encodingPath)check(EncodingPreferences.Load(out encodingWarning,path)==new EncodingPreferences()&&encodingWarning?.Contains("过大")==true,"Encoding preference size bound is explicit");
             else check(new InputFormatPreferences(path).Warning?.Contains("过大")==true,"Input format preference uses shared bounded reader");
         }
         File.WriteAllText(modePath,"{\"RecordingMode\":true}");
-        check(RecordingPreferences.Load(out modeWarning,modePath)==RecordingMode.Exclusive&&modeWarning!=null,"Invalid JSON value kind reports a mode warning");
+        check(RecordingPreferences.Load(out modeWarning,modePath)==RecordingMode.Shared&&modeWarning!=null,"Invalid JSON value kind reports a mode warning");
         File.WriteAllText(encodingPath,"{\"Codec\":9,\"FlacLevel\":5,\"Mp3Quality\":2}");
         check(EncodingPreferences.Load(out encodingWarning,encodingPath)==new EncodingPreferences()&&encodingWarning!=null,"Invalid encoding enum reports a warning");
         var preferences=new InputFormatPreferences(formatsPath);preferences.Set("device",new(48000,1,32,32,PcmEncoding.Float));
