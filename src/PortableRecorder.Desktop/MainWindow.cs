@@ -978,6 +978,7 @@ public sealed partial class MainWindow : Window
                 if(InRecordingInputContext&&!request.Invalidated)
                 {
                     SyncSelectedInput(same?null:devices);
+                    if(request.Manual)EnsureVolumeWatcher(force:true);
                     applied=true;
                 }
             }
@@ -1155,19 +1156,23 @@ public sealed partial class MainWindow : Window
         try{_volumeEnumerator?.Dispose();}catch(Exception error){StartupLog.Write("Volume enumerator dispose: "+error);}
         _volumeEnumerator=null;
     }
-    private void EnsureVolumeWatcher()
+    private void EnsureVolumeWatcher(bool force=false)
     {
         string? id=_noCapture?null:_state.Audio.SelectedDevice?.Id;
-        if(id==_volumeDeviceId)return;
+        if(id==_volumeDeviceId&&!force)return;
         StopVolumeWatcher();_inputFormatViewKey=null;
         if(id==null)return;
         _volumeDeviceId=id;
         try
         {
             _volumeEnumerator=new MMDeviceEnumerator();_volumeDevice=_volumeEnumerator.GetDevice(id);
-            _volumeEndpoint=_volumeDevice.AudioEndpointVolume;
-            _volumeHandler=_=>DispatcherQueue.TryEnqueue(()=>{if(!_closing&&_volumeDeviceId==id)RefreshEndpointVolume(id);});
-            _volumeEndpoint.OnVolumeNotification+=_volumeHandler;
+            var endpoint=_volumeDevice.AudioEndpointVolume;
+            _volumeEndpoint=endpoint;
+            _volumeHandler=_=>DispatcherQueue.TryEnqueue(()=>
+            {
+                if(InRecordingInputContext&&ReferenceEquals(_volumeEndpoint,endpoint))RefreshEndpointVolume(id);
+            });
+            endpoint.OnVolumeNotification+=_volumeHandler;
             RefreshEndpointVolume(id);
         }
         catch(Exception error)
@@ -1183,12 +1188,12 @@ public sealed partial class MainWindow : Window
         try
         {
             var volume=await _state.Audio.QueryEndpointVolumeAsync(device);
-            if(_closing||generation!=_volumeGeneration||_volumeDeviceId!=id||_state.Audio.SelectedDevice?.Id!=id)return;
+            if(!InRecordingInputContext||generation!=_volumeGeneration||_volumeDeviceId!=id||_state.Audio.SelectedDevice?.Id!=id)return;
             _liveEndpointVolume=volume;_inputFormatViewKey=null;SyncInputFormat();
         }
         catch(Exception error)
         {
-            if(_closing||generation!=_volumeGeneration||_volumeDeviceId!=id)return;
+            if(!InRecordingInputContext||generation!=_volumeGeneration||_volumeDeviceId!=id||_state.Audio.SelectedDevice?.Id!=id)return;
             StartupLog.Write("Volume refresh failed: "+error);_liveEndpointVolume=null;_inputFormatViewKey=null;SyncInputFormat();
         }
     }
