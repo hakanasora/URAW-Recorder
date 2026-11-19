@@ -136,14 +136,16 @@ public sealed class AudioEngine:IAsyncDisposable
         }
         finally{_commands.Release();}
     }
-    public async Task DecideRawFallbackAsync(bool allow)
+    public async Task<bool> DecideRawFallbackAsync(long decisionId,bool allow)
     {
         await _commands.WaitAsync();
         try
         {
-            if(_disposed || !RawDecisionPending)return;RawDecisionPending=false;
+            if(_disposed || !RawDecisionPending || decisionId!=RawDecisionId)return false;
+            RawDecisionPending=false;
             if(allow){_normalConsent=true;await OpenMonitor();}
             else Set(AudioRunState.Stopped,"监看已停止；尚未获得 RAW 输入。");
+            return true;
         }
         finally{_commands.Release();}
     }

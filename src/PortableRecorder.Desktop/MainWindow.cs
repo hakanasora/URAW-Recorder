@@ -907,9 +907,9 @@ public sealed partial class MainWindow : Window
             var result=await ShowDialog(new ContentDialog{XamlRoot=_root.XamlRoot,Title="此设备未接受 RAW 请求",
                 Content="可允许当前设备在本次运行中使用普通共享监看，或停止监看。此许可不适用于正式录制；设备忙、权限和断开等错误不会降级。",
                 PrimaryButtonText="允许本次普通共享监看",CloseButtonText="停止监看",RequestedTheme=ElementTheme.Dark});
-            if(_closing||decision!=_state.Audio.RawDecisionId)return;
-            await _state.Audio.DecideRawFallbackAsync(result==ContentDialogResult.Primary);
-            _rawPrompt.Complete(decision);
+            if(_closing)return;
+            if(await _state.Audio.DecideRawFallbackAsync(decision,result==ContentDialogResult.Primary))
+                _rawPrompt.Complete(decision);
         }
         catch(Exception error){StartupLog.Write("RAW decision: "+error);}
         finally{_rawPrompt.Abandon(decision);}

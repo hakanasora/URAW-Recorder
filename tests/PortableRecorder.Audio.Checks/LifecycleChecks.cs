@@ -48,7 +48,7 @@ static class LifecycleChecks
         {
             var factory=new FakeFactory{DenySharedRaw=true};await using var engine=CreateEngine(root,factory);
             await engine.SelectDeviceAsync(factory.Device);Assert(engine.RawDecisionPending,"RAW decision required");
-            await engine.DecideRawFallbackAsync(true);Assert(!factory.Current!.Info.Raw,"Explicit ordinary monitoring");
+            Assert(await engine.DecideRawFallbackAsync(engine.RawDecisionId,true) && !factory.Current!.Info.Raw,"Explicit ordinary monitoring");
             bool denied=false;try{await engine.StartRecordingAsync(root,RecordingMode.Shared);}catch(IOException){denied=true;}
             Assert(denied && !factory.Current!.Info.Raw && !engine.RawDecisionPending,"Consent never permits ordinary recording");
         }
@@ -76,10 +76,27 @@ static class LifecycleChecks
         }
         {
             var factory=new FakeFactory{DenySharedRaw=true};await using var engine=CreateEngine(root,factory);
-            await engine.SelectDeviceAsync(factory.Device);await engine.DecideRawFallbackAsync(false);
+            await engine.SelectDeviceAsync(factory.Device);
+            long deniedDecision=engine.RawDecisionId;
+            Assert(await engine.DecideRawFallbackAsync(deniedDecision,false),"Current refusal consumes the decision");
             Assert(engine.Status.State==AudioRunState.Stopped && !engine.Latest.Valid,"RAW dialog close stops monitoring");
-            await engine.SelectDeviceAsync(factory.Device);await engine.DecideRawFallbackAsync(true);
-            await engine.SelectDeviceAsync(new("other","Other device"));Assert(engine.RawDecisionPending,"Ordinary consent expires on device change");
+            Assert(!await engine.DecideRawFallbackAsync(deniedDecision,true),"A consumed decision cannot be applied again");
+            await engine.SelectDeviceAsync(factory.Device);
+            long oldDecision=engine.RawDecisionId;
+            var nextDevice=new AudioDevice("other","Other device");
+            Task<bool>? staleReply=null;
+            factory.BeforeOpen=device=>
+            {
+                if(device.Id==nextDevice.Id)staleReply=engine.DecideRawFallbackAsync(oldDecision,true);
+            };
+            await engine.SelectDeviceAsync(nextDevice);
+            factory.BeforeOpen=null;
+            Assert(staleReply!=null && !await staleReply && engine.RawDecisionPending && engine.RawDecisionId!=oldDecision &&
+                engine.Status.State==AudioRunState.Stopped,"Old approval cannot consume a new device's RAW decision");
+            Assert(await engine.DecideRawFallbackAsync(engine.RawDecisionId,true) && factory.Current!.Info.Device.Id==nextDevice.Id &&
+                !factory.Current.Info.Raw,"New device requires its own approval");
+            await engine.SelectDeviceAsync(factory.Device);
+            Assert(engine.RawDecisionPending,"Ordinary consent expires on device change");
         }
         {
             var factory=new FakeFactory();await using var engine=CreateEngine(root,factory);

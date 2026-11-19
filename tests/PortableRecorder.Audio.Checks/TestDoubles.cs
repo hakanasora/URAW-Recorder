@@ -8,6 +8,7 @@ sealed class FakeFactory:ICaptureFactory
     public AudioDevice Device {get;}=new("fake","Deterministic input",true);
     public AudioFormat Format=new(48000,1,32,32,PcmEncoding.Float);
     public bool DenySharedRaw,DenyExclusive,FailDuringOpen;
+    public Action<AudioDevice>? BeforeOpen;
     public FakeCapture? Current;
     public IReadOnlyList<AudioDevice> Enumerate()=>[Device];
     public AudioFormat? LastRequestedFormat;
@@ -16,6 +17,7 @@ sealed class FakeFactory:ICaptureFactory
         new[]{Format,new AudioFormat(96000,Format.Channels,24,24,PcmEncoding.SignedInteger)}));
     public Task<IAudioCaptureService> OpenAsync(AudioDevice device,bool exclusive,bool raw,long epoch,Func<CapturePacket,bool> packet,Action<Exception> fault,AudioFormat? preferredFormat=null)
     {
+        BeforeOpen?.Invoke(device);
         if(exclusive && DenyExclusive)throw new IOException("Exclusive denied");
         if(!exclusive && raw && DenySharedRaw)throw new RawUnavailableException("RAW unsupported");
         LastRequestedFormat=preferredFormat;
