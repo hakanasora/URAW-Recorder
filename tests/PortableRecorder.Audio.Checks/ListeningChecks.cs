@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Reflection;
 using System.Runtime.InteropServices;
 using PortableRecorder.Audio;
 
@@ -54,6 +55,7 @@ static class ListeningChecks
         factory.FaultBeforeReturn=true;
         await service.StartAsync(source);
         await Until(()=>factory.Current!.Disposed,"early fault cleanup");
+        Assert(QueuedPacketCount(service)==0,"Fault before native open returns drains accepted packets without Stop");
         await Task.Delay(300);
         Assert(service.Status.State==ListeningState.Faulted&&factory.Current!.Disposed,"Fault before native open returns releases the capture and remains faulted");
         factory.FaultBeforeReturn=false;
@@ -76,6 +78,14 @@ static class ListeningChecks
         Assert(double.IsNegativeInfinity(backlogService.Latest.RmsDbfs)&&backlogService.Latest.Segment>0,
             "Queue overflow resets the first accepted post-gap block, not an older queued block");
     }
+    private static int QueuedPacketCount(ListeningService service)
+    {
+        const BindingFlags fields=BindingFlags.Instance|BindingFlags.NonPublic;
+        var session=typeof(ListeningService).GetField("_session",fields)!.GetValue(service)!;
+        var channel=session.GetType().GetField("_packets",fields)!.GetValue(session)!;
+        var reader=channel.GetType().GetProperty("Reader")!.GetValue(channel)!;
+        return (int)reader.GetType().GetProperty("Count")!.GetValue(reader)!;
+    }
     private static float[] Sine(int frames,float amplitude)=>Enumerable.Range(0,frames).Select(i=>(float)(amplitude*Math.Sin(2*Math.PI*1000*i/48000))).ToArray();
     private static async Task Until(Func<bool> condition,string name)
     {
@@ -90,14 +100,18 @@ static class ListeningChecks
             if(FailOpening)throw new IOException("test opening failed");
             Current=new(submit,fault);
             if(BurstBeforeReturn)for(int i=0;i<65;i++)Current.Push(Sine(480,.1f));
-            if(FaultBeforeReturn)fault(new IOException("test early native fault"));
+            if(FaultBeforeReturn)
+            {
+                if(!Current.Push(Sine(480,.1f)))throw new InvalidOperationException("Expected a packet to be accepted before the opening fault.");
+                fault(new IOException("test early native fault"));
+            }
             return Task.FromResult<IListeningCaptureSession>(Current);
         }
     }
     private sealed class FakeListeningCapture(Func<CapturePacket,bool> submit,Action<Exception> fault):IListeningCaptureSession
     {
         public AudioFormat Format {get;}=new(48000,1,32,32,PcmEncoding.Float);
-        public bool Disposed;private long _position;
+        public volatile bool Disposed;private long _position;
         public bool Push(float[] samples,bool silent=false)
         {
             int length=samples.Length*4;var bytes=ArrayPool<byte>.Shared.Rent(length);

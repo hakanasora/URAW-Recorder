@@ -117,9 +117,10 @@ public sealed class ListeningService:IAsyncDisposable
         public void Begin(IListeningCaptureSession capture)
         {
             _capture=capture;
-            if(Volatile.Read(ref _failure)!=null){_packets.Writer.TryComplete();_ = ReleaseCaptureAsync();return;}
-            SetOperationalState(ListeningState.Waiting,"等待音频播放");
-            _worker=Task.Run(ProcessPacketsAsync);_watchdog=Task.Run(WatchAsync);
+            bool faultedBeforeStart=Volatile.Read(ref _failure)!=null;
+            if(!faultedBeforeStart)SetOperationalState(ListeningState.Waiting,"等待音频播放");
+            _worker=Task.Run(()=>ProcessPacketsAsync(faultedBeforeStart));
+            if(!faultedBeforeStart)_watchdog=Task.Run(WatchAsync);
         }
         public bool Submit(CapturePacket packet)
         {
@@ -139,11 +140,16 @@ public sealed class ListeningService:IAsyncDisposable
             _packets.Writer.TryComplete();_stop.Cancel();
         }
         public void ResetPeak()=>Interlocked.Exchange(ref _peakReset,1);
-        private async Task ProcessPacketsAsync()
+        private async Task ProcessPacketsAsync(bool faultedBeforeStart)
         {
             long frame=0;int segment=0;
             try
             {
+                if(faultedBeforeStart)
+                {
+                    _packets.Writer.TryComplete();
+                    return;
+                }
                 var format=_capture!.Format;
                 Volatile.Write(ref _analyzer,new AudioAnalyzer(format,_epoch));
                 await foreach(var item in _packets.Reader.ReadAllAsync(_stop.Token).ConfigureAwait(false))using(var packet=item.Packet)
