@@ -273,16 +273,30 @@ static class UiStateChecks
         vm.SetWorkMode(false);
         vm.Refresh();
         check(!vm.IsListening && vm.Session.Stage==RecordingStage.Ready,"Returning to recording mode resumes syncing TransportSession from Audio");
-        check(!vm.RecordingMonitorEnabled && vm.RecordingMonitorVolumePercent==100,"Recording monitor defaults to disabled at 100% volume");
+        check(!vm.RecordingMonitorEnabled && vm.RecordingMonitorDb==0,"Recording monitor defaults to disabled at 0 dB");
         vm.SetRecordingMonitorEnabled(true);
-        vm.SetRecordingMonitorVolume(140);
-        check(vm.RecordingMonitorEnabled && vm.RecordingMonitorVolumePercent==100,"Recording monitor volume never exceeds 100%");
-        vm.SetRecordingMonitorVolume(64.6);
-        check(vm.RecordingMonitorVolumePercent==65,"Recording monitor volume rounds cleanly within 0..100");
-        vm.SetRecordingMonitorVolume(-10);
-        check(vm.RecordingMonitorVolumePercent==0,"Recording monitor volume clamps to 0%");
-        vm.SetRecordingMonitorVolume(double.NaN);
-        check(vm.RecordingMonitorVolumePercent==0,"Non-finite recording monitor volume is ignored");
+        vm.SetRecordingMonitorGain(72);
+        check(vm.RecordingMonitorEnabled && vm.RecordingMonitorDb==60,"Recording monitor gain clamps upper bound to +60 dB");
+        vm.SetRecordingMonitorGain(-6.54);
+        check(vm.RecordingMonitorDb==-6.5,"Recording monitor gain rounds cleanly to 0.1 dB within -60..+60");
+        vm.SetRecordingMonitorGain(-75);
+        check(vm.RecordingMonitorDb==-60,"Recording monitor gain clamps lower bound to -60 dB");
+        vm.SetRecordingMonitorGain(double.NaN);
+        check(vm.RecordingMonitorDb==-60,"Non-finite recording monitor gain is ignored");
+
+        string monitorPrefPath=Path.Combine(root,"recording-monitor.json");
+        var prefVm=new ShellViewModel(audio,monitorPrefPath);
+        check(!prefVm.RecordingMonitorEnabled && prefVm.RecordingMonitorDb==0,"Missing monitor preference starts disabled at 0 dB");
+        prefVm.SetRecordingMonitorEnabled(true);
+        prefVm.SetRecordingMonitorGain(-12.5);
+        prefVm.SaveRecordingMonitorPreferences();
+
+        var restartedVm=new ShellViewModel(audio,monitorPrefPath);
+        check(!restartedVm.RecordingMonitorEnabled && restartedVm.RecordingMonitorDb==-12.5,
+            "Restart resets monitor toggle to disabled while restoring saved dB gain");
+
+        File.WriteAllText(monitorPrefPath,"{broken-json");
+        check(MonitorPreferences.Load(monitorPrefPath)==0,"Corrupt monitor preference safely resets to 0 dB");
     }
 
     private static void CoordinatorChecks(Action<bool,string> check)

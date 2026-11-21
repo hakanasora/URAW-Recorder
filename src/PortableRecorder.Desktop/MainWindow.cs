@@ -176,17 +176,19 @@ public sealed partial class MainWindow : Window
         _transport.Background=Design.Brush(displaySurface);
         _transport.Children.Add(new Border{Height=1,Background=Design.Brush(MaterialSurface.Tint(Colors.White,14)),VerticalAlignment=VerticalAlignment.Top,IsHitTestVisible=false});
         _gain=new(_state){Width=96,HorizontalAlignment=HorizontalAlignment.Left,VerticalAlignment=VerticalAlignment.Center,Margin=new Thickness(190,0,0,0)};_transport.Children.Add(_gain);
-        _monitorControl=new(_state,()=>_settings.AnimationsEnabled){Margin=new Thickness(288,0,0,0)};_transport.Children.Add(_monitorControl);
+        _monitorControl=new(_state,()=>_settings.AnimationsEnabled){Margin=new Thickness(262,0,0,0)};_transport.Children.Add(_monitorControl);
         _inputName.HorizontalAlignment=HorizontalAlignment.Left;
         _inputName.VerticalAlignment=VerticalAlignment.Center;
         _inputName.Margin=new Thickness(28,0,0,0);
         _transport.Children.Add(_inputName);
-        _inputName.SizeChanged+=(_,_)=>
+        void PositionTransportInputs()
         {
             double gainLeft=28+_inputName.GainStartOffset;
             _gain.Margin=new Thickness(gainLeft,0,0,0);
-            _monitorControl.Margin=new Thickness(gainLeft+_gain.Width+2,0,0,0);
-        };
+            _monitorControl.Margin=new Thickness(gainLeft+_gain.VisualRightEdge+18,0,0,0);
+        }
+        _inputName.SizeChanged+=(_,_)=>PositionTransportInputs();
+        _gain.VisualWidthChanged+=PositionTransportInputs;
         _clockSlot.Width=240;_clockSlot.Height=60;
         _clockSlot.RowDefinitions.Add(new(){Height=new GridLength(20)});
         _clockSlot.RowDefinitions.Add(new(){Height=new GridLength(40)});
@@ -320,7 +322,7 @@ public sealed partial class MainWindow : Window
     private void ReleaseDesktopInputWatchers()
     {
         InvalidateRecordingInputQueries();
-        SaveOutputFolder();StopVolumeWatcher();
+        SaveOutputFolder();_state.SaveRecordingMonitorPreferences();StopVolumeWatcher();
         _deviceWatcher?.Dispose();_deviceWatcher=null;
     }
 

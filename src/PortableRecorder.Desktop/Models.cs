@@ -53,7 +53,7 @@ public sealed class ShellViewModel:INotifyPropertyChanged
     internal string? EncodingPreferenceWarning {get;}
     public double GainDb {get;private set;}
     public bool RecordingMonitorEnabled {get;private set;}
-    public int RecordingMonitorVolumePercent {get;private set;}=100;
+    public double RecordingMonitorDb {get;private set;}
     public double? HeldPeak {get;private set;}
     public RecordingEncoding Encoding {get;set;}
     public MonitorSnapshot Snapshot {get;private set;}=new(false,double.NaN,double.NaN,double.NaN,
@@ -64,12 +64,15 @@ public sealed class ShellViewModel:INotifyPropertyChanged
     private WorkMode _snapshotMode=WorkMode.Recording;
     private int _segment=-1;
     private long _calibrationLibraryRevision=-1;
-    public ShellViewModel(AudioEngine? audio=null)
+    private readonly string? _monitorPreferencesPath;
+    public ShellViewModel(AudioEngine? audio=null,string? monitorPreferencesPath=null)
     {
+        _monitorPreferencesPath=monitorPreferencesPath;
         Audio=audio??new AudioEngine();
         RecordMode=RecordingPreferences.Load(out var modeWarning,out var exclusiveNoticeShown);
         ModePreferenceWarning=modeWarning;ExclusiveNoticeShown=exclusiveNoticeShown;
         EncodingSettings=EncodingPreferences.Load(out var encodingWarning);EncodingPreferenceWarning=encodingWarning;
+        RecordingMonitorDb=MonitorPreferences.Load(_monitorPreferencesPath);
         Encoding=EncodingSettings.Encoding;RefreshCalibrations();
     }
     public void RefreshCalibrations()
@@ -87,10 +90,16 @@ public sealed class ShellViewModel:INotifyPropertyChanged
         string? selected=Audio.SelectedDevice is { } device?snapshot.GetSelection(device.Id).ProfileId:null;
         SelectedCalibration=Calibrations.FirstOrDefault(c=>string.Equals(c.Id,selected,StringComparison.OrdinalIgnoreCase));
     }
+    private static double NormalizeGainDb(double db)
+    {
+        double normalized=Math.Round(Math.Clamp(db,-60,60),1);
+        return Math.Abs(normalized)<.05?0:normalized;
+    }
+
     public void SetGain(double db)
     {
         if(!double.IsFinite(db))return;
-        GainDb=Math.Round(Math.Clamp(db,-60,60),1);if(Math.Abs(GainDb)<.05)GainDb=0;
+        GainDb=NormalizeGainDb(db);
         if(IsListening){_listenGain=GainDb;Listener.SetGain(GainDb);}
         else{_recordGain=GainDb;Audio.SetGain(GainDb);}Notify();
     }
@@ -100,13 +109,18 @@ public sealed class ShellViewModel:INotifyPropertyChanged
         RecordingMonitorEnabled=enabled;
         Notify();
     }
-    public void SetRecordingMonitorVolume(double percent)
+    public void SetRecordingMonitorGain(double db)
     {
-        if(!double.IsFinite(percent))return;
-        int clamped=(int)Math.Round(Math.Clamp(percent,0,100));
-        if(RecordingMonitorVolumePercent==clamped)return;
-        RecordingMonitorVolumePercent=clamped;
+        if(!double.IsFinite(db))return;
+        double normalized=NormalizeGainDb(db);
+        if(RecordingMonitorDb==normalized)return;
+        RecordingMonitorDb=normalized;
         Notify();
+    }
+    public void SaveRecordingMonitorPreferences()
+    {
+        try{MonitorPreferences.Save(RecordingMonitorDb,_monitorPreferencesPath);}
+        catch(Exception error) when(error is IOException or UnauthorizedAccessException){}
     }
     public void SetWorkMode(bool listening)
     {
