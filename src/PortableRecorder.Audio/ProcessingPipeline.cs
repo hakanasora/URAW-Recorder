@@ -443,5 +443,11 @@ internal sealed class ProcessingPipeline:IAsyncDisposable
     }
     public Task ResetPeakAsync()=>Command(()=>_processing!.Analyzer.ResetPeak());
     public async ValueTask DisposeAsync()
-    {_configured.TrySetCanceled();_queue.Writer.TryComplete();await _worker.ConfigureAwait(false);_ = _ready.Task.Exception;_processing?.Analyzer.Dispose();}
+    {
+        _configured.TrySetCanceled();
+        _queue.Writer.TryComplete();
+        await _worker.ConfigureAwait(false);
+        _ = _ready.Task.Exception;
+        if(Interlocked.Exchange(ref _processing,null) is { } processing)processing.Analyzer.Dispose();
+    }
 }

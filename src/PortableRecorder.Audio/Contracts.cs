@@ -31,6 +31,7 @@ public sealed record AudioStatus(AudioRunState State,CaptureInfo? Capture,string
 {
     public bool PauseTailDelayed {get;init;}
 }
+public sealed record RawConsentRequest(long DecisionId,AudioDevice Device,string Reason);
 public sealed class RawUnavailableException(string message,Exception? inner=null):Exception(message,inner);
 public sealed class CaptureGapException:IOException
 {

@@ -80,14 +80,32 @@ internal static class InputFormatPresentation
 /// <summary>A failed ShowAsync must not consume the device's pending consent request.</summary>
 internal sealed class RawDecisionPrompt
 {
-    private long _completed;
-    private long? _showing;
+    private abstract record PromptState
+    {
+        private PromptState() { }
+        public sealed record Idle(long? LastCompletedId) : PromptState;
+        public sealed record Showing(long DecisionId, long? LastCompletedId) : PromptState;
+    }
+
+    private PromptState _state = new PromptState.Idle(null);
+
     public bool TryBegin(long decision)
     {
-        if (_showing != null || _completed == decision) return false;
-        _showing = decision;
+        if (_state is PromptState.Showing || (_state is PromptState.Idle idle && idle.LastCompletedId == decision))
+            return false;
+        _state = new PromptState.Showing(decision, (_state as PromptState.Idle)?.LastCompletedId);
         return true;
     }
-    public void Complete(long decision) { if (_showing == decision) { _completed = decision; _showing = null; } }
-    public void Abandon(long decision) { if (_showing == decision) _showing = null; }
+
+    public void Complete(long decision)
+    {
+        if (_state is PromptState.Showing showing && showing.DecisionId == decision)
+            _state = new PromptState.Idle(decision);
+    }
+
+    public void Abandon(long decision)
+    {
+        if (_state is PromptState.Showing showing && showing.DecisionId == decision)
+            _state = new PromptState.Idle(showing.LastCompletedId);
+    }
 }

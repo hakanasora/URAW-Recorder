@@ -168,5 +168,71 @@ static class LifecycleChecks
             await engine.ReconcileDevicesAsync([]);Assert(engine.SelectedDevice==null && !engine.Latest.Valid,"No input leaves invalid readings");
             await engine.ReconcileDevicesAsync([second]);Assert(engine.SelectedDevice!.Id==second.Id && engine.Status.State==AudioRunState.Monitoring,"New microphone recovers without manual refresh");
         }
+        {
+            var factory=new FakeFactory();int opens=0;factory.BeforeOpen=_=>opens++;
+            await using var engine=CreateEngine(root,factory);
+            await engine.SelectDeviceAsync(factory.Device);
+            int before=opens;
+            await engine.SuspendMonitoringAsync();
+            await engine.ReconcileDevicesAsync([factory.Device]);
+            Assert(engine.Status.State==AudioRunState.Stopped && opens==before,"Topology reconciliation never wakes a suspended monitor");
+            var second=new AudioDevice("second","Second suspended",false);
+            await engine.ReconcileDevicesAsync([factory.Device,second]);
+            Assert(engine.Status.State==AudioRunState.Stopped && opens==before && engine.SelectedDevice?.Id==second.Id,"Hotplug updates suspended selection without opening capture");
+        }
+        {
+            var factory=new FakeFactory();await using var engine=CreateEngine(root,factory);
+            await engine.SelectDeviceAsync(factory.Device);
+            foreach(bool allowFallback in new[]{false,true})
+            {
+                if(engine.Status.State!=AudioRunState.Monitoring)await engine.SelectDeviceAsync(factory.Device);
+                factory.DenySharedRaw=false;
+                await engine.StartRecordingAsync(root,RecordingMode.Exclusive);
+                string saved=engine.Status.FilePath!;
+                factory.Push(new float[480]);await Until(()=>engine.WrittenFrames==480,"exclusive write before raw fallback");
+                factory.DenySharedRaw=true;
+                await engine.StopRecordingAsync();
+                Assert(engine.Status.State==AudioRunState.Stopped && engine.RawDecisionPending && engine.Status.FilePath==saved && !engine.Status.Partial &&
+                    engine.Status.Message.StartsWith("已保存："+Path.GetFileName(saved),StringComparison.Ordinal) &&
+                    engine.Status.Message.Contains("RAW",StringComparison.Ordinal),
+                    "Stop returning to RAW-unavailable monitor preserves saved file notice and RAW consent prompt");
+                Assert(await engine.DecideRawFallbackAsync(engine.RawDecisionId,allowFallback),$"Decide RAW fallback allow={allowFallback}");
+                Assert(engine.Status.FilePath==saved && !engine.Status.Partial &&
+                    engine.Status.Message.StartsWith("已保存："+Path.GetFileName(saved),StringComparison.Ordinal) &&
+                    engine.Status.State==(allowFallback?AudioRunState.Monitoring:AudioRunState.Stopped),
+                    $"RAW decision allow={allowFallback} retains the just-saved recording path and notice");
+            }
+        }
+        {
+            var factory=new FakeFactory();await using var engine=CreateEngine(root,factory);
+            await engine.SelectDeviceAsync(factory.Device);
+            await engine.StartRecordingAsync(root,RecordingMode.Exclusive);
+            var exclCapture=factory.Current!;
+            factory.Push(new float[480]);await Until(()=>engine.WrittenFrames==480,"exclusive pre-gap write");
+            factory.Push(new float[480],true);
+            bool closedAtThrow=false;
+            try{await engine.StopRecordingAsync();}
+            catch(CaptureGapException){closedAtThrow=exclCapture.Closed;}
+            Assert(closedAtThrow,"Exclusive capture is already disposed when StopRecordingAsync throws CaptureGapException");
+        }
+        {
+            string calDir=Path.Combine(root,"discard-no-sidecar");
+            var library=new CalibrationLibrary(calDir);
+            var factory=new FakeFactory();
+            await using var engine=new AudioEngine(factory,library,inputFormats:new InputFormatPreferences(Path.Combine(calDir,"formats.json")));
+            await engine.SelectDeviceAsync(factory.Device);
+            await engine.StartRecordingAsync(root,RecordingMode.Shared);
+            factory.Push(new float[480]);await Until(()=>engine.WrittenFrames==480,"discard skip-sidecar write");
+            await engine.PauseAsync(true);
+            await engine.DiscardRecordingAsync();
+            Assert(!Directory.Exists(Path.Combine(calDir,"RecordingHistory")),"Discard does not write a temporary calibration summary to delete");
+
+            await engine.SetCalibrationEnabledAsync(true);
+            bool denied=false;
+            try{await engine.StartRecordingAsync(root,RecordingMode.Shared);}
+            catch(InvalidOperationException){denied=true;}
+            Assert(denied && engine.Status.State==AudioRunState.Monitoring && engine.Status.Message.Contains("校准",StringComparison.Ordinal),
+                "Failed preparation retains unified monitoring message with calibration warning");
+        }
     }
 }

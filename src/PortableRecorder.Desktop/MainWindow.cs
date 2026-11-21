@@ -1006,9 +1006,9 @@ public sealed partial class MainWindow : Window
 
     private async Task CheckRawDecision()
     {
-        var decision=_state.Audio.RawDecisionId;
         if(_closing||WorkModeChanging||_dialogOpen||_dialogs.IsBusy||_audioBusy||
-            !_state.Audio.RawDecisionPending||!_rawPrompt.TryBegin(decision))return;
+            _state.Audio.PendingRawConsent is not { } consent||!_rawPrompt.TryBegin(consent.DecisionId))return;
+        var decision=consent.DecisionId;
         try
         {
             var result=await ShowDialog(new ContentDialog{XamlRoot=_root.XamlRoot,Title="此设备未接受 RAW 请求",
