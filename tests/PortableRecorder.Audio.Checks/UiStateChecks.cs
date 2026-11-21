@@ -326,8 +326,7 @@ static class UiStateChecks
 
         await vm.SetRecordingMonitorEnabledAsync(true);
         await audio.SuspendMonitoringAsync();
-        vm.SyncRecordingMonitorState();
-        check(!vm.RecordingMonitorEnabled && !audio.LiveMonitor.Enabled,"SyncRecordingMonitorState reflects auto-off after SuspendMonitoringAsync");
+        check(!vm.RecordingMonitorEnabled && !audio.LiveMonitor.Enabled,"RecordingMonitorEnabled reflects auto-off dynamically after SuspendMonitoringAsync");
 
         string monitorPrefPath=Path.Combine(root,"recording-monitor.json");
         var prefCapture=new FakeFactory();var prefMonitorFactory=new FakeLiveMonitorFactory();
@@ -388,7 +387,7 @@ static class UiStateChecks
         check(coord.TryBeginFilePicker(recordingActive:false,out bool inMgr)&&inMgr,"File picker enters from idle CalibrationManager");
         check(!coord.CanEnterModal(ModalKind.Message,false),"Message blocked until FileOpenPicker finishes");
         check(!coord.TryBeginModeSwitch(WorkMode.Listening,false),"Mode switch blocked while FileOpenPicker active");
-        check(!coord.CanOpenRawDecision()&&!coord.CanEnqueueExclusiveNotice(),"Raw and exclusive modals blocked while FileOpenPicker active");
+        check(!coord.CanOpenRawDecision()&&!coord.CanEnqueueRecordingNotice(),"Raw and recording notice modals blocked while FileOpenPicker active");
         coord.EndFilePicker(inMgr);
         check(coord.TryEnterModal(ModalKind.Message,false,out var errPrev),"Import error Message permitted after EndFilePicker while manager open");
         coord.ExitModal(errPrev);
@@ -400,24 +399,24 @@ static class UiStateChecks
         check(!coord.TryBeginModeSwitch(WorkMode.Listening,false),"Mode switch blocked while FolderPicker open");
         coord.EndFolderPicker();
 
-        check(coord.CanEnqueueMonitorCalibrationNotice(),"MonitorCalibrationNotice can enqueue in idle Recording mode");
-        check(coord.TryEnterModal(ModalKind.MonitorCalibrationNotice,false,out var prevMonCal),"MonitorCalibrationNotice enters modal in idle Recording mode");
-        check(!coord.CanEnqueueMonitorCalibrationNotice()&&!coord.CanEnterModal(ModalKind.MonitorCalibrationNotice,false),"MonitorCalibrationNotice blocked while another modal is open");
+        check(coord.CanEnqueueRecordingNotice(),"RecordingNotice can enqueue in idle Recording mode");
+        check(coord.TryEnterModal(ModalKind.RecordingNotice,false,out var prevMonCal),"RecordingNotice enters modal in idle Recording mode");
+        check(!coord.CanEnqueueRecordingNotice()&&!coord.CanEnterModal(ModalKind.RecordingNotice,false),"RecordingNotice blocked while another modal is open");
         coord.ExitModal(prevMonCal);
-        check(coord.Overlay is OverlayState.None,"Exiting MonitorCalibrationNotice clears Overlay");
+        check(coord.Overlay is OverlayState.None,"Exiting RecordingNotice clears Overlay");
 
         check(coord.TryBeginModeSwitch(WorkMode.Listening,false),"Switching to Listening permitted when idle");
         check(!coord.CanEnableWorkModeSelector(active:false),"Work mode selector disabled while switching modes");
         check(!coord.TryEnterModal(ModalKind.RawDecision,false,out _),"RawDecision declined cleanly once mode switch begins");
         check(!coord.TryBeginAudioCommand(modeInitialization:false),"Normal audio command rejected during pre-commit mode switch");
-        check(!coord.CanOpenRawDecision()&&!coord.CanEnqueueExclusiveNotice()&&!coord.CanEnqueueMonitorCalibrationNotice(),"RAW/exclusive/monitor notices blocked while switching to Listening");
+        check(!coord.CanOpenRawDecision()&&!coord.CanEnqueueRecordingNotice(),"RAW and recording notices blocked while switching to Listening");
         coord.CommitModeSwitch(WorkMode.Listening);
         check(!coord.InRecordingInputContext,"Committed Listening mode leaves recording input context");
         check(coord.CanRefreshListeningSources(modeInitialization:true,listeningActive:false,refreshInFlight:false),"Listening init refresh permitted after commit");
         check(!coord.CanRefreshListeningSources(modeInitialization:false,listeningActive:false,refreshInFlight:false),"User listening refresh blocked while switching still finishes");
         coord.EndModeSwitch();
         check(coord.CanEnableWorkModeSelector(active:false)&&!coord.CanEnableWorkModeSelector(active:true),"Work mode selector disables while listening or recording is active and re-enables once stopped");
-        check(!coord.TryEnterModal(ModalKind.ExclusiveNotice,false,out _)&&!coord.TryEnterModal(ModalKind.MonitorCalibrationNotice,false,out _),"Queued ExclusiveNotice and MonitorCalibrationNotice rejected after mode switched to Listening");
+        check(!coord.TryEnterModal(ModalKind.RecordingNotice,false,out _),"Queued RecordingNotice rejected after mode switched to Listening");
         check(!coord.TryBeginCalibrationManager(false)&&!coord.TryBeginFolderPicker(false),"Recording overlays rejected in Listening mode");
         check(coord.CanRefreshListeningSources(modeInitialization:false,listeningActive:false,refreshInFlight:false),"Manual listening refresh permitted once idle in Listening");
 

@@ -181,9 +181,8 @@ public sealed class GainControl : UserControl
             ToolTipService.SetToolTip(button, name);
             button.Click += (_, _) =>
             {
-                if (TryValue(out var value)) _options.SetDb(value);
-                _options.SetDb(_options.GetDb() + direction * .1);
-                if (_options.GetDb() != 0) _wheelUnlocked = true;
+                double baseDb = TryValue(out var value) ? value : _options.GetDb();
+                ApplyDb(baseDb + direction * .1, commit: true);
                 _editor.Text = _options.GetDb().ToString("0.0");
                 _editor.Focus(FocusState.Programmatic);
                 _editor.SelectAll();
@@ -251,10 +250,7 @@ public sealed class GainControl : UserControl
         {
             if (_editing) return;
             _dragging = false;
-            _options.SetDb(0);
-            _wheelUnlocked = false;
-            _wheelDelta = 0;
-            _options.OnCommitted?.Invoke();
+            ApplyDb(0, commit: true, relockZero: true);
             e.Handled = true;
         };
         KeyDown += Key;
@@ -304,6 +300,19 @@ public sealed class GainControl : UserControl
         _editor.SelectAll();
     }
 
+    private void ApplyDb(double db, bool commit = false, bool relockZero = false)
+    {
+        _options.SetDb(db);
+        double current = _options.GetDb();
+        if (current != 0) _wheelUnlocked = true;
+        else if (relockZero)
+        {
+            _wheelUnlocked = false;
+            _wheelDelta = 0;
+        }
+        if (commit) _options.OnCommitted?.Invoke();
+    }
+
     private void FinishEdit(bool commit, bool refocus)
     {
         if (!_editing || _finishing) return;
@@ -312,14 +321,12 @@ public sealed class GainControl : UserControl
         {
             if (commit && TryValue(out var value))
             {
-                _options.SetDb(value);
-                _wheelUnlocked = _options.GetDb() != 0;
+                ApplyDb(value, commit: true, relockZero: true);
                 _wheelDelta = 0;
-                _options.OnCommitted?.Invoke();
             }
             else if (!commit)
             {
-                _options.SetDb(_beforeEdit);
+                ApplyDb(_beforeEdit, relockZero: true);
             }
             _editing = false;
             _entry.Visibility = Visibility.Collapsed;
@@ -359,10 +366,7 @@ public sealed class GainControl : UserControl
         var point = e.GetCurrentPoint(this).Position;
         if (Math.Abs(point.Y - _startY) > 3 || Math.Abs(point.X - _startX) > 3) _moved = true;
         if (_moved)
-        {
-            _options.SetDb(_startGain + (_startY - point.Y) * (Shift ? .025 : .25));
-            if (_options.GetDb() != 0) _wheelUnlocked = true;
-        }
+            ApplyDb(_startGain + (_startY - point.Y) * (Shift ? .025 : .25));
         e.Handled = true;
     }
 
@@ -377,8 +381,7 @@ public sealed class GainControl : UserControl
         if (Math.Abs(applied) >= 0.1)
         {
             _wheelDelta -= applied;
-            _options.SetDb(_options.GetDb() + applied);
-            _options.OnCommitted?.Invoke();
+            ApplyDb(_options.GetDb() + applied, commit: true);
         }
         e.Handled = true;
     }
@@ -388,12 +391,7 @@ public sealed class GainControl : UserControl
         if (_dragging)
         {
             _dragging = false;
-            _options.SetDb(_startGain);
-            if (_startGain == 0)
-            {
-                _wheelUnlocked = false;
-                _wheelDelta = 0;
-            }
+            ApplyDb(_startGain, relockZero: true);
             ReleasePointerCaptures();
         }
     }
@@ -405,22 +403,15 @@ public sealed class GainControl : UserControl
         {
             case VirtualKey.Up:
             case VirtualKey.Right:
-                _options.SetDb(_options.GetDb() + (Shift ? .1 : 1));
-                if (_options.GetDb() != 0) _wheelUnlocked = true;
-                _options.OnCommitted?.Invoke();
+                ApplyDb(_options.GetDb() + (Shift ? .1 : 1), commit: true);
                 break;
             case VirtualKey.Down:
             case VirtualKey.Left:
-                _options.SetDb(_options.GetDb() - (Shift ? .1 : 1));
-                if (_options.GetDb() != 0) _wheelUnlocked = true;
-                _options.OnCommitted?.Invoke();
+                ApplyDb(_options.GetDb() - (Shift ? .1 : 1), commit: true);
                 break;
             case VirtualKey.Home:
             case VirtualKey.Number0:
-                _options.SetDb(0);
-                _wheelUnlocked = false;
-                _wheelDelta = 0;
-                _options.OnCommitted?.Invoke();
+                ApplyDb(0, commit: true, relockZero: true);
                 break;
             case VirtualKey.Escape:
                 CancelDrag();

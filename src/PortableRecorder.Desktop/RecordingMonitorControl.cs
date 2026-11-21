@@ -105,6 +105,7 @@ public sealed class RecordingMonitorControl : Grid
     }
 
     public void SetAccent(Color color) => _knob.SetAccent(color);
+    public void SetToggleEnabled(bool enabled) => _toggle.IsEnabled = enabled;
     public void CommitIfOutside(PointerRoutedEventArgs args) => _knob.CommitIfOutside(args);
     public void CancelEdit() => _knob.CancelInteraction();
 

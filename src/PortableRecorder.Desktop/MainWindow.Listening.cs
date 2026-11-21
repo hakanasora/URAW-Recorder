@@ -91,6 +91,7 @@ public sealed partial class MainWindow
         {
             if(_closing||_audioBusy||_state.Session.Active)return;
             _workModeBox.IsEnabled=false;
+            _monitorControl.SetToggleEnabled(false);
             _stopButton.IsEnabled=false;
             foreach(var control in _recordingControls)control.IsEnabled=false;
             foreach(var control in _listeningControls)control.IsEnabled=false;
@@ -102,7 +103,7 @@ public sealed partial class MainWindow
                 finally
                 {
                     StopVolumeWatcher();
-                    _state.SyncRecordingMonitorState();
+                    _state.Notify();
                     _monitorControl.Refresh();
                 }
             }
@@ -130,6 +131,7 @@ public sealed partial class MainWindow
             if(!_closing)
             {
                 RestoreWorkModeSelection();
+                _monitorControl.SetToggleEnabled(!_state.IsListening&&!WorkModeChanging);
                 _state.Refresh();
                 if(_state.IsListening){_listenViewKey=null;RefreshListening();}
                 else{RefreshSession(true);SyncCalibration();SyncInputFormat();_=DrainDeviceRefreshQueue();}
@@ -191,7 +193,7 @@ public sealed partial class MainWindow
     private void UpdateWorkModeSurface()
     {
         bool listening=_state.IsListening;
-        _state.SyncRecordingMonitorState();
+        _state.Notify();
         _monitorControl.Visibility=listening?Visibility.Collapsed:Visibility.Visible;
         if(listening)_monitorControl.CancelEdit();
         _monitorControl.Refresh();

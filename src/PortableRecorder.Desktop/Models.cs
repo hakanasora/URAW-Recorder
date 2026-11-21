@@ -52,7 +52,7 @@ public sealed class ShellViewModel:INotifyPropertyChanged
     internal bool ExclusiveNoticeShown {get;}
     internal string? EncodingPreferenceWarning {get;}
     public double GainDb {get;private set;}
-    public bool RecordingMonitorEnabled {get;private set;}
+    public bool RecordingMonitorEnabled=>Audio.LiveMonitor.Enabled;
     public double RecordingMonitorDb {get;private set;}
     public double? HeldPeak {get;private set;}
     public RecordingEncoding Encoding {get;set;}
@@ -106,21 +106,8 @@ public sealed class ShellViewModel:INotifyPropertyChanged
     }
     public async Task SetRecordingMonitorEnabledAsync(bool enabled)
     {
-        try
-        {
-            await Audio.SetLiveMonitorEnabledAsync(enabled);
-        }
-        finally
-        {
-            SyncRecordingMonitorState();
-        }
-    }
-    public void SyncRecordingMonitorState()
-    {
-        bool actual=Audio.LiveMonitor.Enabled;
-        if(RecordingMonitorEnabled==actual)return;
-        RecordingMonitorEnabled=actual;
-        Notify();
+        try { await Audio.SetLiveMonitorEnabledAsync(enabled); }
+        finally { Notify(); }
     }
     public void SetRecordingMonitorGain(double db)
     {

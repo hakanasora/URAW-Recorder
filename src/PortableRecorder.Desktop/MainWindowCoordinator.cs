@@ -12,7 +12,7 @@ internal abstract record ModeContext
     public sealed record Listening:ModeContext;
 }
 
-internal enum ModalKind { Message, RawDecision, ExclusiveNotice, MonitorCalibrationNotice, CalibrationManagerDialog }
+internal enum ModalKind { Message, RawDecision, RecordingNotice, CalibrationManagerDialog }
 
 internal abstract record OverlayState
 {
@@ -108,10 +108,7 @@ internal sealed class MainWindowCoordinator
     public bool CanAlignWindowsGain(RecordingMode recordMode)
         =>Window==WindowPhase.Running&&recordMode==RecordingMode.Exclusive&&Mode is ModeContext.Recording&&!AudioBusy&&Overlay is OverlayState.None;
 
-    public bool CanEnqueueExclusiveNotice()
-        =>Window==WindowPhase.Running&&Mode is ModeContext.Recording&&Overlay is OverlayState.None;
-
-    public bool CanEnqueueMonitorCalibrationNotice()
+    public bool CanEnqueueRecordingNotice()
         =>Window==WindowPhase.Running&&Mode is ModeContext.Recording&&Overlay is OverlayState.None;
 
     public bool CanOpenRawDecision()
@@ -172,8 +169,7 @@ internal sealed class MainWindowCoordinator
         return kind switch
         {
             ModalKind.CalibrationManagerDialog=>Overlay is OverlayState.CalibrationManager{InnerDialogOpen:false,InFilePicker:false},
-            ModalKind.ExclusiveNotice=>Mode is ModeContext.Recording&&Overlay is OverlayState.None,
-            ModalKind.MonitorCalibrationNotice=>Mode is ModeContext.Recording&&Overlay is OverlayState.None,
+            ModalKind.RecordingNotice=>Mode is ModeContext.Recording&&Overlay is OverlayState.None,
             ModalKind.RawDecision=>Mode is ModeContext.Recording&&!AudioBusy&&Overlay is OverlayState.None,
             ModalKind.Message=>Overlay is OverlayState.None or OverlayState.Modal or OverlayState.CalibrationManager{InnerDialogOpen:false,InFilePicker:false},
             _=>false

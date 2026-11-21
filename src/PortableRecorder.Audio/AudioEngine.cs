@@ -85,10 +85,22 @@ public sealed partial class AudioEngine:IAsyncDisposable
         if(!double.IsFinite(db))throw new ArgumentOutOfRangeException(nameof(db),"增益必须为有限数值。");
         Interlocked.Exchange(ref _gain,Math.Pow(10,Math.Clamp(db,-60,60)/20));
     }
-    public Task SetLiveMonitorEnabledAsync(bool enabled)
+    public async Task SetLiveMonitorEnabledAsync(bool enabled)
     {
-        if(enabled)ThrowIfDisposed();
-        return _liveMonitor.SetEnabledAsync(enabled);
+        if(!enabled)
+        {
+            await _liveMonitor.SetEnabledAsync(false).ConfigureAwait(false);
+            return;
+        }
+        await _commands.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            ThrowIfDisposed();
+            if(CurrentPhase is EnginePhase.Suspended)
+                throw new InvalidOperationException("侦听模式下不能开启录制监听。");
+            await _liveMonitor.SetEnabledAsync(true).ConfigureAwait(false);
+        }
+        finally{_commands.Release();}
     }
     public void SetLiveMonitorGain(double db)=>_liveMonitor.SetGain(db);
     private void OnLiveMonitorFaulted(string reason)

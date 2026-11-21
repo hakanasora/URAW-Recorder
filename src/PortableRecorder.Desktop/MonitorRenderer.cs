@@ -180,7 +180,7 @@ public sealed class MonitorRenderer : IDisposable
         if(!sample.Valid || sample.Epoch!=_visualEpoch || sample.Segment!=_visualSegment)
         {
             _visualEpoch=sample.Epoch;_visualSegment=sample.Segment;_centsMotion.Reset();_projectedFrame=null;
-            if(ReducedMotion){_spectrumPoints=[];_fromSpectrum=[];_drawSpectrum=[];}
+            if(ReducedMotion || state.Mode!=MonitorMode.Spectrum){_spectrumPoints=[];_fromSpectrum=[];_drawSpectrum=[];_spectrumAlpha=0;}
         }
         _meterMotion.Push(sample,now);var vu=_meterMotion.Read(now,ReducedMotion);
         _timeline=_meterMotion.Timeline(now);

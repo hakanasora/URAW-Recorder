@@ -77,8 +77,8 @@ sealed class FakeLiveMonitorOutput:ILiveMonitorOutput
     private int _lastSourceChannels;
     private double _lastLinearGain;
     private int _disposed;
+    private Action<Exception>? _faulted;
 
-    public MonitorOutputFormat OutputFormat {get;}
     public int WriteCount=>Volatile.Read(ref _writeCount);
     public int LastSourceRate=>Volatile.Read(ref _lastSourceRate);
     public int LastSourceChannels=>Volatile.Read(ref _lastSourceChannels);
@@ -86,11 +86,19 @@ sealed class FakeLiveMonitorOutput:ILiveMonitorOutput
     public long QueuedFrames=>_buffer.QueuedFrames;
     public bool Disposed=>Volatile.Read(ref _disposed)!=0;
     public Exception? ThrowOnWrite;
-    public event Action<Exception>? Faulted;
+    public Exception? EarlyFault;
+    public event Action<Exception>? Faulted
+    {
+        add
+        {
+            _faulted+=value;
+            if(EarlyFault is Exception error)value?.Invoke(error);
+        }
+        remove=>_faulted-=value;
+    }
 
     public FakeLiveMonitorOutput(MonitorOutputFormat format)
     {
-        OutputFormat=format;
         _buffer=new LiveMonitorBuffer(format);
     }
 
@@ -105,7 +113,7 @@ sealed class FakeLiveMonitorOutput:ILiveMonitorOutput
     }
 
     public int ReadRendered(Span<float> destination)=>_buffer.Read(destination);
-    public void TriggerFault(Exception error)=>Faulted?.Invoke(error);
+    public void TriggerFault(Exception error)=>_faulted?.Invoke(error);
 
     public ValueTask DisposeAsync()
     {
@@ -123,6 +131,7 @@ sealed class FakeLiveMonitorFactory:ILiveMonitorFactory
 
     public MonitorOutputFormat OutputFormat=new(48000,2);
     public Exception? FailOpen;
+    public Exception? EarlyFaultOnOpen;
     public FakeLiveMonitorOutput? Current {get;private set;}
     public List<FakeLiveMonitorOutput> Opened {get;}=[];
     public int OpenCount=>Volatile.Read(ref _openCount);
@@ -134,7 +143,7 @@ sealed class FakeLiveMonitorFactory:ILiveMonitorFactory
         cancellationToken.ThrowIfCancellationRequested();
         Interlocked.Increment(ref _openCount);
         if(FailOpen is Exception error)return Task.FromException<ILiveMonitorOutput>(error);
-        var output=new FakeLiveMonitorOutput(OutputFormat);
+        var output=new FakeLiveMonitorOutput(OutputFormat){EarlyFault=EarlyFaultOnOpen};
         lock(_gate){Current=output;Opened.Add(output);}
         return Task.FromResult<ILiveMonitorOutput>(output);
     }

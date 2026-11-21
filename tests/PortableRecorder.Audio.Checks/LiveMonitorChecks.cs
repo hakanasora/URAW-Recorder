@@ -7,12 +7,27 @@ static class LiveMonitorChecks
     {
         CheckBufferDsp(check);
         CheckPcmEncoding(check);
+        CheckRenderErrorMapping(check);
         await CheckIdleAndGainMath(root,check);
         await CheckRecordingPauseAndExclusiveFormatSwitch(root,check);
         await CheckCalibrationPostProcessing(root,check);
         await CheckSuspendDisablesMonitoring(root,check);
         await CheckFaultIsolationFromRecording(root,check);
         await CheckDefaultDeviceHotSwapAndInvalidatedRecovery(root,check);
+        await CheckEarlyFaultAndStaleRebind(check);
+    }
+
+    private static void CheckRenderErrorMapping(Action<bool,string> check)
+    {
+        var inUse=WasapiLiveMonitorOutput.DescribeRenderError(new COMException("in use",unchecked((int)0x8889000A)));
+        string inUseFriendly=AudioEngine.Friendly(inUse);
+        check(inUse is IOException && inUse.InnerException==null && inUseFriendly.Contains("默认播放设备") && !inUseFriendly.Contains("输入"),
+            $"0x8889000A maps to playback-specific IOException ({inUseFriendly})");
+
+        var denied=WasapiLiveMonitorOutput.DescribeRenderError(new COMException("denied",unchecked((int)0x80070005)));
+        string deniedFriendly=AudioEngine.Friendly(denied);
+        check(denied is IOException && denied.InnerException==null && deniedFriendly.Contains("默认播放设备") && deniedFriendly.Contains("播放权限") && !deniedFriendly.Contains("麦克风") && !deniedFriendly.Contains("输入"),
+            $"0x80070005 maps to playback-specific permission IOException ({deniedFriendly})");
     }
 
     private static void CheckBufferDsp(Action<bool,string> check)
@@ -262,6 +277,13 @@ static class LiveMonitorChecks
         await engine.SuspendMonitoringAsync();
         check(!engine.LiveMonitor.Enabled&&!engine.LiveMonitor.Active&&monitor.Current!.Disposed&&monitor.ActiveWatchers==0,
             "SuspendMonitoringAsync turns off live monitoring and releases output/watcher");
+
+        int opensBeforeSuspendedEnable=monitor.OpenCount;
+        bool rejectedInSuspended=false;
+        try{await engine.SetLiveMonitorEnabledAsync(true);}
+        catch(InvalidOperationException){rejectedInSuspended=true;}
+        check(rejectedInSuspended&&!engine.LiveMonitor.Enabled&&monitor.OpenCount==opensBeforeSuspendedEnable,
+            "SetLiveMonitorEnabledAsync(true) rejects Suspended mode without opening playback output");
     }
 
     private static async Task CheckFaultIsolationFromRecording(string root,Action<bool,string> check)
@@ -380,5 +402,38 @@ static class LiveMonitorChecks
         string terminalReason=await terminalFault.Task.WaitAsync(TimeSpan.FromSeconds(5));
         check(terminalReason.Contains("Persistent render failure")&&!engine.LiveMonitor.Enabled&&monitor.ActiveWatchers==0&&monitor.OpenCount==opensBeforeTerminal,
             "Consecutive immediate faults stop retrying and disable monitor cleanly");
+    }
+
+    private static async Task CheckEarlyFaultAndStaleRebind(Action<bool,string> check)
+    {
+        {
+            var monitor=new FakeLiveMonitorFactory{EarlyFaultOnOpen=new IOException("Immediate render fault")};
+            await using var controller=new LiveMonitorController(monitor,rebindDebounce:TimeSpan.FromMilliseconds(10));
+            var faulted=new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+            controller.Faulted+=reason=>faulted.TrySetResult(reason);
+
+            await controller.SetEnabledAsync(true);
+            string reason=await faulted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            check(reason.Contains("Immediate render fault")&&!controller.Status.Enabled&&monitor.ActiveWatchers==0&&monitor.Opened.All(o=>o.Disposed),
+                "Early fault fired synchronously on Faulted subscription is never dropped");
+        }
+
+        {
+            var monitor=new FakeLiveMonitorFactory();
+            await using var controller=new LiveMonitorController(monitor,rebindDebounce:TimeSpan.FromMilliseconds(80));
+            await controller.SetEnabledAsync(true);
+            var first=monitor.Current!;
+
+            monitor.TriggerDefaultDeviceChanged();
+            await Task.Delay(10);
+            await controller.SetEnabledAsync(false);
+            await controller.SetEnabledAsync(true);
+            var second=monitor.Current!;
+            monitor.FailOpen=new IOException("Stale rebind must not run");
+
+            await Task.Delay(150);
+            check(controller.Status.Enabled&&controller.Status.Active&&ReferenceEquals(monitor.Current,second)&&!second.Disposed&&first.Disposed&&monitor.OpenCount==2,
+                "Stale-generation rebind queued before disable/re-enable does not tear down the newer session");
+        }
     }
 }

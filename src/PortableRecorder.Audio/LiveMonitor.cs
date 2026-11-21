@@ -8,7 +8,6 @@ public sealed record LiveMonitorStatus(bool Enabled, bool Active, string? Error 
 
 public interface ILiveMonitorOutput : IAsyncDisposable
 {
-    MonitorOutputFormat OutputFormat { get; }
     void Write(ReadOnlySpan<float> interleavedSamples, int sourceSampleRate, int sourceChannels, double linearGain);
     event Action<Exception>? Faulted;
 }
@@ -204,10 +203,10 @@ internal sealed class LiveMonitorBuffer
             EnsureHeadroom(write, 1);
             WriteRingFrame(write, _nextFrame, dstChannels, gain);
             write++;
-            Volatile.Write(ref _writeFrame, write);
             _phase += step;
         }
 
+        if (write != _writeFrame) Volatile.Write(ref _writeFrame, write);
         MapFrame(input.Slice((srcFrames - 1) * srcChannels, srcChannels), srcChannels, _prevFrame, dstChannels);
         _hasPrevFrame = true;
         _phase -= srcFrames;
@@ -248,11 +247,7 @@ internal sealed class LiveMonitorBuffer
 
     private static void MapFrame(ReadOnlySpan<float> src, int srcChannels, Span<float> dst, int dstChannels)
     {
-        if (srcChannels == dstChannels)
-        {
-            for (int c = 0; c < dstChannels; c++) dst[c] = Sanitize(src[c]);
-        }
-        else if (srcChannels == 1 && dstChannels >= 2)
+        if (srcChannels == 1 && dstChannels >= 2)
         {
             float mono = Sanitize(src[0]);
             dst[0] = mono;
@@ -263,14 +258,11 @@ internal sealed class LiveMonitorBuffer
         {
             dst[0] = (Sanitize(src[0]) + Sanitize(src[1])) * 0.5f;
         }
-        else if (srcChannels > dstChannels)
-        {
-            for (int c = 0; c < dstChannels; c++) dst[c] = Sanitize(src[c]);
-        }
         else
         {
-            for (int c = 0; c < srcChannels; c++) dst[c] = Sanitize(src[c]);
-            for (int c = srcChannels; c < dstChannels; c++) dst[c] = 0f;
+            int copy = Math.Min(srcChannels, dstChannels);
+            for (int c = 0; c < copy; c++) dst[c] = Sanitize(src[c]);
+            for (int c = copy; c < dstChannels; c++) dst[c] = 0f;
         }
     }
 
@@ -324,14 +316,15 @@ internal sealed class LiveMonitorController : IAsyncDisposable
     private readonly Action<string>? _diagnostic;
     private readonly TimeSpan _rebindDebounce;
     private readonly SemaphoreSlim _gate = new(1, 1);
+    private readonly object _rebindLock = new();
     private MonitorPhase _phase = new MonitorPhase.Disabled();
     private ILiveMonitorOutput? _activeOutput;
     private double _linearGain = 1.0;
-    private long _generation;
-    private int _rebindPending;
-    private int _rebindWorkerActive;
-    private int _rebindFromDeviceChange;
-    private Exception? _pendingFault;
+    private long _rebindGeneration;
+    private bool _rebindPending;
+    private bool _rebindDeviceChanged;
+    private Exception? _rebindFault;
+    private bool _rebindWorkerRunning;
     private long _lastFaultTicks;
     private int _consecutiveFaultRebinds;
 
@@ -389,46 +382,90 @@ internal sealed class LiveMonitorController : IAsyncDisposable
             {
                 if (phase is MonitorPhase.Running) return;
                 Volatile.Write(ref _phase, new MonitorPhase.Starting());
-                long generation = Interlocked.Increment(ref _generation);
+                long generation;
+                lock (_rebindLock)
+                {
+                    generation = ++_rebindGeneration;
+                    _rebindPending = false;
+                    _rebindDeviceChanged = false;
+                    _rebindFault = null;
+                }
                 _consecutiveFaultRebinds = 0;
                 _lastFaultTicks = 0;
-                ILiveMonitorOutput? output = null;
-                IDisposable? watcher = null;
                 try
                 {
-                    output = await _factory.OpenDefaultAsync().ConfigureAwait(false);
-                    var opened = output;
-                    opened.Faulted += error => HandleOutputFault(opened, error);
-                    watcher = _factory.WatchDefaultDeviceChanged(() => RequestRebind(generation, deviceChanged: true, fault: null));
-                    Volatile.Write(ref _phase, new MonitorPhase.Running(opened, watcher, generation));
-                    Volatile.Write(ref _activeOutput, opened);
+                    await OpenAndAttachLockedAsync(generation).ConfigureAwait(false);
                 }
                 catch (Exception error)
                 {
-                    Volatile.Write(ref _activeOutput, null);
-                    SafeDisposeWatcher(watcher);
-                    await SafeDisposeOutputAsync(output).ConfigureAwait(false);
-                    Volatile.Write(ref _phase, new MonitorPhase.Disabled(AudioEngine.Friendly(error)));
+                    await TeardownLockedAsync(new MonitorPhase.Disabled(AudioEngine.Friendly(error))).ConfigureAwait(false);
                     throw;
                 }
             }
             else
             {
-                Volatile.Write(ref _activeOutput, null);
-                Interlocked.Increment(ref _generation);
-                Interlocked.Exchange(ref _rebindPending, 0);
-                Interlocked.Exchange(ref _pendingFault, null);
-                Volatile.Write(ref _phase, new MonitorPhase.Disabled());
-                if (phase is MonitorPhase.Running running)
-                {
-                    SafeDisposeWatcher(running.Watcher);
-                    await SafeDisposeOutputAsync(running.Output).ConfigureAwait(false);
-                }
+                await TeardownLockedAsync(new MonitorPhase.Disabled()).ConfigureAwait(false);
             }
         }
         finally
         {
             _gate.Release();
+        }
+    }
+
+    private async Task OpenAndAttachLockedAsync(long generation, IDisposable? existingWatcher = null)
+    {
+        ILiveMonitorOutput? output = null;
+        IDisposable? ownedWatcher = null;
+        try
+        {
+            output = await _factory.OpenDefaultAsync().ConfigureAwait(false);
+            var opened = output;
+            Exception? earlyFault = null;
+            int attached = 0;
+            opened.Faulted += error =>
+            {
+                if (Volatile.Read(ref attached) == 0)
+                {
+                    Interlocked.CompareExchange(ref earlyFault, error, null);
+                    if (Volatile.Read(ref attached) == 0) return;
+                    if (Interlocked.Exchange(ref earlyFault, null) is Exception captured)
+                        HandleOutputFault(opened, captured);
+                    return;
+                }
+                HandleOutputFault(opened, error);
+            };
+            var watcher = existingWatcher ?? (ownedWatcher = _factory.WatchDefaultDeviceChanged(() => RequestRebind(generation, deviceChanged: true, fault: null)));
+            Volatile.Write(ref _phase, new MonitorPhase.Running(opened, watcher, generation));
+            Volatile.Write(ref _activeOutput, opened);
+            Volatile.Write(ref attached, 1);
+            if (Interlocked.Exchange(ref earlyFault, null) is Exception pendingEarlyFault)
+                HandleOutputFault(opened, pendingEarlyFault);
+        }
+        catch
+        {
+            SafeDisposeWatcher(ownedWatcher);
+            await SafeDisposeOutputAsync(output).ConfigureAwait(false);
+            throw;
+        }
+    }
+
+    private async Task TeardownLockedAsync(MonitorPhase nextPhase)
+    {
+        var phase = Volatile.Read(ref _phase);
+        Volatile.Write(ref _activeOutput, null);
+        lock (_rebindLock)
+        {
+            _rebindGeneration++;
+            _rebindPending = false;
+            _rebindDeviceChanged = false;
+            _rebindFault = null;
+        }
+        Volatile.Write(ref _phase, nextPhase);
+        if (phase is MonitorPhase.Running running)
+        {
+            SafeDisposeWatcher(running.Watcher);
+            await SafeDisposeOutputAsync(running.Output).ConfigureAwait(false);
         }
     }
 
@@ -442,11 +479,15 @@ internal sealed class LiveMonitorController : IAsyncDisposable
 
     private void RequestRebind(long generation, bool deviceChanged, Exception? fault)
     {
-        if (Volatile.Read(ref _generation) != generation) return;
-        if (deviceChanged) Volatile.Write(ref _rebindFromDeviceChange, 1);
-        if (fault != null) Interlocked.CompareExchange(ref _pendingFault, fault, null);
-        Interlocked.Exchange(ref _rebindPending, 1);
-        if (Interlocked.CompareExchange(ref _rebindWorkerActive, 1, 0) != 0) return;
+        lock (_rebindLock)
+        {
+            if (_rebindGeneration != generation) return;
+            if (deviceChanged) _rebindDeviceChanged = true;
+            _rebindFault ??= fault;
+            _rebindPending = true;
+            if (_rebindWorkerRunning) return;
+            _rebindWorkerRunning = true;
+        }
         _ = Task.Run(RunRebindLoopAsync);
     }
 
@@ -454,10 +495,22 @@ internal sealed class LiveMonitorController : IAsyncDisposable
     {
         try
         {
-            while (Interlocked.Exchange(ref _rebindPending, 0) != 0)
+            while (true)
             {
-                bool deviceChanged = Interlocked.Exchange(ref _rebindFromDeviceChange, 0) != 0;
-                var initialFault = Volatile.Read(ref _pendingFault);
+                long batchGeneration;
+                bool deviceChanged;
+                Exception? initialFault;
+                lock (_rebindLock)
+                {
+                    if (!_rebindPending) break;
+                    _rebindPending = false;
+                    batchGeneration = _rebindGeneration;
+                    deviceChanged = _rebindDeviceChanged;
+                    _rebindDeviceChanged = false;
+                    initialFault = _rebindFault;
+                    _rebindFault = null;
+                }
+
                 if (deviceChanged && initialFault == null && _rebindDebounce > TimeSpan.Zero)
                     await Task.Delay(_rebindDebounce).ConfigureAwait(false);
 
@@ -466,7 +519,7 @@ internal sealed class LiveMonitorController : IAsyncDisposable
                 await _gate.WaitAsync().ConfigureAwait(false);
                 try
                 {
-                    (stopLoop, faultNotification) = await RebindOnceLockedAsync(deviceChanged).ConfigureAwait(false);
+                    (stopLoop, faultNotification) = await RebindOnceLockedAsync(batchGeneration, deviceChanged, initialFault).ConfigureAwait(false);
                 }
                 finally
                 {
@@ -487,22 +540,39 @@ internal sealed class LiveMonitorController : IAsyncDisposable
         }
         finally
         {
-            Volatile.Write(ref _rebindWorkerActive, 0);
-            if (Volatile.Read(ref _rebindPending) != 0 && Volatile.Read(ref _phase) is MonitorPhase.Running)
+            bool restart = false;
+            lock (_rebindLock)
             {
-                if (Interlocked.CompareExchange(ref _rebindWorkerActive, 1, 0) == 0)
-                    _ = Task.Run(RunRebindLoopAsync);
+                if (_rebindPending) restart = true;
+                else _rebindWorkerRunning = false;
             }
+            if (restart) _ = Task.Run(RunRebindLoopAsync);
         }
     }
 
-    private async Task<(bool StopLoop, string? FaultNotification)> RebindOnceLockedAsync(bool deviceChanged)
+    private async Task<(bool StopLoop, string? FaultNotification)> RebindOnceLockedAsync(long batchGeneration, bool deviceChanged, Exception? initialFault)
     {
         if (Volatile.Read(ref _phase) is not MonitorPhase.Running running)
             return (true, null);
+        if (running.Generation != batchGeneration)
+            return (false, null);
 
-        var fault = Interlocked.Exchange(ref _pendingFault, null);
-        bool wasDeviceChange = deviceChanged || Interlocked.Exchange(ref _rebindFromDeviceChange, 0) != 0;
+        bool wasDeviceChange = deviceChanged;
+        Exception? fault = initialFault;
+        lock (_rebindLock)
+        {
+            if (_rebindGeneration == batchGeneration)
+            {
+                _rebindPending = false;
+                if (_rebindDeviceChanged)
+                {
+                    wasDeviceChange = true;
+                    _rebindDeviceChanged = false;
+                }
+                fault ??= _rebindFault;
+                _rebindFault = null;
+            }
+        }
 
         if (wasDeviceChange)
         {
@@ -517,38 +587,24 @@ internal sealed class LiveMonitorController : IAsyncDisposable
             if (++_consecutiveFaultRebinds > 1)
             {
                 string reason = AudioEngine.Friendly(fault);
-                await TransitionToFaultedDisabledLockedAsync(running, reason).ConfigureAwait(false);
+                await TeardownLockedAsync(new MonitorPhase.Disabled(reason)).ConfigureAwait(false);
                 return (true, reason);
             }
         }
 
-        ILiveMonitorOutput next;
         try
         {
-            next = await _factory.OpenDefaultAsync().ConfigureAwait(false);
+            await OpenAndAttachLockedAsync(running.Generation, running.Watcher).ConfigureAwait(false);
         }
         catch (Exception rebindError)
         {
             string reason = AudioEngine.Friendly(rebindError);
-            await TransitionToFaultedDisabledLockedAsync(running, reason).ConfigureAwait(false);
+            await TeardownLockedAsync(new MonitorPhase.Disabled(reason)).ConfigureAwait(false);
             return (true, reason);
         }
 
-        next.Faulted += error => HandleOutputFault(next, error);
-        Volatile.Write(ref _phase, running with { Output = next });
-        Volatile.Write(ref _activeOutput, next);
         await SafeDisposeOutputAsync(running.Output).ConfigureAwait(false);
         return (false, null);
-    }
-
-    private async Task TransitionToFaultedDisabledLockedAsync(MonitorPhase.Running running, string reason)
-    {
-        Volatile.Write(ref _activeOutput, null);
-        Interlocked.Increment(ref _generation);
-        Interlocked.Exchange(ref _rebindPending, 0);
-        Volatile.Write(ref _phase, new MonitorPhase.Disabled(reason));
-        SafeDisposeWatcher(running.Watcher);
-        await SafeDisposeOutputAsync(running.Output).ConfigureAwait(false);
     }
 
     private void NotifyFaulted(string reason)
@@ -585,18 +641,8 @@ internal sealed class LiveMonitorController : IAsyncDisposable
         await _gate.WaitAsync().ConfigureAwait(false);
         try
         {
-            var phase = Volatile.Read(ref _phase);
-            if (phase is MonitorPhase.Disposed) return;
-            Volatile.Write(ref _activeOutput, null);
-            Interlocked.Increment(ref _generation);
-            Interlocked.Exchange(ref _rebindPending, 0);
-            Interlocked.Exchange(ref _pendingFault, null);
-            Volatile.Write(ref _phase, new MonitorPhase.Disposed());
-            if (phase is MonitorPhase.Running running)
-            {
-                SafeDisposeWatcher(running.Watcher);
-                await SafeDisposeOutputAsync(running.Output).ConfigureAwait(false);
-            }
+            if (Volatile.Read(ref _phase) is MonitorPhase.Disposed) return;
+            await TeardownLockedAsync(new MonitorPhase.Disposed()).ConfigureAwait(false);
         }
         finally
         {

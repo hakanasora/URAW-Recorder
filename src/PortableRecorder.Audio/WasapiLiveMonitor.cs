@@ -18,9 +18,16 @@ public sealed class WasapiLiveMonitorFactory : ILiveMonitorFactory
         }
         catch (Exception openingError)
         {
+            var described = openingError is OperationCanceledException
+                ? openingError
+                : WasapiLiveMonitorOutput.DescribeRenderError(openingError);
             try { await output.DisposeAsync().ConfigureAwait(false); }
-            catch (Exception cleanupError) { throw AudioFailure.Combine(openingError, cleanupError); }
-            throw;
+            catch (Exception cleanupError)
+            {
+                throw AudioFailure.Combine(described, WasapiLiveMonitorOutput.DescribeRenderError(cleanupError));
+            }
+            if (ReferenceEquals(described, openingError)) throw;
+            throw described;
         }
     }
 
@@ -54,18 +61,41 @@ public sealed class WasapiLiveMonitorFactory : ILiveMonitorFactory
 internal sealed class WasapiLiveMonitorOutput : ILiveMonitorOutput
 {
     private const int AudclntEDeviceInvalidated = unchecked((int)0x88890004);
+    private const int AudclntEDeviceInUse = unchecked((int)0x8889000A);
     private const int ErrorNotFound = unchecked((int)0x80070490);
+    private const int EAccessDenied = unchecked((int)0x80070005);
 
     private readonly CancellationTokenSource _stop = new();
     private readonly TaskCompletionSource<MonitorOutputFormat> _ready = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly TaskCompletionSource _done = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly object _disposeGate = new();
+    private readonly object _faultLock = new();
+    private Action<Exception>? _faulted;
+    private Exception? _storedFault;
     private Task? _disposeTask;
     private LiveMonitorBuffer? _buffer;
 
     public Task<MonitorOutputFormat> Ready => _ready.Task;
-    public MonitorOutputFormat OutputFormat => _ready.Task.GetAwaiter().GetResult();
-    public event Action<Exception>? Faulted;
+
+    public event Action<Exception>? Faulted
+    {
+        add
+        {
+            if (value == null) return;
+            Exception? stored;
+            lock (_faultLock)
+            {
+                _faulted += value;
+                stored = _storedFault;
+            }
+            if (stored != null) _ = Task.Run(() => value(stored));
+        }
+        remove
+        {
+            if (value == null) return;
+            lock (_faultLock) _faulted -= value;
+        }
+    }
 
     public WasapiLiveMonitorOutput()
     {
@@ -83,6 +113,7 @@ internal sealed class WasapiLiveMonitorOutput : ILiveMonitorOutput
     {
         AudioClient? client = null;
         AudioRenderClient? renderClient = null;
+        EventWaitHandle? signal = null;
         IntPtr mmcss = IntPtr.Zero;
         bool started = false;
         Exception? cleanupFailure = null;
@@ -106,7 +137,7 @@ internal sealed class WasapiLiveMonitorOutput : ILiveMonitorOutput
                 var buffer = new LiveMonitorBuffer(outputFormat);
                 Volatile.Write(ref _buffer, buffer);
 
-                using var signal = new EventWaitHandle(false, EventResetMode.AutoReset);
+                signal = new EventWaitHandle(false, EventResetMode.AutoReset);
                 long duration = Math.Max(200_000, client.DefaultDevicePeriod);
                 client.Initialize(AudioClientShareMode.Shared, AudioClientStreamFlags.EventCallback, duration, 0, mix, Guid.Empty);
                 client.SetEventHandle(signal.SafeWaitHandle.DangerousGetHandle());
@@ -164,8 +195,17 @@ internal sealed class WasapiLiveMonitorOutput : ILiveMonitorOutput
             var reported = DescribeRenderError(error);
             if (!_ready.TrySetException(reported) && !_stop.IsCancellationRequested)
             {
-                try { Faulted?.Invoke(reported); }
-                catch (Exception callbackError) { cleanupFailure = callbackError; }
+                Action<Exception>? handler;
+                lock (_faultLock)
+                {
+                    _storedFault ??= reported;
+                    handler = _faulted;
+                }
+                if (handler != null)
+                {
+                    try { handler.Invoke(reported); }
+                    catch (Exception callbackError) { cleanupFailure = callbackError; }
+                }
             }
         }
         finally
@@ -178,6 +218,8 @@ internal sealed class WasapiLiveMonitorOutput : ILiveMonitorOutput
                     try { renderClient.Dispose(); } catch (Exception error) { cleanupFailure = AudioFailure.Combine(cleanupFailure, error); }
                 try { client.Dispose(); } catch (Exception error) { cleanupFailure = AudioFailure.Combine(cleanupFailure, error); }
             }
+            if (signal != null)
+                try { signal.Dispose(); } catch (Exception error) { cleanupFailure = AudioFailure.Combine(cleanupFailure, error); }
             if (mmcss != IntPtr.Zero)
             {
                 try
@@ -193,10 +235,12 @@ internal sealed class WasapiLiveMonitorOutput : ILiveMonitorOutput
         }
     }
 
-    private static Exception DescribeRenderError(Exception error) => error.HResult switch
+    internal static Exception DescribeRenderError(Exception error) => error.HResult switch
     {
         AudclntEDeviceInvalidated => new IOException("默认播放设备已断开或被系统重新配置。"),
+        AudclntEDeviceInUse => new IOException("默认播放设备正被其他程序独占占用。"),
         ErrorNotFound => new IOException("没有可用的默认播放设备。"),
+        EAccessDenied => new IOException("无法访问默认播放设备，请检查 Windows 音频播放权限。"),
         _ => error
     };
 
