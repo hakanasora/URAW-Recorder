@@ -264,7 +264,7 @@ static class UiStateChecks
     private static async Task ShellViewModelSnapshotChecks(string root,Action<bool,string> check)
     {
         var factory=new FakeFactory();await using var audio=TestSupport.CreateEngine(root,factory);
-        var vm=new ShellViewModel(audio);await using var listener=vm.Listener;
+        var vm=new ShellViewModel(audio,Path.Combine(root,"initial-monitor.json"));await using var listener=vm.Listener;
         check(!vm.IsListening && vm.CurrentAudioSnapshot.Epoch==audio.Latest.Epoch,"Recording mode exposes Audio.Latest directly");
         vm.Session.Update(AudioRunState.Paused,TimeSpan.FromSeconds(12));
         vm.SetWorkMode(true);

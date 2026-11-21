@@ -5,7 +5,6 @@ using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Markup;
 using Microsoft.UI.Xaml.Media;
-using Microsoft.UI.Xaml.Media.Animation;
 using Windows.Foundation;
 using Windows.UI;
 
@@ -13,23 +12,23 @@ namespace PortableRecorder.Desktop;
 
 public sealed class RecordingMonitorControl : Grid
 {
-    private const double KnobExpandedWidth = 96;
+    private const double KnobMarginLeft = 8;
     private readonly ShellViewModel _state;
-    private readonly Func<bool> _animationsEnabled;
     private readonly Button _toggle;
     private readonly FontIcon _icon = Design.Icon("\uE7F6", 15, Design.Muted);
     private readonly Border _revealHost;
     private readonly RectangleGeometry _revealClip = new();
     private readonly GainControl _knob;
-    private Storyboard? _reveal;
+    private readonly NativeTween _reveal;
     private bool _hovering;
     private bool _pressed;
     private bool? _lastEnabled;
 
+    private double RevealedWidth => KnobMarginLeft + _knob.VisualRightEdge + 4;
+
     public RecordingMonitorControl(ShellViewModel state, Func<bool> animationsEnabled)
     {
         _state = state;
-        _animationsEnabled = animationsEnabled;
         Height = 44;
         HorizontalAlignment = HorizontalAlignment.Left;
         VerticalAlignment = VerticalAlignment.Center;
@@ -80,6 +79,7 @@ public sealed class RecordingMonitorControl : Grid
             UseAccentOnNonZero: false,
             OnCommitted: () => _state.SaveRecordingMonitorPreferences()))
         {
+            Margin = new Thickness(8, 0, 0, 0),
             HorizontalAlignment = HorizontalAlignment.Left,
             VerticalAlignment = VerticalAlignment.Center
         };
@@ -88,14 +88,34 @@ public sealed class RecordingMonitorControl : Grid
         {
             Width = 0,
             Height = 44,
-            Margin = new Thickness(8, 0, 0, 0),
             HorizontalAlignment = HorizontalAlignment.Left,
             VerticalAlignment = VerticalAlignment.Center,
             Visibility = Visibility.Collapsed,
             Clip = _revealClip,
             Child = _knob
         };
-        _revealHost.SizeChanged += (_, _) => _revealClip.Rect = new Rect(0, 0, Math.Max(0, _revealHost.ActualWidth), Math.Max(0, _revealHost.ActualHeight));
+
+        _reveal = new NativeTween(
+            animationsEnabled,
+            w =>
+            {
+                double clamped = Math.Max(0, w);
+                _revealHost.Width = clamped;
+                _revealClip.Rect = new Rect(0, 0, clamped, 44);
+            },
+            milliseconds: 360,
+            x1: .25, y1: .1, x2: .25, y2: 1,
+            completed: () =>
+            {
+                if (!_state.RecordingMonitorEnabled)
+                    _revealHost.Visibility = Visibility.Collapsed;
+            });
+
+        _knob.VisualWidthChanged += () =>
+        {
+            if (_state.RecordingMonitorEnabled)
+                _reveal.To(RevealedWidth);
+        };
 
         Children.Add(_toggle);
         Children.Add(_revealHost);
@@ -106,7 +126,7 @@ public sealed class RecordingMonitorControl : Grid
     public void SetAccent(Color color) => _knob.SetAccent(color);
     public void CommitIfOutside(PointerRoutedEventArgs args) => _knob.CommitIfOutside(args);
     public void CancelEdit() => _knob.CancelInteraction();
-    public void ReleaseResources() { _reveal?.Stop(); _reveal = null; }
+    public void ReleaseResources() => _reveal.Stop();
 
     public void Refresh(bool animate = false)
     {
@@ -120,46 +140,25 @@ public sealed class RecordingMonitorControl : Grid
         ToolTipService.SetToolTip(_toggle, enabled ? "正在监听，点击关闭" : "开启录制监听");
 
         if (!enabled) _knob.CancelInteraction();
-        AnimateReveal(enabled, animate && _animationsEnabled());
-    }
-
-    private void AnimateReveal(bool enabled, bool animate)
-    {
-        var from = _revealHost.Visibility == Visibility.Visible ? _revealHost.Width : 0;
-        var target = enabled ? KnobExpandedWidth : 0;
-        _reveal?.Stop();
-        _reveal = null;
-        if (enabled) _revealHost.Visibility = Visibility.Visible;
-        _revealHost.Width = target;
-        if (!animate || Math.Abs(from - target) < .1)
+        if (enabled)
         {
-            if (!enabled) _revealHost.Visibility = Visibility.Collapsed;
-            return;
-        }
-        var motion = new DoubleAnimationUsingKeyFrames { EnableDependentAnimation = true, FillBehavior = FillBehavior.Stop };
-        motion.KeyFrames.Add(new DiscreteDoubleKeyFrame { KeyTime = TimeSpan.Zero, Value = from });
-        motion.KeyFrames.Add(new SplineDoubleKeyFrame
-        {
-            KeyTime = TimeSpan.FromMilliseconds(420),
-            Value = target,
-            KeySpline = new KeySpline { ControlPoint1 = new Point(.4, 0), ControlPoint2 = new Point(.2, 1) }
-        });
-        var storyboard = new Storyboard();
-        Storyboard.SetTarget(motion, _revealHost);
-        Storyboard.SetTargetProperty(motion, "Width");
-        storyboard.Children.Add(motion);
-        _reveal = storyboard;
-        storyboard.Completed += (_, _) =>
-        {
-            if (_reveal != storyboard) return;
-            _reveal = null;
-            if (!_state.RecordingMonitorEnabled)
+            if (_revealHost.Visibility != Visibility.Visible)
             {
-                _revealHost.Width = 0;
-                _revealHost.Visibility = Visibility.Collapsed;
+                _reveal.Jump(0);
+                _revealHost.Visibility = Visibility.Visible;
             }
-        };
-        storyboard.Begin();
+            if (animate) _reveal.To(RevealedWidth);
+            else _reveal.Jump(RevealedWidth);
+        }
+        else if (animate)
+        {
+            _reveal.To(0);
+        }
+        else
+        {
+            _reveal.Jump(0);
+            _revealHost.Visibility = Visibility.Collapsed;
+        }
     }
 
     private void ApplyToggleVisual()

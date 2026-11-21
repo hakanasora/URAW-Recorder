@@ -93,6 +93,7 @@ public sealed partial class MainWindow : Window
     private readonly List<Control> _recordingControls=[],_listeningControls=[];
     private readonly SolidColorBrush _linkInk=Design.Brush(Design.Link);
     private Storyboard? _widthAnimation;
+    private readonly NativeTween _monitorPushTween;
     private bool _firstFrameLogged,_updatingForm,_updatingCalibration,_alternateTypography;
     private TextBlock? _managerError;
     private readonly MainWindowCoordinator _coordinator=new();
@@ -181,14 +182,22 @@ public sealed partial class MainWindow : Window
         _inputName.VerticalAlignment=VerticalAlignment.Center;
         _inputName.Margin=new Thickness(28,0,0,0);
         _transport.Children.Add(_inputName);
-        void PositionTransportInputs()
+        double monitorGap=_gain.VisualRightEdge+18;
+        void ApplyTransportMargins()
         {
             double gainLeft=28+_inputName.GainStartOffset;
             _gain.Margin=new Thickness(gainLeft,0,0,0);
-            _monitorControl.Margin=new Thickness(gainLeft+_gain.VisualRightEdge+18,0,0,0);
+            _monitorControl.Margin=new Thickness(gainLeft+monitorGap,0,0,0);
         }
-        _inputName.SizeChanged+=(_,_)=>PositionTransportInputs();
-        _gain.VisualWidthChanged+=PositionTransportInputs;
+        _monitorPushTween=new NativeTween(()=>_settings.AnimationsEnabled,gap=>{monitorGap=gap;ApplyTransportMargins();},milliseconds:280,x1:.22,y1:1,x2:.36,y2:1);
+        _monitorPushTween.Jump(monitorGap);
+        _inputName.SizeChanged+=(_,_)=>ApplyTransportMargins();
+        _gain.VisualWidthChanged+=()=>
+        {
+            double next=_gain.VisualRightEdge+18;
+            if(_started)_monitorPushTween.To(next);
+            else _monitorPushTween.Jump(next);
+        };
         _clockSlot.Width=240;_clockSlot.Height=60;
         _clockSlot.RowDefinitions.Add(new(){Height=new GridLength(20)});
         _clockSlot.RowDefinitions.Add(new(){Height=new GridLength(40)});
@@ -290,7 +299,7 @@ public sealed partial class MainWindow : Window
                 _=_state.Audio.DisposeAsync();
             }
             _coordinator.MarkClosed();
-            _dialogs.Close();_drawer.Dispose();_settings.ColorValuesChanged-=OnSystemColorsChanged;_settings.AnimationsEnabledChanged-=OnAnimationsChanged;_settings.TextScaleFactorChanged-=OnTextScaleChanged;if(_root.XamlRoot!=null)_root.XamlRoot.Changed-=OnXamlRootChanged;CompositionTarget.Rendering-=OnRendering;_inputName.ReleaseResources();_monitorControl.ReleaseResources();_serviceNotice.ReleaseResources();_timer.Stop();_widthAnimation?.Stop();_monitorFade.Stop();_clockFade.Stop();_statusFade.Stop();_primaryFade.Stop();_pauseFade.Stop();_dialogShadeFade.Stop();ReleaseRenderSurface();_renderer.Dispose();
+            _dialogs.Close();_drawer.Dispose();_settings.ColorValuesChanged-=OnSystemColorsChanged;_settings.AnimationsEnabledChanged-=OnAnimationsChanged;_settings.TextScaleFactorChanged-=OnTextScaleChanged;if(_root.XamlRoot!=null)_root.XamlRoot.Changed-=OnXamlRootChanged;CompositionTarget.Rendering-=OnRendering;_inputName.ReleaseResources();_monitorControl.ReleaseResources();_monitorPushTween.Stop();_serviceNotice.ReleaseResources();_timer.Stop();_widthAnimation?.Stop();_monitorFade.Stop();_clockFade.Stop();_statusFade.Stop();_primaryFade.Stop();_pauseFade.Stop();_dialogShadeFade.Stop();ReleaseRenderSurface();_renderer.Dispose();
         };Content=_root;
     }
     private void BuildTitleBar()
