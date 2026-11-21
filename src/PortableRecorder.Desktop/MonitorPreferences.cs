@@ -5,6 +5,7 @@ namespace PortableRecorder.Desktop;
 
 internal static class MonitorPreferences
 {
+    internal const double DefaultGainDb = -30;
     private const int MaximumBytes = 64 * 1024;
     internal static string DefaultPath => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PortableRecorder", "recording-monitor.json");
 
@@ -13,7 +14,7 @@ internal static class MonitorPreferences
         path ??= DefaultPath;
         try
         {
-            if (!File.Exists(path) && !Directory.Exists(path)) return 0;
+            if (!File.Exists(path) && !Directory.Exists(path)) return DefaultGainDb;
             using var json = JsonDocument.Parse(AtomicFile.ReadTextBounded(path, MaximumBytes, "监听音量偏好文件过大。"));
             if (json.RootElement.ValueKind != JsonValueKind.Object ||
                 !json.RootElement.TryGetProperty("MonitorGainDb", out var value) ||
@@ -27,7 +28,7 @@ internal static class MonitorPreferences
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or JsonException or InvalidOperationException or InvalidDataException)
         {
-            return 0;
+            return DefaultGainDb;
         }
     }
 

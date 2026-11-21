@@ -103,7 +103,7 @@ public sealed partial class MainWindow
                 {
                     StopVolumeWatcher();
                     _state.SyncRecordingMonitorState();
-                    _monitorControl.Refresh(animate:false);
+                    _monitorControl.Refresh();
                 }
             }
             if(_closing)return;
@@ -194,7 +194,7 @@ public sealed partial class MainWindow
         _state.SyncRecordingMonitorState();
         _monitorControl.Visibility=listening?Visibility.Collapsed:Visibility.Visible;
         if(listening)_monitorControl.CancelEdit();
-        _monitorControl.Refresh(animate:false);
+        _monitorControl.Refresh();
         _paneSelector.Visibility=listening?Visibility.Collapsed:Visibility.Visible;
         _listenHeading.Visibility=listening?Visibility.Visible:Visibility.Collapsed;
         _listenHost.Visibility=listening?Visibility.Visible:Visibility.Collapsed;

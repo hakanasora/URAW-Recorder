@@ -4,33 +4,22 @@ using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Markup;
-using Microsoft.UI.Xaml.Media;
-using Windows.Foundation;
 using Windows.UI;
 
 namespace PortableRecorder.Desktop;
 
 public sealed class RecordingMonitorControl : Grid
 {
-    private enum RevealPhase { Collapsed, Opening, Open, Closing }
-
-    private const double KnobMarginLeft = 8;
     private readonly ShellViewModel _state;
     private readonly Button _toggle;
     private readonly FontIcon _icon = Design.Icon("\uE7F6", 15, Design.Muted);
-    private readonly Border _revealHost;
-    private readonly RectangleGeometry _revealClip = new();
     private readonly GainControl _knob;
-    private readonly NativeTween _reveal;
-    private RevealPhase _phase = RevealPhase.Collapsed;
     private bool _hovering;
     private bool _pressed;
     private bool _toggling;
     private bool? _lastEnabled;
 
-    private double RevealedWidth => KnobMarginLeft + _knob.VisualRightEdge + 4;
-
-    public RecordingMonitorControl(ShellViewModel state, Func<bool> animationsEnabled, Func<bool, Task> onToggleRequested)
+    public RecordingMonitorControl(ShellViewModel state, Func<bool, Task> onToggleRequested)
     {
         _state = state;
         Height = 44;
@@ -90,7 +79,7 @@ public sealed class RecordingMonitorControl : Grid
             finally
             {
                 _toggling = false;
-                Refresh(animate: true);
+                Refresh();
             }
         };
 
@@ -105,44 +94,21 @@ public sealed class RecordingMonitorControl : Grid
         {
             Margin = new Thickness(8, 0, 0, 0),
             HorizontalAlignment = HorizontalAlignment.Left,
-            VerticalAlignment = VerticalAlignment.Center
-        };
-
-        _revealHost = new Border
-        {
-            Width = 0,
-            Height = 44,
-            HorizontalAlignment = HorizontalAlignment.Left,
             VerticalAlignment = VerticalAlignment.Center,
-            Visibility = Visibility.Collapsed,
-            Clip = _revealClip,
-            Child = _knob
+            Visibility = Visibility.Collapsed
         };
-
-        _reveal = new NativeTween(
-            animationsEnabled,
-            w =>
-            {
-                double clamped = Math.Max(0, w);
-                _revealHost.Width = clamped;
-                _revealClip.Rect = new Rect(0, 0, clamped, 44);
-            },
-            milliseconds: 260,
-            x1: .22, y1: 1, x2: .36, y2: 1,
-            completed: CompleteReveal);
 
         Children.Add(_toggle);
-        Children.Add(_revealHost);
-        Grid.SetColumn(_revealHost, 1);
-        Refresh(animate: false);
+        Children.Add(_knob);
+        Grid.SetColumn(_knob, 1);
+        Refresh();
     }
 
     public void SetAccent(Color color) => _knob.SetAccent(color);
     public void CommitIfOutside(PointerRoutedEventArgs args) => _knob.CommitIfOutside(args);
     public void CancelEdit() => _knob.CancelInteraction();
-    public void ReleaseResources() => _reveal.Stop();
 
-    public void Refresh(bool animate = false)
+    public void Refresh()
     {
         bool enabled = _state.RecordingMonitorEnabled;
         _knob.Refresh();
@@ -153,76 +119,8 @@ public sealed class RecordingMonitorControl : Grid
         AutomationProperties.SetName(_toggle, enabled ? "关闭监听" : "开启监听");
         ToolTipService.SetToolTip(_toggle, enabled ? "正在监听，点击关闭" : "开启录制监听");
 
-        if (enabled) OpenReveal(animate);
-        else CloseReveal(animate);
-    }
-
-    private void OpenReveal(bool animate)
-    {
-        if (!animate)
-        {
-            _phase = RevealPhase.Open;
-            _reveal.Stop();
-            _revealHost.Clip = null;
-            _revealHost.Width = double.NaN;
-            _revealHost.Visibility = Visibility.Visible;
-            return;
-        }
-
-        if (_phase == RevealPhase.Open) return;
-        if (_phase == RevealPhase.Collapsed)
-        {
-            _revealClip.Rect = new Rect(0, 0, 0, 44);
-            _revealHost.Clip = _revealClip;
-            _revealHost.Width = double.NaN;
-            _revealHost.Visibility = Visibility.Visible;
-            UpdateLayout();
-            double target = RevealedWidth;
-            _reveal.Jump(0);
-            _phase = RevealPhase.Opening;
-            _reveal.To(target);
-            return;
-        }
-
-        _phase = RevealPhase.Opening;
-        _reveal.To(RevealedWidth);
-    }
-
-    private void CloseReveal(bool animate)
-    {
-        _knob.CancelInteraction();
-        if (!animate || _phase == RevealPhase.Collapsed)
-        {
-            _phase = RevealPhase.Collapsed;
-            _reveal.Jump(0);
-            _revealHost.Clip = _revealClip;
-            _revealHost.Visibility = Visibility.Collapsed;
-            return;
-        }
-
-        double startWidth = _phase == RevealPhase.Open
-            ? Math.Max(_revealHost.ActualWidth, RevealedWidth)
-            : Math.Max(0, _reveal.Current);
-        _phase = RevealPhase.Closing;
-        _revealHost.Clip = _revealClip;
-        _reveal.Jump(startWidth);
-        _reveal.To(0);
-    }
-
-    private void CompleteReveal()
-    {
-        switch (_phase)
-        {
-            case RevealPhase.Opening:
-                _phase = RevealPhase.Open;
-                _revealHost.Width = double.NaN;
-                _revealHost.Clip = null;
-                break;
-            case RevealPhase.Closing:
-                _phase = RevealPhase.Collapsed;
-                _revealHost.Visibility = Visibility.Collapsed;
-                break;
-        }
+        if (!enabled) _knob.CancelInteraction();
+        _knob.Visibility = enabled ? Visibility.Visible : Visibility.Collapsed;
     }
 
     private void ApplyToggleVisual()

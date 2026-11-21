@@ -179,7 +179,7 @@ public sealed partial class MainWindow : Window
         _transport.Background=Design.Brush(displaySurface);
         _transport.Children.Add(new Border{Height=1,Background=Design.Brush(MaterialSurface.Tint(Colors.White,14)),VerticalAlignment=VerticalAlignment.Top,IsHitTestVisible=false});
         _gain=new(_state){Width=96,HorizontalAlignment=HorizontalAlignment.Left,VerticalAlignment=VerticalAlignment.Center,Margin=new Thickness(190,0,0,0)};_transport.Children.Add(_gain);
-        _monitorControl=new(_state,()=>_settings.AnimationsEnabled,ToggleRecordingMonitorAsync){Margin=new Thickness(262,0,0,0)};_transport.Children.Add(_monitorControl);
+        _monitorControl=new(_state,ToggleRecordingMonitorAsync){Margin=new Thickness(262,0,0,0)};_transport.Children.Add(_monitorControl);
         _inputName.HorizontalAlignment=HorizontalAlignment.Left;
         _inputName.VerticalAlignment=VerticalAlignment.Center;
         _inputName.Margin=new Thickness(28,0,0,0);
@@ -302,7 +302,7 @@ public sealed partial class MainWindow : Window
             }
             _coordinator.MarkClosed();
             _state.Audio.LiveMonitorFaulted-=OnLiveMonitorFaulted;
-            _dialogs.Close();_drawer.Dispose();_settings.ColorValuesChanged-=OnSystemColorsChanged;_settings.AnimationsEnabledChanged-=OnAnimationsChanged;_settings.TextScaleFactorChanged-=OnTextScaleChanged;if(_root.XamlRoot!=null)_root.XamlRoot.Changed-=OnXamlRootChanged;CompositionTarget.Rendering-=OnRendering;_inputName.ReleaseResources();_monitorControl.ReleaseResources();_monitorPushTween.Stop();_serviceNotice.ReleaseResources();_timer.Stop();_widthAnimation?.Stop();_monitorFade.Stop();_clockFade.Stop();_statusFade.Stop();_primaryFade.Stop();_pauseFade.Stop();_dialogShadeFade.Stop();ReleaseRenderSurface();_renderer.Dispose();
+            _dialogs.Close();_drawer.Dispose();_settings.ColorValuesChanged-=OnSystemColorsChanged;_settings.AnimationsEnabledChanged-=OnAnimationsChanged;_settings.TextScaleFactorChanged-=OnTextScaleChanged;if(_root.XamlRoot!=null)_root.XamlRoot.Changed-=OnXamlRootChanged;CompositionTarget.Rendering-=OnRendering;_inputName.ReleaseResources();_monitorPushTween.Stop();_serviceNotice.ReleaseResources();_timer.Stop();_widthAnimation?.Stop();_monitorFade.Stop();_clockFade.Stop();_statusFade.Stop();_primaryFade.Stop();_pauseFade.Stop();_dialogShadeFade.Stop();ReleaseRenderSurface();_renderer.Dispose();
         };Content=_root;
     }
     private void BuildTitleBar()
@@ -922,14 +922,14 @@ public sealed partial class MainWindow : Window
         {
             await _state.SetRecordingMonitorEnabledAsync(enable);
             if(_closing)return;
-            _monitorControl.Refresh(animate:true);
+            _monitorControl.Refresh();
             if(_state.RecordingMonitorEnabled)MaybeEnqueueMonitorCalibrationNotice();
         }
         catch(Exception error)
         {
             StartupLog.Write("Live monitor toggle failed: "+error);
             _state.SyncRecordingMonitorState();
-            _monitorControl.Refresh(animate:true);
+            _monitorControl.Refresh();
             if(!_closing)await Message(enable?"无法开启监听":"关闭监听失败",AudioEngine.Friendly(error));
         }
     }
@@ -941,7 +941,7 @@ public sealed partial class MainWindow : Window
         {
             if(_closing)return;
             _state.SyncRecordingMonitorState();
-            _monitorControl.Refresh(animate:true);
+            _monitorControl.Refresh();
             await Message("监听已关闭",reason);
         });
     }

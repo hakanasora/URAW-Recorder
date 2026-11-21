@@ -306,7 +306,7 @@ static class UiStateChecks
         vm.SetWorkMode(false);
         vm.Refresh();
         check(!vm.IsListening && vm.Session.Stage==RecordingStage.Ready,"Returning to recording mode resumes syncing TransportSession from Audio");
-        check(!vm.RecordingMonitorEnabled && vm.RecordingMonitorDb==0 && monitorFactory.OpenCount==0,"Recording monitor defaults to disabled at 0 dB without opening playback");
+        check(!vm.RecordingMonitorEnabled && vm.RecordingMonitorDb==-30 && monitorFactory.OpenCount==0,"Recording monitor defaults to disabled at -30 dB without opening playback");
 
         await vm.SetRecordingMonitorEnabledAsync(true);
         check(vm.RecordingMonitorEnabled && audio.LiveMonitor.Enabled && monitorFactory.OpenCount==1,"SetRecordingMonitorEnabledAsync(true) activates backend output");
@@ -330,28 +330,43 @@ static class UiStateChecks
         check(!vm.RecordingMonitorEnabled && !audio.LiveMonitor.Enabled,"SyncRecordingMonitorState reflects auto-off after SuspendMonitoringAsync");
 
         string monitorPrefPath=Path.Combine(root,"recording-monitor.json");
-        var prefMonitorFactory=new FakeLiveMonitorFactory();
-        await using var prefAudio=TestSupport.CreateEngine(root,new FakeFactory(),liveMonitorFactory:prefMonitorFactory);
+        var prefCapture=new FakeFactory();var prefMonitorFactory=new FakeLiveMonitorFactory();
+        await using var prefAudio=TestSupport.CreateEngine(root,prefCapture,liveMonitorFactory:prefMonitorFactory);
+        await prefAudio.SelectDeviceAsync(prefCapture.Device);
         var prefVm=new ShellViewModel(prefAudio,monitorPrefPath);await using var prefListener=prefVm.Listener;
-        check(!prefVm.RecordingMonitorEnabled && prefVm.RecordingMonitorDb==0,"Missing monitor preference starts disabled at 0 dB");
+        check(!prefVm.RecordingMonitorEnabled && prefVm.RecordingMonitorDb==-30 && prefMonitorFactory.OpenCount==0,"Missing monitor preference starts disabled at -30 dB");
         await prefVm.SetRecordingMonitorEnabledAsync(true);
-        prefVm.SetRecordingMonitorGain(-12.5);
+        prefCapture.Push([0.5f,0.5f,0.5f,0.5f]);
+        await TestSupport.Until(()=>prefMonitorFactory.Current!.WriteCount>0,"cold-start monitor receives initial packet");
+        check(Math.Abs(prefMonitorFactory.Current!.LastLinearGain-Math.Pow(10,-30.0/20))<1e-6,"Cold start without preference file pushes -30 dB linear gain to AudioEngine when monitoring opens");
+        prefVm.SetRecordingMonitorGain(-8.5);
         prefVm.SaveRecordingMonitorPreferences();
+        check(MonitorPreferences.Load(monitorPrefPath)==-8.5,"Saved -8.5 dB preference loads back cleanly");
 
         var restartCapture=new FakeFactory();var restartMonitor=new FakeLiveMonitorFactory();
         await using var restartAudio=TestSupport.CreateEngine(root,restartCapture,liveMonitorFactory:restartMonitor);
         await restartAudio.SelectDeviceAsync(restartCapture.Device);
         var restartedVm=new ShellViewModel(restartAudio,monitorPrefPath);await using var restartedListener=restartedVm.Listener;
-        check(!restartedVm.RecordingMonitorEnabled && restartedVm.RecordingMonitorDb==-12.5 && restartMonitor.OpenCount==0,
-            "Restart resets monitor toggle to disabled while restoring saved dB gain");
+        check(!restartedVm.RecordingMonitorEnabled && restartedVm.RecordingMonitorDb==-8.5 && restartMonitor.OpenCount==0,
+            "Restart resets monitor toggle to disabled while restoring saved -8.5 dB gain");
         await restartedVm.SetRecordingMonitorEnabledAsync(true);
         restartCapture.Push([0.5f,0.5f,0.5f,0.5f]);
         await TestSupport.Until(()=>restartMonitor.Current!.WriteCount>0,"restarted monitor receives initial packet");
-        check(Math.Abs(restartMonitor.Current!.LastLinearGain-Math.Pow(10,-12.5/20))<1e-6,
+        check(Math.Abs(restartMonitor.Current!.LastLinearGain-Math.Pow(10,-8.5/20))<1e-6,
             "Cold start pushes saved RecordingMonitorDb to backend before monitor is enabled");
 
+        restartedVm.SetRecordingMonitorGain(0);
+        restartedVm.SaveRecordingMonitorPreferences();
+        check(MonitorPreferences.Load(monitorPrefPath)==0,"Explicitly saved 0 dB preference loads back as 0 dB instead of default");
+        await using var zeroAudio=TestSupport.CreateEngine(root,new FakeFactory(),liveMonitorFactory:new FakeLiveMonitorFactory());
+        var zeroVm=new ShellViewModel(zeroAudio,monitorPrefPath);await using var zeroListener=zeroVm.Listener;
+        check(!zeroVm.RecordingMonitorEnabled && zeroVm.RecordingMonitorDb==0,"ShellViewModel reload preserves explicit 0 dB user preference");
+
         File.WriteAllText(monitorPrefPath,"{broken-json");
-        check(MonitorPreferences.Load(monitorPrefPath)==0,"Corrupt monitor preference safely resets to 0 dB");
+        check(MonitorPreferences.Load(monitorPrefPath)==-30,"Corrupt monitor preference safely resets to -30 dB");
+        await using var corruptAudio=TestSupport.CreateEngine(root,new FakeFactory(),liveMonitorFactory:new FakeLiveMonitorFactory());
+        var corruptVm=new ShellViewModel(corruptAudio,monitorPrefPath);await using var corruptListener=corruptVm.Listener;
+        check(corruptVm.RecordingMonitorDb==-30,"ShellViewModel falls back to -30 dB on corrupt monitor preference");
     }
 
     private static void CoordinatorChecks(Action<bool,string> check)
