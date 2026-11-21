@@ -44,10 +44,10 @@ internal sealed class ProcessingPipeline:IAsyncDisposable
     private long _queuedBytes,_budget=64*1024*1024,_frames,_base,_delivered,_unconfirmedDiscontinuities;
     private WorkerPhase _workerPhase=new WorkerPhase.AwaitingConfigure();
     private AttachmentPhase _attachment=new AttachmentPhase.Detached();
-    private ProcessingState? _processing;
-    private CaptureInfo? _info;
     private long _diagnosticTime=Stopwatch.GetTimestamp(),_packetsSinceReport,_queueHighWater;
     private double _maxWakeGapMs,_maxBufferHoldMs;
+    private WorkerPhase.Running? RunningPhase=>Volatile.Read(ref _workerPhase) as WorkerPhase.Running;
+    private WorkerPhase.Running RequireRunning()=>RunningPhase??throw (Failure??new ObjectDisposedException(nameof(ProcessingPipeline)));
     public CalibrationStatus Calibration
     {
         get
@@ -86,32 +86,33 @@ internal sealed class ProcessingPipeline:IAsyncDisposable
         if(_queue.Writer.TryWrite(new(packet,null,null)))return true;
         Interlocked.Add(ref _queuedBytes,-packet.Length);return false;
     }
-    private ProcessingState Prepare(CalibrationPlan plan,double? initialPeak=null)
-        =>new(plan,new CalibrationProcessor(plan,_info!.Format.Channels),new AudioAnalyzer(_info.Format,_info.Epoch,initialPeak:initialPeak));
-    private ProcessingState? Install(ProcessingState next,bool gap=false)
+    private static ProcessingState Prepare(CaptureInfo info,CalibrationPlan plan,double? initialPeak=null)
+        =>new(plan,new CalibrationProcessor(plan,info.Format.Channels),new AudioAnalyzer(info.Format,info.Epoch,initialPeak:initialPeak));
+    private ProcessingState? Install(CaptureInfo info,ProcessingState next,bool gap=false)
     {
-        var previous=_processing;
+        var previous=RunningPhase?.State;
         next.Segment=(previous?.Segment??-1)+1;
         next.RecoveredDiscontinuities=(previous?.RecoveredDiscontinuities??0)+(gap?1:0);
         next.Revision=(previous?.Revision??0)+1;
         _base=_delivered=_frames;
-        _processing=next;
-        Volatile.Write(ref _workerPhase,new WorkerPhase.Running(_info!,next));
+        Volatile.Write(ref _workerPhase,new WorkerPhase.Running(info,next));
         return previous;
     }
-    private void Rebuild(CalibrationPlan plan,bool gap=false,bool preservePeak=false)
+    private void Rebuild(CaptureInfo info,CalibrationPlan plan,bool gap=false,bool preservePeak=false)
     {
-        double? peak=gap||preservePeak?_processing?.Analyzer.Latest.HeldPeakDbfs:null;
-        var next=Prepare(plan,peak);
-        try{_processing?.Analyzer.Dispose();}
+        var previous=RunningPhase?.State;
+        double? peak=gap||preservePeak?previous?.Analyzer.Latest.HeldPeakDbfs:null;
+        var next=Prepare(info,plan,peak);
+        try{previous?.Analyzer.Dispose();}
         catch{next.Analyzer.Dispose();throw;}
-        Install(next,gap);
+        Install(info,next,gap);
     }
     private async Task Run()
     {
+        AudioAnalyzer? activeAnalyzer=null;
         try
         {
-            var configured=await _configured.Task;_info=configured.Info;Rebuild(configured.Plan);_ready.TrySetResult();
+            var configured=await _configured.Task;var info=configured.Info;Rebuild(info,configured.Plan);_ready.TrySetResult();
             await foreach(var work in _queue.Reader.ReadAllAsync())
             {
                 if(work.Command!=null)
@@ -126,27 +127,28 @@ internal sealed class ProcessingPipeline:IAsyncDisposable
                 _maxBufferHoldMs=Math.Max(_maxBufferHoldMs,packet.BufferHoldMs);
                 if(Stopwatch.GetElapsedTime(_diagnosticTime).TotalSeconds>=10)
                 {
-                    _diagnostic($"Capture health: epoch={_info.Epoch}; packets={_packetsSinceReport}; maxWakeMs={_maxWakeGapMs:F3}; maxBufferHoldMs={_maxBufferHoldMs:F3}; queueHighBytes={_queueHighWater}; budgetBytes={_budget}");
+                    _diagnostic($"Capture health: epoch={info.Epoch}; packets={_packetsSinceReport}; maxWakeMs={_maxWakeGapMs:F3}; maxBufferHoldMs={_maxBufferHoldMs:F3}; queueHighBytes={_queueHighWater}; budgetBytes={_budget}");
                     _diagnosticTime=Stopwatch.GetTimestamp();_packetsSinceReport=0;_queueHighWater=0;_maxWakeGapMs=0;_maxBufferHoldMs=0;
                 }
                 if(packet.Discontinuity)
                 {
-                    string detail=$" flags=0x{packet.NativeFlags:X}; position={packet.Position}; delta={packet.PositionDelta?.ToString(System.Globalization.CultureInfo.InvariantCulture)??"unknown"}; qpc={packet.Qpc100ns}; frames={packet.Frames}; rate={_info.Format.SampleRate}; exclusive={_info.Exclusive}; raw={_info.Raw}; wakeMs={packet.WakeGapMs:F3}; bufferHoldMs={packet.BufferHoldMs:F3}; queuedBytes={Interlocked.Read(ref _queuedBytes)}; epoch={_info.Epoch}";
+                    string detail=$" flags=0x{packet.NativeFlags:X}; position={packet.Position}; delta={packet.PositionDelta?.ToString(System.Globalization.CultureInfo.InvariantCulture)??"unknown"}; qpc={packet.Qpc100ns}; frames={packet.Frames}; rate={info.Format.SampleRate}; exclusive={info.Exclusive}; raw={info.Raw}; wakeMs={packet.WakeGapMs:F3}; bufferHoldMs={packet.BufferHoldMs:F3}; queuedBytes={Interlocked.Read(ref _queuedBytes)}; epoch={info.Epoch}";
                     _diagnostic("Capture discontinuity:"+detail);
                     if(_attachment is AttachmentPhase.Writing or AttachmentPhase.PauseDraining or AttachmentPhase.StopDraining)
                     {
                         if(packet.PositionDelta!=0||(packet.NativeFlags&1)==0)throw new CaptureGapException(detail,packet.PositionDelta,packet.NativeFlags);
                         Interlocked.Increment(ref _unconfirmedDiscontinuities);
                     }
-                    else Rebuild(_processing!.Plan,true);
+                    else Rebuild(info,RunningPhase!.State.Plan,true);
                 }
-                int count=checked(packet.Frames*_info.Format.Channels);
+                int count=checked(packet.Frames*info.Format.Channels);
                 var data=ArrayPool<float>.Shared.Rent(count);var output=ArrayPool<float>.Shared.Rent(count);
                 try
                 {
-                    PcmDecoder.Decode(packet.Data.AsSpan(0,packet.Length),data.AsSpan(0,count),_info.Format,packet.Silent);
-                    var result=_processing!.Processor.Process(data.AsSpan(0,count),output.AsSpan(0,count),_gain());
-                    _frames+=packet.Frames;Deliver(output.AsSpan(0,result.Frames*_info.Format.Channels),result);
+                    PcmDecoder.Decode(packet.Data.AsSpan(0,packet.Length),data.AsSpan(0,count),info.Format,packet.Silent);
+                    var running=RunningPhase!;
+                    var result=running.State.Processor.Process(data.AsSpan(0,count),output.AsSpan(0,count),_gain());
+                    _frames+=packet.Frames;Deliver(running,output.AsSpan(0,result.Frames*info.Format.Channels),result);
                 }
                 finally{ArrayPool<float>.Shared.Return(data);ArrayPool<float>.Shared.Return(output);}
             }
@@ -154,6 +156,7 @@ internal sealed class ProcessingPipeline:IAsyncDisposable
         catch(OperationCanceledException){}
         catch(Exception error)
         {
+            activeAnalyzer=RunningPhase?.State.Analyzer;
             error=FinalizeAttachmentOnFault(error);
             Volatile.Write(ref _workerPhase,new WorkerPhase.Faulted(error));
             _queue.Writer.TryComplete(error);
@@ -167,7 +170,12 @@ internal sealed class ProcessingPipeline:IAsyncDisposable
             var error=(phase as WorkerPhase.Faulted)?.Error??new ObjectDisposedException(nameof(ProcessingPipeline));
             DetachAttachmentOnExit(error);
             while(_queue.Reader.TryRead(out var pending)){pending.Packet?.Dispose();pending.Completion?.TrySetException(error);}
-            if(phase is not WorkerPhase.Faulted)Volatile.Write(ref _workerPhase,new WorkerPhase.Disposed());
+            if(phase is not WorkerPhase.Faulted)
+            {
+                activeAnalyzer??=RunningPhase?.State.Analyzer;
+                Volatile.Write(ref _workerPhase,new WorkerPhase.Disposed());
+            }
+            activeAnalyzer?.Dispose();
         }
     }
     private IRecordingWriter? ActiveWriter=>_attachment switch
@@ -180,27 +188,30 @@ internal sealed class ProcessingPipeline:IAsyncDisposable
     };
     private Exception FinalizeAttachmentOnFault(Exception error)
     {
+        AttachmentPhase.StopDraining stop;
+        TaskCompletionSource<Exception?>? boundary;
         switch(_attachment)
         {
             case AttachmentPhase.Writing w:
-                _attachment=new AttachmentPhase.StopDraining(w.Writer,w.StartFrame,_frames,false,w.HeldPeakStart,new(TaskCreationOptions.RunContinuationsAsynchronously));
+                boundary=null;
+                stop=new(w.Writer,w.StartFrame,_frames,false,w.HeldPeakStart,null);
                 break;
             case AttachmentPhase.PauseDraining p:
-                _attachment=new AttachmentPhase.StopDraining(p.Writer,p.StartFrame,p.CutoffFrame,false,p.HeldPeakStart,p.Boundary);
+                boundary=p.Boundary;
+                stop=new(p.Writer,p.StartFrame,p.CutoffFrame,false,p.HeldPeakStart,null);
                 break;
             case AttachmentPhase.StopDraining s:
-                _attachment=s with{ResetPeakOnDetach=false};
+                boundary=s.Boundary;
+                stop=s with{ResetPeakOnDetach=false,Boundary=null};
                 break;
             default:
                 DetachAttachmentOnExit(error);
                 return error;
         }
-        var stop=(AttachmentPhase.StopDraining)_attachment;
-        var boundary=stop.Boundary;
-        _attachment=stop with{ResetPeakOnDetach=false,Boundary=null};
-        if(stop.Writer.Failure==null&&_processing!=null)
+        _attachment=stop;
+        if(stop.Writer.Failure==null&&RunningPhase is { } running)
         {
-            try{Drain();}
+            try{Drain(running);}
             catch(Exception drainError){error=AudioFailure.Combine(error,drainError);}
         }
         DetachWriter(resetPeak:false,boundary,error);
@@ -215,9 +226,9 @@ internal sealed class ProcessingPipeline:IAsyncDisposable
             case AttachmentPhase.Writing or AttachmentPhase.Paused:_attachment=new AttachmentPhase.Detached();break;
         }
     }
-    private void Deliver(ReadOnlySpan<float> samples,CalibrationOutput result)
+    private void Deliver(WorkerPhase.Running running,ReadOnlySpan<float> samples,CalibrationOutput result)
     {
-        int channels=_info!.Format.Channels;long first=_base+result.SourceStartFrame,last=first+result.Frames;
+        int channels=running.Info.Format.Channels;long first=_base+result.SourceStartFrame,last=first+result.Frames;
         if(ActiveWriter?.Failure is Exception disk)throw new IOException("录制文件写入失败："+AudioFailure.Describe(disk),disk);
         if(result.Frames>0)
         {
@@ -242,7 +253,7 @@ internal sealed class ProcessingPipeline:IAsyncDisposable
                 _=>0
             };
             int skipHeldPeak=(int)Math.Clamp(heldPeakStart-first,0,result.Frames);
-            _processing!.Analyzer.Process(samples,result.SourcePeak,last,skipHeldPeak);_delivered=last;
+            running.State.Analyzer.Process(samples,result.SourcePeak,last,skipHeldPeak);_delivered=last;
         }
         FinishBoundary();
     }
@@ -270,17 +281,16 @@ internal sealed class ProcessingPipeline:IAsyncDisposable
     private void DetachWriter(bool resetPeak,TaskCompletionSource<Exception?>? boundary,Exception? error)
     {
         _attachment=new AttachmentPhase.Detached();
-        if(error==null&&resetPeak)_processing!.Analyzer.ResetPeak();
+        if(error==null&&resetPeak)RunningPhase?.State.Analyzer.ResetPeak();
         boundary?.TrySetResult(error);
     }
-    private void Drain()
+    private void Drain(WorkerPhase.Running running)
     {
-        if(_processing==null)return;
-        int delay=_processing.Plan.LatencyFrames;
-        if(delay==0){Deliver(ReadOnlySpan<float>.Empty,new(0,0,0));return;}
-        int count=delay*_info!.Format.Channels;
-        var output=new float[count];var result=_processing.Processor.Flush(output);
-        Deliver(output.AsSpan(0,result.Frames*_info.Format.Channels),result);
+        int delay=running.State.Plan.LatencyFrames;
+        if(delay==0){Deliver(running,ReadOnlySpan<float>.Empty,new(0,0,0));return;}
+        int count=delay*running.Info.Format.Channels;
+        var output=new float[count];var result=running.State.Processor.Flush(output);
+        Deliver(running,output.AsSpan(0,result.Frames*running.Info.Format.Channels),result);
     }
     public Task Command(Action action)
     {
@@ -303,15 +313,18 @@ internal sealed class ProcessingPipeline:IAsyncDisposable
     // AudioEngine serializes this transition with writer attachment and capture disposal.
     public Task ChangeCalibrationAsync(CalibrationPlan plan,Action persist)=>Task.Run(async()=>
     {
-        var next=Prepare(plan);
+        if(Failure is Exception failure)ExceptionDispatchInfo.Throw(failure);
+        var current=RequireRunning();
+        var next=Prepare(current.Info,plan);
         bool installed=false;
         try
         {
-            if(Failure is Exception failure)ExceptionDispatchInfo.Throw(failure);
+            if(Failure is Exception faultAfterPrepare)ExceptionDispatchInfo.Throw(faultAfterPrepare);
             persist();
             await Command(()=>
             {
-                var previous=Install(next);
+                var running=RequireRunning();
+                var previous=Install(running.Info,next);
                 installed=true;
                 previous?.Analyzer.Dispose();
             });
@@ -326,7 +339,7 @@ internal sealed class ProcessingPipeline:IAsyncDisposable
         if(_attachment is not AttachmentPhase.Detached)throw new InvalidOperationException("已有活动录音附着于管线。");
         _attachment=new AttachmentPhase.Writing(writer,_frames,_frames);
         Interlocked.Exchange(ref _unconfirmedDiscontinuities,0);
-        _processing!.Analyzer.ResetPeak();
+        RunningPhase?.State.Analyzer.ResetPeak();
     });
     public async Task<Task<Exception?>> RequestPauseAsync()
     {
@@ -354,15 +367,15 @@ internal sealed class ProcessingPipeline:IAsyncDisposable
             _attachment=new AttachmentPhase.Writing(paused.Writer,_frames,paused.HeldPeakStart);
     });
     private void TraceBoundary(string kind,long cutoff)
-        =>_diagnostic($"Recording source boundary: {kind}; frame={cutoff}; delivered={_delivered}; delay={_processing!.Plan.LatencyFrames}");
+        =>_diagnostic($"Recording source boundary: {kind}; frame={cutoff}; delivered={_delivered}; delay={RunningPhase?.State.Plan.LatencyFrames??0}");
     private void DrainAndDetach(AttachmentPhase.StopDraining stop,bool rebuild)
     {
         try
         {
-            Drain();
+            if(RunningPhase is { } running)Drain(running);
             if(_attachment is not AttachmentPhase.Detached)throw new IOException("校准尾部未完成，录音可能不完整。");
             // Zero-draining advances convolution beyond real capture. Restart the monitoring clock.
-            if(rebuild)Rebuild(_processing!.Plan,preservePeak:true);
+            if(rebuild&&RunningPhase is { } current)Rebuild(current.Info,current.State.Plan,preservePeak:true);
         }
         catch(Exception error)
         {
@@ -435,19 +448,17 @@ internal sealed class ProcessingPipeline:IAsyncDisposable
         {
             var timeout=new IOException("等待校准尾部时采集未继续，本次录音可能不完整。");
             try{error=await await RequestDetachAsync(mathematicalDrain:true,resetPeak);}
-            catch(Exception cleanupError) when(Failure==null){error=cleanupError;}
-            catch(Exception faultError){error=faultError;}
+            catch(Exception cleanupError){error=cleanupError;}
             throw error==null?timeout:AudioFailure.Combine(timeout,error);
         }
         if(error!=null)ExceptionDispatchInfo.Throw(error);
     }
-    public Task ResetPeakAsync()=>Command(()=>_processing!.Analyzer.ResetPeak());
+    public Task ResetPeakAsync()=>Command(()=>RunningPhase?.State.Analyzer.ResetPeak());
     public async ValueTask DisposeAsync()
     {
         _configured.TrySetCanceled();
         _queue.Writer.TryComplete();
         await _worker.ConfigureAwait(false);
         _ = _ready.Task.Exception;
-        if(Interlocked.Exchange(ref _processing,null) is { } processing)processing.Analyzer.Dispose();
     }
 }

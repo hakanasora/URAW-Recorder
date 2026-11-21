@@ -10,10 +10,9 @@ public sealed class FloatWaveWriter:IRecordingWriter
     private readonly Stream _file;
     private readonly int _channels;
     private long _frames;
-    private Exception? _failure;
     public string Path {get;}
     public long WrittenFrames=>Interlocked.Read(ref _frames);
-    public Exception? Failure=>Volatile.Read(ref _failure)??_queue.Failure;
+    public Exception? Failure=>_queue.Failure;
     public FloatWaveWriter(string path,AudioFormat capture,long? testRf64Threshold=null)
         :this(path,capture,testRf64Threshold,new FileStream(path,FileMode.CreateNew,FileAccess.ReadWrite,FileShare.Read,65536,FileOptions.SequentialScan)){}
 
@@ -35,12 +34,6 @@ public sealed class FloatWaveWriter:IRecordingWriter
     }
     public bool TryWrite(ReadOnlySpan<float> samples)=>_queue.TryWrite(samples);
 
-    private void RecordSinkFailure(Exception error)
-    {
-        Volatile.Write(ref _failure,AudioFailure.Combine(Failure,error));
-        _queue.CloseInput();
-    }
-
     private async Task WriteLoop()
     {
         int flush=0;
@@ -54,16 +47,16 @@ public sealed class FloatWaveWriter:IRecordingWriter
                     Interlocked.Add(ref _frames,block.Count/_channels);
                     if(++flush>=32){_wave.Flush();flush=0;}
                 }
-                catch(Exception error){RecordSinkFailure(error);break;}
+                catch(Exception error){_queue.Fault(error);break;}
                 finally{_queue.Release(block);}
             }
         }
-        catch(Exception error){RecordSinkFailure(error);}
+        catch(Exception error){_queue.Fault(error);}
         finally
         {
             _queue.DiscardPending();
-            try{_wave.Dispose();}catch(Exception error){RecordSinkFailure(error);}
-            try{_file.Dispose();}catch(Exception error){RecordSinkFailure(error);}
+            try{_wave.Dispose();}catch(Exception error){_queue.Fault(error);}
+            try{_file.Dispose();}catch(Exception error){_queue.Fault(error);}
         }
         if(Failure is Exception failure)throw new IOException("WAV 写入或文件头收尾失败，文件可能不完整："+AudioFailure.Describe(failure),failure);
     }

@@ -23,8 +23,7 @@ public sealed partial class MainWindow
     private StackPanel? _listenTapGroup,_listenEndpointGroup,_listenApplicationGroup;
     private Button? _listenRefresh;
     private bool _updatingListening;
-    private readonly WorkModeTransition _workModeTransition=new();
-    private bool WorkModeChanging=>_coordinator.IsModeSwitching||_workModeTransition.Target!=null;
+    private bool WorkModeChanging=>_coordinator.IsModeSwitching;
     private WorkMode CurrentWorkMode=>_coordinator.CommittedMode;
     private object? _listenRefreshRequest;
     private int _sourceIconVersion;
@@ -73,17 +72,10 @@ public sealed partial class MainWindow
                 RestoreWorkModeSelection();
                 return;
             }
-            if(!_workModeTransition.TryBegin(CurrentWorkMode,target,blocked:false))
-            {
-                _coordinator.EndModeSwitch();
-                RestoreWorkModeSelection();
-                return;
-            }
             // Return to the native ComboBox before disabling it or replacing its popup's
             // surrounding visual tree. Selecting an item must complete its own transaction.
-            if(!DispatcherQueue.TryEnqueue(async()=>await ApplyWorkMode()))
+            if(!DispatcherQueue.TryEnqueue(async()=>await ApplyWorkMode(target)))
             {
-                _workModeTransition.End();
                 _coordinator.EndModeSwitch();
                 RestoreWorkModeSelection();
             }
@@ -93,7 +85,7 @@ public sealed partial class MainWindow
 
     private void RestoreWorkModeSelection()=>_workModeBox.SelectedIndex=_state.IsListening?1:0;
 
-    private async Task ApplyWorkMode()
+    private async Task ApplyWorkMode(WorkMode target)
     {
         try
         {
@@ -103,26 +95,23 @@ public sealed partial class MainWindow
             foreach(var control in _recordingControls)control.IsEnabled=false;
             foreach(var control in _listeningControls)control.IsEnabled=false;
             RestoreWorkModeSelection();
-            await _workModeTransition.ApplyAsync(async()=>
+            if(_state.IsListening)await _state.Listener.StopAsync();
+            else
             {
-                if(_state.IsListening)await _state.Listener.StopAsync();
-                else
-                {
-                    try{await _state.Audio.SuspendMonitoringAsync();}
-                    finally{StopVolumeWatcher();}
-                }
-            },()=>_closing,target=>
-            {
-                _listenRefreshRequest=null;
-                _sourceIconVersion++;
-                if(target==WorkMode.Listening)InvalidateRecordingInputQueries();
-                _coordinator.CommitModeSwitch(target);
-                _state.SetWorkMode(target==WorkMode.Listening);
-                RestoreWorkModeSelection();
-                _lastStage=null;_lastAudioState=null;_listenViewKey=null;_displayedListeningSource=null;
-                UpdateWorkModeSurface();
-                StartupLog.Write("Work mode: "+target);
-            },target=>target==WorkMode.Listening ? RefreshListeningSources(modeInitialization:true) :
+                try{await _state.Audio.SuspendMonitoringAsync();}
+                finally{StopVolumeWatcher();}
+            }
+            if(_closing)return;
+            _listenRefreshRequest=null;
+            _sourceIconVersion++;
+            if(target==WorkMode.Listening)InvalidateRecordingInputQueries();
+            _coordinator.CommitModeSwitch(target);
+            _state.SetWorkMode(target==WorkMode.Listening);
+            RestoreWorkModeSelection();
+            _lastStage=null;_lastAudioState=null;_listenViewKey=null;_displayedListeningSource=null;
+            UpdateWorkModeSurface();
+            StartupLog.Write("Work mode: "+target);
+            await (target==WorkMode.Listening ? RefreshListeningSources(modeInitialization:true) :
                 _noCapture ? Task.CompletedTask : LoadDevices(manual:true,modeInitialization:true));
         }
         catch(Exception error)
@@ -132,7 +121,6 @@ public sealed partial class MainWindow
         }
         finally
         {
-            _workModeTransition.End();
             _coordinator.EndModeSwitch();
             if(!_closing)
             {

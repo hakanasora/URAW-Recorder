@@ -49,6 +49,12 @@ internal sealed class RecordingWriteQueue(AudioFormat format,string overloadMess
         }
     }
 
+    public void Fault(Exception error)
+    {
+        lock(_admission)
+            Reject(error);
+    }
+
     public void CloseInput()
     {
         lock(_admission)

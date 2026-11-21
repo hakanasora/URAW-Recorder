@@ -4,37 +4,6 @@ namespace PortableRecorder.Desktop;
 
 internal enum WorkMode { Recording, Listening }
 
-internal sealed class WorkModeTransition
-{
-    public WorkMode? Target { get; private set; }
-
-    public bool TryBegin(WorkMode current, WorkMode target, bool blocked)
-    {
-        if (blocked || Target != null || current == target) return false;
-        Target = target;
-        return true;
-    }
-
-    public async Task ApplyAsync(Func<Task> stopCurrent, Func<bool> isClosing,
-        Action<WorkMode> commit, Func<WorkMode, Task> refresh)
-    {
-        try
-        {
-            if (Target is not WorkMode target || isClosing()) return;
-            await stopCurrent();
-            if (isClosing()) return;
-            commit(target);
-            await refresh(target);
-        }
-        finally
-        {
-            End();
-        }
-    }
-
-    public void End() => Target = null;
-}
-
 internal sealed record TransportPresentation(bool Active, bool Paused, bool CanStop, bool CanPause,
     bool CanDiscard, string StatusText, int PauseWidth, int StopWidth)
 {
@@ -87,32 +56,24 @@ internal static class InputFormatPresentation
 /// <summary>A failed ShowAsync must not consume the device's pending consent request.</summary>
 internal sealed class RawDecisionPrompt
 {
-    private abstract record PromptState
-    {
-        private PromptState() { }
-        public sealed record Idle(long? LastCompletedId) : PromptState;
-        public sealed record Showing(long DecisionId, long? LastCompletedId) : PromptState;
-    }
-
-    private PromptState _state = new PromptState.Idle(null);
+    private long? _showing, _completed;
 
     public bool TryBegin(long decision)
     {
-        if (_state is PromptState.Showing || (_state is PromptState.Idle idle && idle.LastCompletedId == decision))
-            return false;
-        _state = new PromptState.Showing(decision, (_state as PromptState.Idle)?.LastCompletedId);
+        if (_showing != null || _completed == decision) return false;
+        _showing = decision;
         return true;
     }
 
     public void Complete(long decision)
     {
-        if (_state is PromptState.Showing showing && showing.DecisionId == decision)
-            _state = new PromptState.Idle(decision);
+        if (_showing != decision) return;
+        _showing = null;
+        _completed = decision;
     }
 
     public void Abandon(long decision)
     {
-        if (_state is PromptState.Showing showing && showing.DecisionId == decision)
-            _state = new PromptState.Idle(showing.LastCompletedId);
+        if (_showing == decision) _showing = null;
     }
 }

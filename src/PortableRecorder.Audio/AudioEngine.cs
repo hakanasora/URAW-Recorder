@@ -2,44 +2,16 @@ using System.Runtime.ExceptionServices;
 
 namespace PortableRecorder.Audio;
 
-public sealed class AudioEngine:IAsyncDisposable
+public sealed partial class AudioEngine:IAsyncDisposable
 {
-    private sealed record CaptureBinding(AudioDevice Device,IAudioCaptureService Capture,ProcessingPipeline Pipeline,Task<Exception> NativeFault,bool NormalConsent);
-    private sealed record RecordingOutcome(string FilePath,bool Partial,string Message,long? OwnerEpoch=null);
-
-    private abstract record EnginePhase
-    {
-        private EnginePhase(){}
-        public sealed record Stopped(AudioDevice? Device,bool NormalConsent,string Message,RecordingOutcome? LastOutcome=null):EnginePhase;
-        public sealed record Suspended(AudioDevice? Device,bool NormalConsent):EnginePhase;
-        public sealed record Opening(AudioDevice Device,bool NormalConsent,RecordingOutcome? LastOutcome=null):EnginePhase;
-        public sealed record AwaitingRawConsent(AudioDevice Device,long DecisionId,string Reason,RecordingOutcome? LastOutcome=null):EnginePhase;
-        public sealed record Monitoring(CaptureBinding Binding,string BaseMessage,RecordingOutcome? LastOutcome=null):EnginePhase;
-        public sealed record RecordingSession(CaptureBinding Binding,IRecordingWriter Writer,RecordingSubPhase SubPhase):EnginePhase;
-        public sealed record Faulted(AudioDevice? Device,bool NormalConsent,string Message,CaptureBinding? ActiveBinding=null,RecordingOutcome? LastOutcome=null):EnginePhase;
-        public sealed record Disposed(string Message,AudioStatus? FinalStatus=null):EnginePhase;
-    }
-
-    private abstract record RecordingSubPhase
-    {
-        private RecordingSubPhase(){}
-        public sealed record Preparing(string FilePath,string Message):RecordingSubPhase;
-        public sealed record Active(string FilePath):RecordingSubPhase;
-        public sealed record Pausing(string FilePath,TaskCompletionSource<Exception?> Completion,bool Delayed):RecordingSubPhase;
-        public sealed record Paused(string FilePath):RecordingSubPhase;
-        public sealed record Finalizing(string FilePath):RecordingSubPhase;
-    }
-
-    private enum StopMode { StopAndRestoreMonitor, DiscardAndRestoreMonitor, Shutdown, FaultAbort }
-
     private readonly ICaptureFactory _factory;
     public CalibrationLibrary Calibrations {get;}
     public InputFormatPreferences InputFormats {get;}
+    private readonly RecordingStore _recordings;
     private readonly Func<string,AudioFormat,RecordingEncoding,IRecordingWriter> _createWriter;
     private readonly SemaphoreSlim _commands=new(1,1);
     private EnginePhase _phase=new EnginePhase.Stopped(null,false,"正在枚举输入设备");
-    private string? _calibrationError,_summaryOwned;
-    private object? _recordingCalibration;
+    private string? _calibrationError;
     private double _gain=1,_previousPeak=double.NaN;
     private long _epoch,_decision,_lastWritten;
     private int _lastRate;
@@ -53,45 +25,12 @@ public sealed class AudioEngine:IAsyncDisposable
         _factory=factory??new WasapiCaptureFactory();
         Calibrations=calibrationLibrary??new CalibrationLibrary();
         InputFormats=inputFormats??new InputFormatPreferences();
+        _recordings=new(Calibrations,Trace);
         _createWriter=writerFactory??((path,format,encoding)=>encoding.CreateWriter(path,format));
     }
 
     private EnginePhase CurrentPhase=>Volatile.Read(ref _phase);
     private void SetPhase(EnginePhase next)=>Volatile.Write(ref _phase,next);
-
-    private static AudioDevice? PhaseDevice(EnginePhase phase)=>phase switch
-    {
-        EnginePhase.Stopped s=>s.Device,
-        EnginePhase.Suspended s=>s.Device,
-        EnginePhase.Opening o=>o.Device,
-        EnginePhase.AwaitingRawConsent a=>a.Device,
-        EnginePhase.Monitoring m=>m.Binding.Device,
-        EnginePhase.RecordingSession r=>r.Binding.Device,
-        EnginePhase.Faulted f=>f.Device,
-        _=>null
-    };
-
-    private static bool PhaseNormalConsent(EnginePhase phase)=>phase switch
-    {
-        EnginePhase.Stopped s=>s.NormalConsent,
-        EnginePhase.Suspended s=>s.NormalConsent,
-        EnginePhase.Opening o=>o.NormalConsent,
-        EnginePhase.Monitoring m=>m.Binding.NormalConsent,
-        EnginePhase.RecordingSession r=>r.Binding.NormalConsent,
-        EnginePhase.Faulted f=>f.NormalConsent,
-        _=>false
-    };
-
-    private static CaptureBinding? PhaseBinding(EnginePhase phase)=>phase switch
-    {
-        EnginePhase.Monitoring m=>m.Binding,
-        EnginePhase.RecordingSession r=>r.Binding,
-        EnginePhase.Faulted f=>f.ActiveBinding,
-        _=>null
-    };
-
-    private static IRecordingWriter? PhaseWriter(EnginePhase phase)=>
-        phase is EnginePhase.RecordingSession session?session.Writer:null;
 
     public AudioDevice? SelectedDevice=>PhaseDevice(CurrentPhase);
     public CalibrationLibrary.Selection CalibrationSelection=>SelectedDevice is { } device?Calibrations.GetSelection(device.Id):new(false,null);
@@ -115,44 +54,6 @@ public sealed class AudioEngine:IAsyncDisposable
 
     public AudioStatus Status=>ProjectStatus(CurrentPhase);
 
-    private static AudioStatus ProjectStatus(EnginePhase phase)=>phase switch
-    {
-        EnginePhase.Stopped s=>new(AudioRunState.Stopped,null,s.Message,s.LastOutcome?.FilePath,s.LastOutcome?.Partial??false),
-        EnginePhase.Suspended=>new(AudioRunState.Stopped,null,"麦克风监看已暂停。"),
-        EnginePhase.Opening o=>new(AudioRunState.Opening,null,"正在打开输入设备",o.LastOutcome?.FilePath,o.LastOutcome?.Partial??false),
-        EnginePhase.AwaitingRawConsent a=>new(
-            AudioRunState.Stopped,
-            null,
-            a.LastOutcome is { } saved?$"{saved.Message}；尚未获得共享 RAW 输入，请确认是否允许普通共享监看":a.Reason,
-            a.LastOutcome?.FilePath,
-            a.LastOutcome?.Partial??false),
-        EnginePhase.Monitoring m=>ProjectMonitoring(m),
-        EnginePhase.RecordingSession r=>ProjectRecording(r),
-        EnginePhase.Faulted f=>new(AudioRunState.Faulted,null,f.Message,f.LastOutcome?.FilePath,f.LastOutcome?.Partial??false),
-        EnginePhase.Disposed d=>d.FinalStatus??new(AudioRunState.Stopped,null,d.Message),
-        _=>new(AudioRunState.Stopped,null,"")
-    };
-
-    private static AudioStatus ProjectMonitoring(EnginePhase.Monitoring monitoring)
-    {
-        int recovered=monitoring.Binding.Pipeline.RecoveredDiscontinuities;
-        string message=recovered>0?monitoring.BaseMessage+$"；已从 {recovered} 次短暂数据不连续恢复监看。":monitoring.BaseMessage;
-        return new(AudioRunState.Monitoring,monitoring.Binding.Capture.Info,message,monitoring.LastOutcome?.FilePath,monitoring.LastOutcome?.Partial??false);
-    }
-
-    private static AudioStatus ProjectRecording(EnginePhase.RecordingSession session)=>session.SubPhase switch
-    {
-        RecordingSubPhase.Preparing p=>session.Writer.WrittenFrames>0
-            ?new(AudioRunState.Recording,session.Binding.Capture.Info,"录制中",session.Writer.Path)
-            :new(AudioRunState.Preparing,session.Binding.Capture.Info,p.Message,session.Writer.Path),
-        RecordingSubPhase.Active a=>new(AudioRunState.Recording,session.Binding.Capture.Info,"录制中",a.FilePath),
-        RecordingSubPhase.Pausing p=>new(AudioRunState.Pausing,session.Binding.Capture.Info,
-            p.Delayed?"仍在等待输入以完成暂停，可停止录制。":"正在暂停",p.FilePath){PauseTailDelayed=p.Delayed},
-        RecordingSubPhase.Paused p=>new(AudioRunState.Paused,session.Binding.Capture.Info,"暂停中",p.FilePath),
-        RecordingSubPhase.Finalizing f=>new(AudioRunState.Finalizing,session.Binding.Capture.Info,"正在完成录音文件",f.FilePath),
-        _=>new(AudioRunState.Recording,session.Binding.Capture.Info,"录制中",session.Writer.Path)
-    };
-
     public AudioSnapshot Latest
     {
         get
@@ -167,7 +68,9 @@ public sealed class AudioEngine:IAsyncDisposable
     public long WrittenFrames=>PhaseWriter(CurrentPhase)?.WrittenFrames??Interlocked.Read(ref _lastWritten);
     public long RecordingUnconfirmedDiscontinuities=>PhaseBinding(CurrentPhase)?.Pipeline.RecordingUnconfirmedDiscontinuities??0;
     public long RecordingClippedSamples=>(PhaseWriter(CurrentPhase) as CompressedAudioWriter)?.ClippedSamples??0;
-    public int RecordingRate=>PhaseWriter(CurrentPhase)!=null?PhaseBinding(CurrentPhase)?.Capture.Info.Format.SampleRate??0:_lastRate;
+    public int RecordingRate=>CurrentPhase is EnginePhase.RecordingSession session
+        ?session.Binding.Capture.Info.Format.SampleRate
+        :Volatile.Read(ref _lastRate);
     public TimeSpan RecordedTime=>RecordingRate>0?TimeSpan.FromSeconds(WrittenFrames/(double)RecordingRate):TimeSpan.Zero;
     public IReadOnlyList<AudioDevice> EnumerateDevices()=>_factory.Enumerate();
 
@@ -193,6 +96,8 @@ public sealed class AudioEngine:IAsyncDisposable
             finally
             {
                 Interlocked.Increment(ref _epoch);
+                Interlocked.Exchange(ref _lastWritten,0);
+                Volatile.Write(ref _lastRate,0);
                 Volatile.Write(ref _previousPeak,double.NaN);
                 SetPhase(new EnginePhase.Suspended(device,normalConsent));
             }
@@ -221,7 +126,7 @@ public sealed class AudioEngine:IAsyncDisposable
                 {
                     var interruptedStatus=Status;
                     if(interruptedStatus.FilePath!=null)interrupted=new(interruptedStatus.FilePath,interruptedStatus.Partial,interruptedStatus.Message);
-                    else interrupted=new("",true,interruptedStatus.Message);
+                    else interrupted=new(null,true,interruptedStatus.Message);
                 }
             }
             var chosen=(!manualRefresh?added.FirstOrDefault():null)??current??devices.FirstOrDefault(d=>d.IsDefault)??devices.FirstOrDefault();
@@ -244,20 +149,22 @@ public sealed class AudioEngine:IAsyncDisposable
             }
             var monitorOutcome=interrupted is {FilePath.Length:>0}?interrupted:null;
             await OpenMonitor(chosen,normalConsent,monitorOutcome);
-            if(interrupted!=null)
-            {
-                switch(CurrentPhase)
-                {
-                    case EnginePhase.Monitoring monitoring:
-                        SetPhase(monitoring with{BaseMessage=interrupted.Message+"；已恢复共享监看。"});
-                        break;
-                    case EnginePhase.Faulted faulted:
-                        SetPhase(faulted with{Message=interrupted.Message+"；恢复监看失败："+faulted.Message});
-                        break;
-                }
-            }
+            if(interrupted!=null)ApplyInterruptionBanner(interrupted.Message);
         }
         finally{_commands.Release();}
+    }
+
+    private void ApplyInterruptionBanner(string prefixMessage)
+    {
+        switch(CurrentPhase)
+        {
+            case EnginePhase.Monitoring monitoring:
+                SetPhase(monitoring with{BaseMessage=prefixMessage+"；已恢复共享监看。"});
+                break;
+            case EnginePhase.Faulted faulted:
+                SetPhase(faulted with{Message=prefixMessage+"；恢复监看失败："+faulted.Message});
+                break;
+        }
     }
 
     public async Task SelectDeviceAsync(AudioDevice device)
@@ -300,6 +207,8 @@ public sealed class AudioEngine:IAsyncDisposable
         if(oldDevice?.Id==nextDevice?.Id)return oldConsent;
         Volatile.Write(ref _calibrationError,null);
         Volatile.Write(ref _previousPeak,double.NaN);
+        Interlocked.Exchange(ref _lastWritten,0);
+        Volatile.Write(ref _lastRate,0);
         return false;
     }
 
@@ -424,9 +333,6 @@ public sealed class AudioEngine:IAsyncDisposable
             case EnginePhase.Monitoring m:
                 SetPhase(new EnginePhase.Stopped(m.Binding.Device,m.Binding.NormalConsent,m.BaseMessage,m.LastOutcome));
                 break;
-            case EnginePhase.RecordingSession r:
-                SetPhase(new EnginePhase.Stopped(r.Binding.Device,r.Binding.NormalConsent,"录制已关闭"));
-                break;
             case EnginePhase.Faulted f:
                 SetPhase(f with{ActiveBinding=null});
                 break;
@@ -441,16 +347,7 @@ public sealed class AudioEngine:IAsyncDisposable
         }
     }
 
-    public static string DefaultRecordingFolder
-    {
-        get
-        {
-            var desktop=Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory,Environment.SpecialFolderOption.DoNotVerify);
-            if(string.IsNullOrEmpty(desktop))
-                desktop=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),"Desktop");
-            return Path.Combine(desktop,"URAW Recorder Recordings");
-        }
-    }
+    public static string DefaultRecordingFolder=>RecordingStore.DefaultFolder;
 
     public async Task StartRecordingAsync(string directory,RecordingMode mode,RecordingEncoding? encoding=null)
     {
@@ -470,7 +367,7 @@ public sealed class AudioEngine:IAsyncDisposable
             preparationStarted=true;
             normalConsent=PhaseNormalConsent(phase);
             bool exclusive=mode==RecordingMode.Exclusive;
-            binding=PhaseBinding(phase);
+            binding=phase is EnginePhase.Monitoring m?m.Binding:null;
             if(binding==null||exclusive||!binding.Capture.Info.Raw)
             {
                 binding=null;
@@ -485,20 +382,9 @@ public sealed class AudioEngine:IAsyncDisposable
             var summaryProfile=calibration.ProfileId==null?null:await Task.Run(()=>Calibrations.Read(calibration.ProfileId));
             encoding??=new();encoding.Validate(binding.Capture.Info.Format);
             SetPhase(new EnginePhase.Monitoring(binding,"正在准备录音文件"));
-            directory=string.IsNullOrWhiteSpace(directory)?DefaultRecordingFolder:System.IO.Path.GetFullPath(directory);
-            Directory.CreateDirectory(directory);
-            string stamp=DateTime.Now.ToString("yyyyMMdd-HHmmss-fff");
-            for(int suffix=0;;suffix++)
-            {
-                var path=System.IO.Path.Combine(directory,$"Recording-{stamp}{(suffix==0?"":"-"+suffix)}.{encoding.Extension}");
-                try{writer=_createWriter(path,binding.Capture.Info.Format,encoding);break;}
-                catch(IOException error) when(AudioFailure.IsNameCollision(error)&&suffix<99){}
-            }
-            _lastWritten=0;_lastRate=binding.Capture.Info.Format.SampleRate;_summaryOwned=null;
-            _recordingCalibration=new{Version=2,Device=device,Format=binding.Capture.Info.Format,Encoding=encoding,Calibration=calibration,
-                Profile=summaryProfile,
-                Processing="raw → frequency correction → software gain → monitoring / selected encoder",LinearPhase=true,
-                FftRule="nextpow2(Fs*0.34); taps=7*N/8+1; designFFT=4*N; Hamming",AbsoluteSpl=false};
+            writer=_recordings.CreateWriter(directory,device,binding.Capture.Info.Format,encoding,calibration,summaryProfile,_createWriter);
+            Interlocked.Exchange(ref _lastWritten,0);
+            Volatile.Write(ref _lastRate,binding.Capture.Info.Format.SampleRate);
             SetPhase(new EnginePhase.RecordingSession(binding,writer,new RecordingSubPhase.Preparing(writer.Path,"正在准备录音文件")));
             await binding.Pipeline.AttachAsync(writer);
             Volatile.Write(ref _previousPeak,double.NaN);
@@ -638,13 +524,13 @@ public sealed class AudioEngine:IAsyncDisposable
             Exception? failure=null;
             var ownedPaths=new List<string>{path};
             ownedPaths.AddRange(auxiliary);
-            if(_summaryOwned!=null)ownedPaths.Add(_summaryOwned);
+            if(_recordings.SummaryOwned is string summaryOwned)ownedPaths.Add(summaryOwned);
             foreach(string owned in ownedPaths.Distinct(StringComparer.OrdinalIgnoreCase))
             {
                 try
                 {
                     File.Delete(owned);
-                    if(owned==_summaryOwned)_summaryOwned=null;
+                    _recordings.ClearOwnedSummaryIfMatch(owned);
                 }
                 catch(Exception error){failure=AudioFailure.Combine(failure,error);}
             }
@@ -699,7 +585,7 @@ public sealed class AudioEngine:IAsyncDisposable
             return;
         }
 
-        string? summaryError=await Task.Run(()=>SaveCalibrationSummary(writer,failure,unconfirmedDiscontinuities));
+        string? summaryError=await Task.Run(()=>_recordings.SaveCalibrationSummary(writer,failure,unconfirmedDiscontinuities));
         bool exclusive=binding.Capture.Info.Exclusive;
         if(failure!=null)
         {
@@ -709,10 +595,7 @@ public sealed class AudioEngine:IAsyncDisposable
                 try{await CloseCapture(preservePeak:false);}
                 catch(Exception cleanupError){failure=AudioFailure.Combine(failure,cleanupError);}
                 Trace("Recording finalization failed with capture gap: "+failure);
-                var gapOutcome=new RecordingOutcome(writer.Path,true,Friendly(failure)+"；已恢复共享监看。");
-                await OpenMonitor(binding.Device,binding.NormalConsent,gapOutcome);
-                if(CurrentPhase is EnginePhase.Faulted faulted)
-                    SetPhase(faulted with{Message=Friendly(failure)+"；恢复监看失败："+faulted.Message,LastOutcome=gapOutcome});
+                await RecoverAfterCaptureGapAsync(binding.Device,binding.NormalConsent,writer.Path,Friendly(failure));
                 ExceptionDispatchInfo.Capture(failure).Throw();
             }
             if(restoreMonitor&&(exclusive||nativeError!=null))
@@ -724,7 +607,7 @@ public sealed class AudioEngine:IAsyncDisposable
             CaptureBinding? retained=!restoreMonitor||(!exclusive&&nativeError==null)?binding:null;
             SetPhase(new EnginePhase.Faulted(binding.Device,binding.NormalConsent,
                 "录制结束异常："+Friendly(failure)+(summaryError==null?"":"；校准摘要写入失败："+summaryError),
-                retained,new(writer.Path,true,"录制结束异常："+Friendly(failure))));
+                retained,new(writer.Path,true,"录制结束异常："+Friendly(failure),binding.Capture.Info.Epoch)));
             ExceptionDispatchInfo.Capture(failure).Throw();
         }
 
@@ -740,7 +623,6 @@ public sealed class AudioEngine:IAsyncDisposable
             return;
         }
 
-        // A valid saved file and a failed return to monitoring are different outcomes.
         if(exclusive&&restoreMonitor)
         {
             Exception? monitorFailure=null;
@@ -774,33 +656,13 @@ public sealed class AudioEngine:IAsyncDisposable
         SetPhase(new EnginePhase.Monitoring(binding,savedMessage,outcome));
     }
 
-    private string? SaveCalibrationSummary(IRecordingWriter writer,Exception? error,long unconfirmedDiscontinuities)
-    {
-        string? temp=null;
-        try
-        {
-            if(!File.Exists(writer.Path)||new FileInfo(writer.Path).Length==0)return null;
-            string sidecar=GetRecordingMetadataPath(writer.Path);
-            Directory.CreateDirectory(System.IO.Path.GetDirectoryName(sidecar)!);
-            temp=sidecar+"."+Guid.NewGuid().ToString("N")+".tmp";
-            using(var file=new FileStream(temp,FileMode.CreateNew,FileAccess.Write,FileShare.None))
-            {
-                System.Text.Json.JsonSerializer.Serialize(file,new{Recording=_recordingCalibration,Frames=writer.WrittenFrames,UnconfirmedDiscontinuities=unconfirmedDiscontinuities,Completed=error==null,Error=error==null?null:Friendly(error)});file.Flush(true);
-            }
-            File.Move(temp,sidecar,false);_summaryOwned=sidecar;return null;
-        }
-        catch(Exception e){Trace("Calibration summary failed: "+e);return e.Message;}
-        finally
-        {
-            try{if(temp!=null&&File.Exists(temp))File.Delete(temp);}
-            catch(Exception cleanupError){Trace("Calibration summary temporary-file cleanup failed: "+cleanupError);}
-        }
-    }
+    public string GetRecordingMetadataPath(string recordingPath)=>_recordings.GetMetadataPath(recordingPath);
 
-    public string GetRecordingMetadataPath(string recordingPath)
+    private async Task RecoverAfterCaptureGapAsync(AudioDevice device,bool normalConsent,string? filePath,string prefixMessage)
     {
-        string key=Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(System.IO.Path.GetFullPath(recordingPath).ToUpperInvariant())));
-        return System.IO.Path.Combine(Calibrations.Folder,"RecordingHistory",key+".json");
+        var gapOutcome=new RecordingOutcome(filePath,true,prefixMessage);
+        await OpenMonitor(device,normalConsent,gapOutcome);
+        ApplyInterruptionBanner(prefixMessage);
     }
 
     public async Task SetCalibrationAsync(string? id)
@@ -996,12 +858,7 @@ public sealed class AudioEngine:IAsyncDisposable
                 catch(Exception cleanupError){failure=AudioFailure.Combine(failure,cleanupError);}
                 Trace("Capture fault: "+failure);
                 if(partial&&first is CaptureGapException&&preserved!=null)
-                {
-                    var partialOutcome=new RecordingOutcome(preserved.FilePath,true,Friendly(failure)+"；已恢复共享监看。");
-                    await OpenMonitor(binding.Device,binding.NormalConsent,partialOutcome);
-                    if(CurrentPhase is EnginePhase.Faulted faulted)
-                        SetPhase(faulted with{Message=Friendly(failure)+"；恢复监看失败："+faulted.Message,LastOutcome=partialOutcome});
-                }
+                    await RecoverAfterCaptureGapAsync(binding.Device,binding.NormalConsent,preserved.FilePath,Friendly(failure));
                 else
                 {
                     string message=finalizedRecording?previousStatus.Message+"；监看失败："+Friendly(failure):Friendly(failure);

@@ -98,7 +98,7 @@ public sealed partial class MainWindow : Window
     private bool _started=>_coordinator.IsStarted;
     private bool _closing=>_coordinator.IsClosing;
     private bool _audioBusy=>_coordinator.AudioBusy;
-    private bool _dialogOpen=>_coordinator.DialogOpen;
+    private bool _dialogOpen=>_coordinator.CalibrationManagerOpen;
     private bool _exclusiveNoticeShown,_exclusiveNoticePending;
     private int _gainAlignGeneration;
     private AudioRunState? _lastAudioState;
@@ -276,9 +276,7 @@ public sealed partial class MainWindow : Window
         {
             if(_coordinator.TryBeginCleanup())
             {
-                InvalidateRecordingInputQueries();
-                SaveOutputFolder();StopVolumeWatcher();
-                _deviceWatcher?.Dispose();_deviceWatcher=null;
+                ReleaseDesktopInputWatchers();
                 _=_state.Listener.DisposeAsync();
                 _=_state.Audio.DisposeAsync();
             }
@@ -312,6 +310,13 @@ public sealed partial class MainWindow : Window
         return button;
     }
 
+    private void ReleaseDesktopInputWatchers()
+    {
+        InvalidateRecordingInputQueries();
+        SaveOutputFolder();StopVolumeWatcher();
+        _deviceWatcher?.Dispose();_deviceWatcher=null;
+    }
+
     private async Task CloseWithAudioCleanup()
     {
         if(!_coordinator.TryBeginCleanup())return;
@@ -321,9 +326,8 @@ public sealed partial class MainWindow : Window
         {
             try
             {
-                InvalidateRecordingInputQueries();
-                SaveOutputFolder();StopVolumeWatcher();
-                _drawer.Dispose();_deviceWatcher?.Dispose();_deviceWatcher=null;
+                ReleaseDesktopInputWatchers();
+                _drawer.Dispose();
                 _stopButton.IsEnabled=false;_pauseButton.IsEnabled=false;
             }
             finally
@@ -590,6 +594,7 @@ public sealed partial class MainWindow : Window
     private async Task AddCalibration()
     {
         if(!_coordinator.TryBeginFilePicker(_state.Session.Active,out bool openedInsideManager))return;
+        Exception? pickerError=null;
         try
         {
             var picker=new FileOpenPicker(AppWindow.Id);picker.FileTypeFilter.Add(".txt");picker.FileTypeFilter.Add(".cal");var files=await picker.PickMultipleFilesAsync();if(_closing || _state.Session.Active || files is null)return;
@@ -600,16 +605,17 @@ public sealed partial class MainWindow : Window
                 SyncCalibration();
             }
         }
-        catch(Exception error){await Message("校准文件",error.Message);}
+        catch(Exception error){pickerError=error;}
         finally
         {
             _coordinator.EndFilePicker(openedInsideManager);
             if(InRecordingInputContext)_=DrainDeviceRefreshQueue();
         }
+        if(pickerError!=null&&!_closing)await Message("校准文件",pickerError.Message);
     }
     private async Task ManageCalibrations()
     {
-        if(!_coordinator.TryBeginCalibrationManager(_state.Session.Active)||_dialogs.IsBusy)return;
+        if(!_coordinator.TryBeginCalibrationManager(_state.Session.Active,_dialogs.IsBusy))return;
         try
         {
             while(!_closing&&!_state.Session.Active&&InRecordingInputContext)
@@ -673,16 +679,16 @@ public sealed partial class MainWindow : Window
             if(InRecordingInputContext)_=DrainDeviceRefreshQueue();
         }
     }
-    private async Task<ContentDialogResult> ShowDialog(ContentDialog dialog,ModalKind kind=ModalKind.Message,bool duringClose=false)
+    private async Task<ContentDialogResult?> ShowDialog(ContentDialog dialog,ModalKind kind=ModalKind.Message,bool duringClose=false)
     {
         if(dialog.Title is string title && dialog.Content is string body && NoticePresentation.RepeatsBody(title,body))
             dialog.Title=null;
-        if(!_coordinator.CanEnterModal(kind,duringClose))return ContentDialogResult.None;
+        if(!_coordinator.CanEnterModal(kind,duringClose))return null;
         try
         {
             return await _dialogs.ShowAsync(async cancellation=>
             {
-                if(!_coordinator.TryEnterModal(kind,duringClose,out var previousOverlay))return ContentDialogResult.None;
+                if(!_coordinator.TryEnterModal(kind,duringClose,out var previousOverlay))return (ContentDialogResult?)null;
                 _activeDialog=dialog;
                 using var registration=cancellation.Register(()=>
                 {
@@ -764,7 +770,7 @@ public sealed partial class MainWindow : Window
                 }
             },cleanupError:duringClose);
         }
-        catch(OperationCanceledException)when(_closing){return ContentDialogResult.None;}
+        catch(OperationCanceledException)when(_closing){return null;}
         finally{if(InRecordingInputContext)_=DrainDeviceRefreshQueue();}
     }
     private async Task Message(string title,string text,bool duringClose=false)
@@ -1062,7 +1068,7 @@ public sealed partial class MainWindow : Window
 
     private async Task CheckRawDecision()
     {
-        if(!_coordinator.CanOpenRawDecision()||
+        if(_dialogs.IsBusy||!_coordinator.CanOpenRawDecision()||
             _state.Audio.PendingRawConsent is not { } consent||!_rawPrompt.TryBegin(consent.DecisionId))return;
         var decision=consent.DecisionId;
         try
@@ -1070,8 +1076,8 @@ public sealed partial class MainWindow : Window
             var result=await ShowDialog(new ContentDialog{XamlRoot=_root.XamlRoot,Title="此设备未接受 RAW 请求",
                 Content="可允许当前设备在本次运行中使用普通共享监看，或停止监看。此许可不适用于正式录制；设备忙、权限和断开等错误不会降级。",
                 PrimaryButtonText="允许本次普通共享监看",CloseButtonText="停止监看",RequestedTheme=ElementTheme.Dark},ModalKind.RawDecision);
-            if(_closing)return;
-            if(await _state.Audio.DecideRawFallbackAsync(decision,result==ContentDialogResult.Primary))
+            if(_closing||result is not ContentDialogResult choice)return;
+            if(await _state.Audio.DecideRawFallbackAsync(decision,choice==ContentDialogResult.Primary))
                 _rawPrompt.Complete(decision);
         }
         catch(Exception error){StartupLog.Write("RAW decision: "+error);}

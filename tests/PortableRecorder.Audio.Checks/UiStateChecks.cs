@@ -134,42 +134,28 @@ static class UiStateChecks
         queue.Close();
         check(!queue.IsBusy&&await queue.WaitForPresenterAsync(TimeSpan.Zero),"Cleanup leaves no active or queued dialog");
 
-        var transition=new WorkModeTransition();
-        var current=WorkMode.Recording;
-        check(!transition.TryBegin(current,WorkMode.Listening,blocked:true),"An active recording blocks mode changes");
-        check(transition.TryBegin(current,WorkMode.Listening,blocked:false),"Idle recording accepts a mode change");
-        check(!transition.TryBegin(current,WorkMode.Listening,blocked:false),"A rapid repeat cannot replace the pending target");
-        var stopFailed=Task.FromException(new IOException("Old source failed to stop"));
-        try{await transition.ApplyAsync(()=>stopFailed,()=>false,value=>current=value,_=>Task.CompletedTask);}
-        catch(IOException){}
-        check(current==WorkMode.Recording,"Failed stop preserves the committed mode");
-        transition.End();
+        var coordinator=new MainWindowCoordinator();
+        coordinator.TryMarkStarted();
+        check(!coordinator.TryBeginModeSwitch(WorkMode.Listening,sessionActive:true),"An active recording blocks mode changes");
+        check(coordinator.TryBeginModeSwitch(WorkMode.Listening,sessionActive:false),"Idle recording accepts a mode change");
+        check(!coordinator.TryBeginModeSwitch(WorkMode.Listening,sessionActive:false),"A rapid repeat cannot replace the pending target");
+        coordinator.EndModeSwitch();
+        check(coordinator.CommittedMode==WorkMode.Recording,"Ending failed switch before commit preserves committed mode");
 
-        check(transition.TryBegin(current,WorkMode.Listening,blocked:false),"Failed switch can be retried");
-        var stopped=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        bool refreshed=false;
-        var changing=transition.ApplyAsync(()=>stopped.Task,()=>false,value=>current=value,target=>
-        {
-            refreshed=current==target;
-            return Task.FromException(new IOException("New source enumeration failed"));
-        });
-        check(current==WorkMode.Recording&&!refreshed,"The old mode stays committed until its service stops");
-        stopped.SetResult();
-        try{await changing;}catch(IOException){}
-        check(current==WorkMode.Listening&&refreshed,"Failed target refresh preserves the new committed mode");
-        transition.End();
+        check(coordinator.TryBeginModeSwitch(WorkMode.Listening,sessionActive:false),"Failed switch can be retried");
+        coordinator.CommitModeSwitch(WorkMode.Listening);
+        check(coordinator.CommittedMode==WorkMode.Listening&&coordinator.IsModeSwitching,"Committed Listening holds initialization gate until EndModeSwitch");
+        coordinator.EndModeSwitch();
+        check(coordinator.CommittedMode==WorkMode.Listening&&!coordinator.IsModeSwitching,"Failed or completed refresh preserves the new committed mode");
 
-        check(transition.TryBegin(current,WorkMode.Recording,blocked:false),"Return to recording can begin");
-        bool closing=false;refreshed=false;
-        stopped=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        changing=transition.ApplyAsync(()=>stopped.Task,()=>closing,value=>current=value,_=>{refreshed=true;return Task.CompletedTask;});
-        closing=true;stopped.SetResult();
-        await changing;
-        check(current==WorkMode.Listening&&!refreshed,"Closing while the old service stops suppresses late commit and refresh");
-        transition.End();
+        check(coordinator.TryBeginModeSwitch(WorkMode.Recording,sessionActive:false),"Return to recording can begin");
+        coordinator.TryBeginCleanup();
+        check(coordinator.IsClosing&&coordinator.CommittedMode==WorkMode.Listening,"Closing while old service stops suppresses commit");
 
         await CheckInputQueries(check);
         await CalibrationCollectionChecks(root,check);
+        CoordinatorChecks(check);
+        await ShellViewModelSnapshotChecks(root,check);
     }
 
     private static async Task CheckInputQueries(Action<bool,string> check)
@@ -273,9 +259,6 @@ static class UiStateChecks
         check(changes.SequenceEqual(new[]{System.Collections.Specialized.NotifyCollectionChangedAction.Remove})&&ReferenceEquals(collection[0],secondItem),"Removal updates one row and preserves surviving instances");
         library.Remove(second.Id);model.RefreshCalibrations();
         check(model.SelectedCalibration==null&&collection.Count==1&&collection[0].Id==third.Id,"Removing selected calibration never automatically picks another file");
-
-        CoordinatorChecks(check);
-        await ShellViewModelSnapshotChecks(root,check);
     }
 
     private static async Task ShellViewModelSnapshotChecks(string root,Action<bool,string> check)
@@ -297,19 +280,25 @@ static class UiStateChecks
         var coord=new MainWindowCoordinator();
         check(!coord.IsStarted&&!coord.IsClosing,"Coordinator begins in Starting phase");
         check(!coord.TryBeginModeSwitch(WorkMode.Listening,false),"Cannot switch modes before window starts");
-        check(coord.TryMarkStarted()&&coord.IsStarted&&!coord.IsStarted==false,"TryMarkStarted enters Running once");
+        check(coord.TryMarkStarted()&&coord.IsStarted,"TryMarkStarted enters Running once");
         check(!coord.TryMarkStarted(),"Repeated startup cannot re-enter Running");
 
-        check(coord.TryBeginCalibrationManager(recordingActive:false)&&coord.DialogOpen,"Calibration manager opens in idle recording mode");
+        check(!coord.TryBeginCalibrationManager(recordingActive:false,dialogsBusy:true)&&coord.Overlay is OverlayState.None,"Busy DialogQueue rejects CalibrationManager without wedging Overlay");
+        check(coord.TryBeginCalibrationManager(recordingActive:false)&&coord.CalibrationManagerOpen,"Calibration manager opens in idle recording mode");
         check(coord.TryEnterModal(ModalKind.CalibrationManagerDialog,false,out var prevCal)&&coord.Overlay is OverlayState.CalibrationManager{InnerDialogOpen:true},"Calibration dialog nests inside CalibrationManager");
+        check(!coord.CanEnterModal(ModalKind.Message,false),"Background Message blocked while inner CalibrationManager dialog open");
         check(!coord.TryBeginModeSwitch(WorkMode.Listening,false),"Mode switch blocked while calibration modal open");
         check(coord.TryBeginAudioCommand(false),"Removing calibration inside CalibrationManager gets normal audio lease");
         coord.EndAudioCommand();
         coord.ExitModal(prevCal);
         check(coord.TryBeginFilePicker(recordingActive:false,out bool inMgr)&&inMgr,"File picker enters from idle CalibrationManager");
+        check(!coord.CanEnterModal(ModalKind.Message,false),"Message blocked until FileOpenPicker finishes");
         check(!coord.TryBeginModeSwitch(WorkMode.Listening,false),"Mode switch blocked while FileOpenPicker active");
         check(!coord.CanOpenRawDecision()&&!coord.CanEnqueueExclusiveNotice(),"Raw and exclusive modals blocked while FileOpenPicker active");
         coord.EndFilePicker(inMgr);
+        check(coord.TryEnterModal(ModalKind.Message,false,out var errPrev),"Import error Message permitted after EndFilePicker while manager open");
+        coord.ExitModal(errPrev);
+        check(coord.Overlay is OverlayState.CalibrationManager{InnerDialogOpen:false,InFilePicker:false},"Exiting import error Message restores idle CalibrationManager overlay");
         coord.EndCalibrationManager();
         check(coord.Overlay is OverlayState.None,"Ending calibration manager clears Overlay");
 
@@ -318,6 +307,7 @@ static class UiStateChecks
         coord.EndFolderPicker();
 
         check(coord.TryBeginModeSwitch(WorkMode.Listening,false),"Switching to Listening permitted when idle");
+        check(!coord.TryEnterModal(ModalKind.RawDecision,false,out _),"RawDecision declined cleanly once mode switch begins");
         check(!coord.TryBeginAudioCommand(modeInitialization:false),"Normal audio command rejected during pre-commit mode switch");
         check(!coord.CanOpenRawDecision()&&!coord.CanEnqueueExclusiveNotice(),"RAW/exclusive notices blocked while switching to Listening");
         coord.CommitModeSwitch(WorkMode.Listening);

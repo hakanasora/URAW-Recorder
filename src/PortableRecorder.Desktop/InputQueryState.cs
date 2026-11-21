@@ -85,7 +85,6 @@ internal sealed class DeviceRefreshQueue
     private static async Task ObserveAsync(Request request, Task completion, Action? onFinished)
     {
         try { await request.CompleteAfterAsync(completion); }
-        catch { }
         finally { onFinished?.Invoke(); }
     }
 

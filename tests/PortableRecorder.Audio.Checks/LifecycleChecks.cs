@@ -236,5 +236,27 @@ static class LifecycleChecks
             Assert(denied && engine.Status.State==AudioRunState.Monitoring && engine.Status.Message.Contains("校准",StringComparison.Ordinal),
                 "Failed preparation retains unified monitoring message with calibration warning");
         }
+        {
+            var factory=new FakeFactory();var disk=new FailingWriter();bool firstWriter=true;
+            await using var engine=CreateEngine(root,factory,writerFactory:(p,f,_)=>firstWriter?disk:new FloatWaveWriter(p,f));
+            await engine.SelectDeviceAsync(factory.Device);
+            var retainedCapture=factory.Current!;
+            await engine.StartRecordingAsync(root,RecordingMode.Shared);
+            factory.Push(new float[480]);await Until(()=>engine.WrittenFrames==480,"shared faulted outcome retention");
+            disk.Fail();
+            bool stopFailed=false;try{await engine.StopRecordingAsync();}catch(IOException){stopFailed=true;}
+            Assert(stopFailed&&engine.Status.State==AudioRunState.Faulted&&engine.Status.FilePath==disk.Path&&engine.Status.Partial,
+                "Failed shared stop faults engine cleanly with retained FilePath and Partial flag");
+            retainedCapture.TriggerFault(new IOException("Post-stop native disconnect"));
+            await Until(()=>retainedCapture.Closed,"Faulted retained capture closed by late native fault");
+            Assert(engine.Status.State==AudioRunState.Faulted&&!engine.Latest.Valid&&engine.Status.FilePath==disk.Path&&engine.Status.Partial&&
+                engine.Status.Message.Contains("录制结束异常",StringComparison.Ordinal),
+                "Late ReportFault on retained capture clears live Latest while preserving partial FilePath and failure message via OwnerEpoch");
+            firstWriter=false;
+            await engine.StartRecordingAsync(root,RecordingMode.Shared);
+            Assert(engine.Status.State is AudioRunState.Preparing or AudioRunState.Recording&&!ReferenceEquals(factory.Current,retainedCapture),
+                "StartRecordingAsync from Faulted opens a fresh capture instead of reusing a faulted binding");
+            await engine.StopRecordingAsync();
+        }
     }
 }

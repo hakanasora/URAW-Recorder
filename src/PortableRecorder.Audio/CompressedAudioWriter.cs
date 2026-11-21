@@ -20,14 +20,12 @@ public sealed class CompressedAudioWriter:IRecordingWriter
     private readonly int _channels;
     private readonly int _minimumFrames;
     private EncoderPhase _phase=EncoderPhase.Streaming;
-    private Exception? _failure;
-    private bool _copiedToDestination;
     private long _frames;
     private long _clippedSamples;
     public long ClippedSamples=>Interlocked.Read(ref _clippedSamples);
     public string Path {get;}
     public long WrittenFrames=>Interlocked.Read(ref _frames);
-    public Exception? Failure=>Volatile.Read(ref _failure)??_queue.Failure;
+    public Exception? Failure=>_queue.Failure;
     public IReadOnlyList<string> AuxiliaryPaths=>[_staging];
 
     public CompressedAudioWriter(string path,AudioFormat format,RecordingEncoding encoding,string executable)
@@ -86,9 +84,8 @@ public sealed class CompressedAudioWriter:IRecordingWriter
 
     private void RecordEncoderFailure(Exception error)
     {
-        _phase=EncoderPhase.Failed;
-        Volatile.Write(ref _failure,AudioFailure.Combine(Failure,error));
-        _queue.CloseInput();
+        if(_phase!=EncoderPhase.Completed)_phase=EncoderPhase.Failed;
+        _queue.Fault(error);
     }
 
     private async Task WriteLoop()
@@ -137,7 +134,7 @@ public sealed class CompressedAudioWriter:IRecordingWriter
             catch(Exception error){RecordEncoderFailure(new IOException("编码器错误输出收尾失败："+error.Message,error));}
             try{_process.Dispose();}catch(Exception error){RecordEncoderFailure(error);}
             try{await _destination.DisposeAsync();}catch(Exception error){RecordEncoderFailure(error);}
-            if(!_copiedToDestination)
+            if(_phase!=EncoderPhase.Completed)
             {
                 DeleteIfEmpty(Path);
                 if(WrittenFrames==0)DeleteFile(_staging);
@@ -153,17 +150,19 @@ public sealed class CompressedAudioWriter:IRecordingWriter
         {
             if(File.Exists(file)&&new FileInfo(file).Length==0)File.Delete(file);
         }
-        catch{}
+        catch(IOException){}
+        catch(UnauthorizedAccessException){}
     }
 
     private static void DeleteFile(string file)
     {
         try{if(File.Exists(file))File.Delete(file);}
-        catch{}
+        catch(IOException){}
+        catch(UnauthorizedAccessException){}
     }
 
     private IOException EncodingFailure(Exception error)
-        =>new("压缩录音写入或收尾失败："+error.Message+(WrittenFrames>0&&File.Exists(_staging)?" 未完成文件可能位于："+_staging:""),error);
+        =>new("压缩录音写入或收尾失败："+error.Message+(WrittenFrames>0&&_phase!=EncoderPhase.Completed&&File.Exists(_staging)?" 未完成文件可能位于："+_staging:""),error);
 
     private async Task FinalizeFileAsync()
     {
@@ -177,7 +176,6 @@ public sealed class CompressedAudioWriter:IRecordingWriter
         await using(var encoded=new FileStream(_staging,FileMode.Open,FileAccess.Read,FileShare.Read,65536,FileOptions.Asynchronous|FileOptions.SequentialScan))
             await encoded.CopyToAsync(_destination);
         await _destination.FlushAsync();_destination.Flush(true);
-        _copiedToDestination=true;
         _phase=EncoderPhase.Completed;
         File.Delete(_staging);
     }

@@ -120,7 +120,6 @@ public sealed class ListeningService:IAsyncDisposable
             }
         }
         finally{_commands.Release();}
-        // Commands arriving after disposal still acquire this gate and observe ServicePhase.Disposed.
     }
     private abstract record ServicePhase
     {

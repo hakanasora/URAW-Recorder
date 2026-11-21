@@ -12,8 +12,6 @@ internal abstract record ModeContext
     public sealed record Listening:ModeContext;
 }
 
-internal enum AudioLease { Idle, RunningNormalCommand, RunningModeInitCommand }
-
 internal enum ModalKind { Message, RawDecision, ExclusiveNotice, CalibrationManagerDialog }
 
 internal abstract record OverlayState
@@ -30,15 +28,13 @@ internal sealed class MainWindowCoordinator
     public WindowPhase Window {get;private set;}=WindowPhase.Starting;
     public WorkMode CommittedMode {get;private set;}=WorkMode.Recording;
     public ModeContext Mode {get;private set;}=new ModeContext.Recording();
-    public AudioLease Lease {get;private set;}=AudioLease.Idle;
+    public bool AudioBusy {get;private set;}
     public OverlayState Overlay {get;private set;}=new OverlayState.None();
 
     public bool IsStarted=>Window!=WindowPhase.Starting;
     public bool IsClosing=>Window is WindowPhase.CleaningUp or WindowPhase.Closed;
-    public bool AudioBusy=>Lease!=AudioLease.Idle;
     public bool IsModeSwitching=>Mode is ModeContext.Switching;
-    public bool DialogOpen=>Overlay is OverlayState.CalibrationManager;
-    public bool ModalOrPickerOpen=>Overlay is not OverlayState.None;
+    public bool CalibrationManagerOpen=>Overlay is OverlayState.CalibrationManager;
     public bool InRecordingInputContext=>Window==WindowPhase.Running&&(Mode is ModeContext.Recording||Mode is ModeContext.Switching{Target:WorkMode.Recording,Committed:true});
 
     public bool TryMarkStarted()
@@ -59,7 +55,7 @@ internal sealed class MainWindowCoordinator
 
     public bool TryBeginModeSwitch(WorkMode target,bool sessionActive)
     {
-        if(Window!=WindowPhase.Running||sessionActive||Lease!=AudioLease.Idle||Overlay is not OverlayState.None)return false;
+        if(Window!=WindowPhase.Running||sessionActive||AudioBusy||Overlay is not OverlayState.None)return false;
         if(Mode is not (ModeContext.Recording or ModeContext.Listening)||target==CommittedMode)return false;
         Mode=new ModeContext.Switching(target,Committed:false);
         return true;
@@ -76,23 +72,23 @@ internal sealed class MainWindowCoordinator
 
     public bool TryBeginAudioCommand(bool modeInitialization)
     {
-        if(Window!=WindowPhase.Running||Lease!=AudioLease.Idle)return false;
+        if(Window!=WindowPhase.Running||AudioBusy)return false;
         if(modeInitialization)
         {
             if(Mode is not ModeContext.Switching{Committed:true})return false;
-            Lease=AudioLease.RunningModeInitCommand;
+            AudioBusy=true;
             return true;
         }
         if(Mode is ModeContext.Switching)return false;
-        Lease=AudioLease.RunningNormalCommand;
+        AudioBusy=true;
         return true;
     }
 
-    public void EndAudioCommand()=>Lease=AudioLease.Idle;
+    public void EndAudioCommand()=>AudioBusy=false;
 
     public bool CanRefreshDevices(bool modeInitialization)
     {
-        if(Window!=WindowPhase.Running||Lease!=AudioLease.Idle)return false;
+        if(Window!=WindowPhase.Running||AudioBusy)return false;
         return modeInitialization
             ?Mode is ModeContext.Switching{Target:WorkMode.Recording,Committed:true}
             :Mode is ModeContext.Recording&&Overlay is OverlayState.None;
@@ -100,24 +96,24 @@ internal sealed class MainWindowCoordinator
 
     public bool CanRefreshListeningSources(bool modeInitialization,bool listeningActive,bool refreshInFlight)
     {
-        if(Window!=WindowPhase.Running||Lease!=AudioLease.Idle||listeningActive||refreshInFlight)return false;
+        if(Window!=WindowPhase.Running||AudioBusy||listeningActive||refreshInFlight)return false;
         return modeInitialization
             ?Mode is ModeContext.Switching{Target:WorkMode.Listening,Committed:true}
             :Mode is ModeContext.Listening&&Overlay is OverlayState.None;
     }
 
     public bool CanAlignWindowsGain(RecordingMode recordMode)
-        =>Window==WindowPhase.Running&&recordMode==RecordingMode.Exclusive&&Mode is ModeContext.Recording&&Lease==AudioLease.Idle&&Overlay is OverlayState.None;
+        =>Window==WindowPhase.Running&&recordMode==RecordingMode.Exclusive&&Mode is ModeContext.Recording&&!AudioBusy&&Overlay is OverlayState.None;
 
     public bool CanEnqueueExclusiveNotice()
         =>Window==WindowPhase.Running&&Mode is ModeContext.Recording&&Overlay is OverlayState.None;
 
     public bool CanOpenRawDecision()
-        =>Window==WindowPhase.Running&&Mode is ModeContext.Recording&&Lease==AudioLease.Idle&&Overlay is OverlayState.None;
+        =>Window==WindowPhase.Running&&Mode is ModeContext.Recording&&!AudioBusy&&Overlay is OverlayState.None;
 
-    public bool TryBeginCalibrationManager(bool recordingActive)
+    public bool TryBeginCalibrationManager(bool recordingActive,bool dialogsBusy=false)
     {
-        if(Window!=WindowPhase.Running||recordingActive||Mode is not ModeContext.Recording||Overlay is not OverlayState.None)return false;
+        if(dialogsBusy||Window!=WindowPhase.Running||recordingActive||Mode is not ModeContext.Recording||Overlay is not OverlayState.None)return false;
         Overlay=new OverlayState.CalibrationManager(InnerDialogOpen:false,InFilePicker:false);
         return true;
     }
@@ -171,8 +167,8 @@ internal sealed class MainWindowCoordinator
         {
             ModalKind.CalibrationManagerDialog=>Overlay is OverlayState.CalibrationManager{InnerDialogOpen:false,InFilePicker:false},
             ModalKind.ExclusiveNotice=>Mode is ModeContext.Recording&&Overlay is OverlayState.None,
-            ModalKind.RawDecision=>Mode is ModeContext.Recording&&Lease==AudioLease.Idle&&Overlay is OverlayState.None,
-            ModalKind.Message=>Overlay is OverlayState.None or OverlayState.Modal,
+            ModalKind.RawDecision=>Mode is ModeContext.Recording&&!AudioBusy&&Overlay is OverlayState.None,
+            ModalKind.Message=>Overlay is OverlayState.None or OverlayState.Modal or OverlayState.CalibrationManager{InnerDialogOpen:false,InFilePicker:false},
             _=>false
         };
     }
