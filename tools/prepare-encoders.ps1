@@ -17,7 +17,7 @@ function Get-VerifiedEncoderArchive {
             Invoke-WebRequest -Uri $Url -OutFile $temporary -TimeoutSec $TimeoutSeconds -ErrorAction Stop
             $actual = (Get-FileHash -LiteralPath $temporary -Algorithm SHA256).Hash
             if ($actual -ne $ExpectedHash) { throw "Encoder archive SHA-256 mismatch: expected $ExpectedHash, got $actual. No unverified archive was installed." }
-            [IO.File]::Move($temporary, $Archive, $true)
+            Move-Item -LiteralPath $temporary -Destination $Archive -Force
             return
         }
         catch {
@@ -66,7 +66,7 @@ if (-not (Test-Path -LiteralPath $executable) -or (Get-FileHash -LiteralPath $ex
     try {
         Copy-Item -LiteralPath $cachedBinary -Destination $binaryTemporary -ErrorAction Stop
         if ((Get-FileHash -LiteralPath $binaryTemporary -Algorithm SHA256).Hash -ne $binaryHash) { throw 'Copied encoder binary SHA-256 mismatch.' }
-        [IO.File]::Move($binaryTemporary, $executable, $true)
+        Move-Item -LiteralPath $binaryTemporary -Destination $executable -Force
     }
     catch { $failure = $_.Exception; throw }
     finally {
