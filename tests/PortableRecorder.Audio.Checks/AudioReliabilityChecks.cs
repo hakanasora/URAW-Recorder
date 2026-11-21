@@ -261,6 +261,26 @@ internal static class AudioReliabilityChecks
         int segmentBefore=pipeline.Latest.Segment;
         await pipeline.DetachAsync(mathematicalDrain:true,resetPeak:false,nativeFault:null);
         check(pipeline.Latest.Segment==segmentBefore,"Detaching from Paused skips zero-flush and Rebuild");
+
+        var clock=new StepClock();
+        var budget=new PauseTailBudget(WasapiCaptureSession.PauseTailLimit,clock);
+        check(budget.ShouldTimeout(pending:false,epoch:0),"Non-pending timeout trips immediately after 3s wait");
+        check(!budget.ShouldTimeout(pending:true,epoch:1),"First pending timeout arms 30s pause-tail budget");
+        clock.AdvanceSeconds(29);
+        check(!budget.ShouldTimeout(pending:true,epoch:1),"Pending timeout stays open inside 30s budget");
+        clock.AdvanceSeconds(1);
+        check(budget.ShouldTimeout(pending:true,epoch:1),"Pending timeout triggers at 30s cap");
+        budget.Reset();
+        check(!budget.ShouldTimeout(pending:true,epoch:1),"Packet arrival resets pause-tail timeout budget");
+        clock.AdvanceSeconds(25);
+        check(!budget.ShouldTimeout(pending:true,epoch:2),"New pause epoch re-arms fresh 30s budget");
+    }
+    private sealed class StepClock:TimeProvider
+    {
+        private long _ticks;
+        public StepClock()=>_ticks=TimestampFrequency;
+        public void AdvanceSeconds(double seconds)=>_ticks+=(long)(seconds*TimestampFrequency);
+        public override long GetTimestamp()=>_ticks;
     }
 
     private sealed class ReliabilityFactory:ICaptureFactory

@@ -65,6 +65,7 @@ static class EncodingChecks
                 {
                     var tinyWriter=new CompressedAudioWriter(tiny,format,new(codec,2),encoder);tinyWriter.TryWrite(Enumerable.Repeat(.125f,count).ToArray());
                     bool tinyRejected=false;try{await tinyWriter.CompleteAsync();}catch(IOException){tinyRejected=true;}check(tinyRejected,"Sub-MPEG-frame MP3 cannot silently pad or claim exact duration");try{await tinyWriter.DisposeAsync();}catch(IOException){}
+                    check(!File.Exists(tiny),"Rejected sub-MPEG-frame MP3 removes empty 0-byte destination placeholder");
                 }
             }
             await using(var writer=new CompressedAudioWriter(path,format,new(codec,2),encoder))
@@ -89,6 +90,7 @@ static class EncodingChecks
             try{await invalid.DisposeAsync();}catch(IOException){}
             var empty=new CompressedAudioWriter(rejected+"-empty",format,new(codec,2),encoder);
             bool emptyFailed=false;try{await empty.CompleteAsync();}catch(IOException){emptyFailed=true;}check(emptyFailed,"Empty compressed file cannot report saved successfully");try{await empty.DisposeAsync();}catch(IOException){}
+            check(!File.Exists(rejected+"-empty")&&empty.AuxiliaryPaths.All(p=>!File.Exists(p)),"Empty compressed failure cleans 0-byte destination and staging");
             foreach(float sample in new[]{float.NaN,float.PositiveInfinity,float.NegativeInfinity})
             {
                 var bad=new CompressedAudioWriter(rejected+"-bad-"+BitConverter.SingleToInt32Bits(sample),format,new(codec,2),encoder);
@@ -149,6 +151,14 @@ static class EncodingChecks
             check(!File.Exists(path+".calibration.json"),"Recording directory contains no generated calibration sidecar");
             await engine.StartRecordingAsync(directory,RecordingMode.Shared,new(codec,2));string discarded=engine.Status.FilePath!;factory.Push(new float[200]);await engine.PauseAsync(true);await engine.DiscardRecordingAsync();
             check(!File.Exists(discarded)&&!File.Exists(engine.GetRecordingMetadataPath(discarded))&&!Directory.GetFiles(directory,Path.GetFileName(discarded)+".*.encoding").Any(),"Discard removes only current encoded file, summary and staging");
+            if(codec==RecordingCodec.Mp3)
+            {
+                await engine.StartRecordingAsync(directory,RecordingMode.Shared,new(RecordingCodec.Mp3,2));
+                string tooShort=engine.Status.FilePath!;
+                factory.Push(new float[13]);
+                bool rejectedShort=false;try{await engine.StopRecordingAsync();}catch(IOException){rejectedShort=true;}
+                check(rejectedShort&&!File.Exists(tooShort)&&!File.Exists(engine.GetRecordingMetadataPath(tooShort)),"Failed 0-byte MP3 recording leaves neither empty output nor calibration summary");
+            }
         }
     }
 }

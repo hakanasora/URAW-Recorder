@@ -48,17 +48,43 @@ public sealed class WasapiCaptureFactory:ICaptureFactory
         return new InputFormatOptions(WasapiCaptureSession.Describe(mix),formats);
     });
 }
+internal sealed class PauseTailBudget(TimeSpan limit,TimeProvider? clock=null)
+{
+    private readonly TimeProvider _clock=clock??TimeProvider.System;
+    private long? _startedAt;
+    private int _epoch;
+
+    public void Reset()=>_startedAt=null;
+
+    public bool ShouldTimeout(bool pending,int epoch)
+    {
+        if(!pending){_startedAt=null;return true;}
+        if(epoch!=_epoch||_startedAt is not long started)
+        {
+            _epoch=epoch;
+            _startedAt=_clock.GetTimestamp();
+            return false;
+        }
+        return _clock.GetElapsedTime(started,_clock.GetTimestamp())>=limit;
+    }
+}
+
 internal sealed class WasapiCaptureSession:IAudioCaptureService,IPauseTailCapture
 {
+    internal static readonly TimeSpan PauseTailLimit=TimeSpan.FromSeconds(30);
     private readonly CancellationTokenSource _stop=new();
     private readonly TaskCompletionSource<CaptureInfo> _ready=new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly TaskCompletionSource _done=new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly object _disposeGate=new();
     private Task? _disposeTask;
-    private bool _pauseTailPending;
+    private int _pauseTailPending,_pauseTailEpoch;
     public Task<CaptureInfo> Ready=>_ready.Task;
     public CaptureInfo Info=>_ready.Task.GetAwaiter().GetResult();
-    public void SetPauseTailPending(bool pending)=>Volatile.Write(ref _pauseTailPending,pending);
+    public void SetPauseTailPending(bool pending)
+    {
+        if(pending)Interlocked.Increment(ref _pauseTailEpoch);
+        Volatile.Write(ref _pauseTailPending,pending?1:0);
+    }
     public WasapiCaptureSession(AudioDevice device,bool exclusive,bool raw,long epoch,Func<CapturePacket,bool> submit,Action<Exception> fault,AudioFormat? preferredFormat)
     {
         var thread=new Thread(()=>Run(device,exclusive,raw,epoch,submit,fault,preferredFormat)){IsBackground=true,Name="Portable Recorder WASAPI"};
@@ -130,6 +156,7 @@ internal sealed class WasapiCaptureSession:IAudioCaptureService,IPauseTailCaptur
             {volumeDiagnostic=$"endpointVolumeUnavailable=0x{error.HResult:X8}";}
             var info=new CaptureInfo(description,format,exclusive,raw,epoch){EndpointVolume=volume,StreamDiagnostics=
                 $"bufferFrames={bufferFrames}; bufferMs={bufferFrames*1000d/format.SampleRate:F3}; requestedMs={duration/10000d:F3}; defaultPeriodMs={client.DefaultDevicePeriod/10000d:F3}; scheduling={scheduling}; {volumeDiagnostic}"};
+            var pauseTailBudget=new PauseTailBudget(PauseTailLimit);
             long lastWake=Stopwatch.GetTimestamp();
             client.Start();
             started=true;
@@ -140,9 +167,12 @@ internal sealed class WasapiCaptureSession:IAudioCaptureService,IPauseTailCaptur
                 if(signaled==1)break;
                 if(signaled==WaitHandle.WaitTimeout)
                 {
-                    if(Volatile.Read(ref _pauseTailPending))continue;
-                    throw new IOException("采集设备连续 3 秒未提供音频包。");
+                    bool pending=Volatile.Read(ref _pauseTailPending)!=0;
+                    int pauseEpoch=Volatile.Read(ref _pauseTailEpoch);
+                    if(!pauseTailBudget.ShouldTimeout(pending,pauseEpoch))continue;
+                    throw new IOException(pending?"暂停等待尾音超过 30 秒，采集设备未继续提供音频包。":"采集设备连续 3 秒未提供音频包。");
                 }
+                pauseTailBudget.Reset();
                 long wake=Stopwatch.GetTimestamp();double wakeGapMs=Stopwatch.GetElapsedTime(lastWake,wake).TotalMilliseconds;lastWake=wake;
                 // GetNextPacketSize is shared-mode only. Exclusive events supply one buffer.
                 do

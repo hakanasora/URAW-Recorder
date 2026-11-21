@@ -8,6 +8,8 @@ namespace PortableRecorder.Audio;
 // FFmpeg runs as a separate, hidden encoder process. Capture never waits for it.
 public sealed class CompressedAudioWriter:IRecordingWriter
 {
+    private enum EncoderPhase { Streaming, Finalizing, Failed, Completed }
+
     private readonly RecordingWriteQueue _queue;
     private readonly RecordingWriteQueue.PrepareBlock _prepareBlock;
     private readonly Process _process;
@@ -17,12 +19,15 @@ public sealed class CompressedAudioWriter:IRecordingWriter
     private readonly string _staging;
     private readonly int _channels;
     private readonly int _minimumFrames;
+    private EncoderPhase _phase=EncoderPhase.Streaming;
+    private Exception? _failure;
+    private bool _copiedToDestination;
     private long _frames;
     private long _clippedSamples;
     public long ClippedSamples=>Interlocked.Read(ref _clippedSamples);
     public string Path {get;}
     public long WrittenFrames=>Interlocked.Read(ref _frames);
-    public Exception? Failure=>_queue.Failure;
+    public Exception? Failure=>Volatile.Read(ref _failure)??_queue.Failure;
     public IReadOnlyList<string> AuxiliaryPaths=>[_staging];
 
     public CompressedAudioWriter(string path,AudioFormat format,RecordingEncoding encoding,string executable)
@@ -79,11 +84,17 @@ public sealed class CompressedAudioWriter:IRecordingWriter
         return null;
     }
 
+    private void RecordEncoderFailure(Exception error)
+    {
+        _phase=EncoderPhase.Failed;
+        Volatile.Write(ref _failure,AudioFailure.Combine(Failure,error));
+        _queue.CloseInput();
+    }
+
     private async Task WriteLoop()
     {
         try
         {
-            bool sinkFailed=false;
             await foreach(var block in _queue.ReadAllAsync())
             {
                 try
@@ -102,15 +113,14 @@ public sealed class CompressedAudioWriter:IRecordingWriter
                 }
                 catch(Exception error)
                 {
-                    _queue.CloseInput(EncodingFailure(error));
-                    sinkFailed=true;
+                    RecordEncoderFailure(EncodingFailure(error));
                     break;
                 }
                 finally{_queue.Release(block);}
             }
-            if(!sinkFailed)await FinalizeFileAsync();
+            if(_phase==EncoderPhase.Streaming)await FinalizeFileAsync();
         }
-        catch(Exception error){_queue.CloseInput(EncodingFailure(error));}
+        catch(Exception error){RecordEncoderFailure(EncodingFailure(error));}
         finally
         {
             _queue.DiscardPending();
@@ -122,20 +132,42 @@ public sealed class CompressedAudioWriter:IRecordingWriter
                     await _process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5));
                 }
             }
-            catch(Exception error){_queue.CloseInput(new IOException("编码器进程清理失败："+error.Message,error));}
+            catch(Exception error){RecordEncoderFailure(new IOException("编码器进程清理失败："+error.Message,error));}
             try{await _diagnostics.WaitAsync(TimeSpan.FromSeconds(5));}
-            catch(Exception error){_queue.CloseInput(new IOException("编码器错误输出收尾失败："+error.Message,error));}
-            try{_process.Dispose();}catch(Exception error){_queue.CloseInput(error);}
-            try{await _destination.DisposeAsync();}catch(Exception error){_queue.CloseInput(error);}
+            catch(Exception error){RecordEncoderFailure(new IOException("编码器错误输出收尾失败："+error.Message,error));}
+            try{_process.Dispose();}catch(Exception error){RecordEncoderFailure(error);}
+            try{await _destination.DisposeAsync();}catch(Exception error){RecordEncoderFailure(error);}
+            if(!_copiedToDestination)
+            {
+                DeleteIfEmpty(Path);
+                if(WrittenFrames==0)DeleteFile(_staging);
+                else DeleteIfEmpty(_staging);
+            }
         }
         if(Failure is Exception failure)throw new IOException(AudioFailure.Describe(failure),failure);
     }
 
+    private static void DeleteIfEmpty(string file)
+    {
+        try
+        {
+            if(File.Exists(file)&&new FileInfo(file).Length==0)File.Delete(file);
+        }
+        catch{}
+    }
+
+    private static void DeleteFile(string file)
+    {
+        try{if(File.Exists(file))File.Delete(file);}
+        catch{}
+    }
+
     private IOException EncodingFailure(Exception error)
-        =>new("压缩录音写入或收尾失败："+error.Message+" 未完成文件可能位于："+_staging,error);
+        =>new("压缩录音写入或收尾失败："+error.Message+(WrittenFrames>0&&File.Exists(_staging)?" 未完成文件可能位于："+_staging:""),error);
 
     private async Task FinalizeFileAsync()
     {
+        _phase=EncoderPhase.Finalizing;
         _process.StandardInput.Close();
         using(var deadline=new CancellationTokenSource(TimeSpan.FromSeconds(30)))await _process.WaitForExitAsync(deadline.Token);
         string diagnostics=await _diagnostics;
@@ -145,6 +177,8 @@ public sealed class CompressedAudioWriter:IRecordingWriter
         await using(var encoded=new FileStream(_staging,FileMode.Open,FileAccess.Read,FileShare.Read,65536,FileOptions.Asynchronous|FileOptions.SequentialScan))
             await encoded.CopyToAsync(_destination);
         await _destination.FlushAsync();_destination.Flush(true);
+        _copiedToDestination=true;
+        _phase=EncoderPhase.Completed;
         File.Delete(_staging);
     }
 

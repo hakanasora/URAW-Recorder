@@ -779,7 +779,7 @@ public sealed class AudioEngine:IAsyncDisposable
         string? temp=null;
         try
         {
-            if(!File.Exists(writer.Path))return null;
+            if(!File.Exists(writer.Path)||new FileInfo(writer.Path).Length==0)return null;
             string sidecar=GetRecordingMetadataPath(writer.Path);
             Directory.CreateDirectory(System.IO.Path.GetDirectoryName(sidecar)!);
             temp=sidecar+"."+Guid.NewGuid().ToString("N")+".tmp";
