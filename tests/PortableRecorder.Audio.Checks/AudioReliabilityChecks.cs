@@ -220,6 +220,47 @@ internal static class AudioReliabilityChecks
             await Until(()=>engine.WrittenFrames==480,"Valid gain survives invalid input");await engine.StopRecordingAsync();
             check(gainWriter.Samples.All(x=>Math.Abs(x-.125*Math.Pow(10,6d/20))<1e-6),"Invalid gain retains previous gain and working recording path");
         }
+
+        await PipelineStateChecks(folder,check);
+    }
+
+    private static async Task PipelineStateChecks(string folder,Action<bool,string> check)
+    {
+        var format=new AudioFormat(48000,1,32,32,PcmEncoding.Float);
+        var info=new CaptureInfo(new("pipe","Pipeline input",true),format,false,true,1);
+        var profile=CalibrationProfile.Parse("1 -6\n24000 -6"u8.ToArray(),"pipe.cal");
+        var plan=CalibrationPlan.Prepare(profile,48000);
+
+        var disposedPipeline=new ProcessingPipeline(()=>1,_=>{},_=>{});
+        disposedPipeline.Configure(info,CalibrationPlan.Identity);
+        await disposedPipeline.Ready;
+        await disposedPipeline.DisposeAsync();
+        bool threwDisposed=false;
+        try{await disposedPipeline.AttachAsync(new ReliabilityWriter(Path.Combine(folder,"disposed.wav")));}
+        catch(ObjectDisposedException){threwDisposed=true;}
+        check(threwDisposed,"Command on cleanly disposed ProcessingPipeline throws ObjectDisposedException");
+
+        await using var pipeline=new ProcessingPipeline(()=>1,_=>{},_=>{});
+        pipeline.Configure(info,plan);
+        await pipeline.Ready;
+        var firstWriter=new ReliabilityWriter(Path.Combine(folder,"attach-1.wav"));
+        var secondWriter=new ReliabilityWriter(Path.Combine(folder,"attach-2.wav"));
+        await pipeline.AttachAsync(firstWriter);
+        bool doubleAttachRejected=false;
+        try{await pipeline.AttachAsync(secondWriter);}
+        catch(InvalidOperationException){doubleAttachRejected=true;}
+        check(doubleAttachRejected,"AttachAsync rejects second writer while another recording is attached");
+
+        int byteCount=plan.LatencyFrames*4;
+        byte[] firstBytes=ArrayPool<byte>.Shared.Rent(byteCount);Array.Clear(firstBytes,0,byteCount);
+        pipeline.Submit(new(firstBytes,byteCount,plan.LatencyFrames,0,true,false));
+        var pauseGate=await pipeline.RequestPauseAsync();
+        byte[] tailBytes=ArrayPool<byte>.Shared.Rent(byteCount);Array.Clear(tailBytes,0,byteCount);
+        pipeline.Submit(new(tailBytes,byteCount,plan.LatencyFrames,plan.LatencyFrames,true,false));
+        await pauseGate;
+        int segmentBefore=pipeline.Latest.Segment;
+        await pipeline.DetachAsync(mathematicalDrain:true,resetPeak:false,nativeFault:null);
+        check(pipeline.Latest.Segment==segmentBefore,"Detaching from Paused skips zero-flush and Rebuild");
     }
 
     private sealed class ReliabilityFactory:ICaptureFactory
