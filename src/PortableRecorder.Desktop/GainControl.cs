@@ -131,7 +131,6 @@ public sealed class GainControl : UserControl
 
         RepeatButton Step(string name, double direction)
         {
-            // Geometric chevrons share identical bounds; font glyph bearings cannot shift their centers.
             var arrow = new Polyline();
             arrow.Points.Add(new Windows.Foundation.Point(0, direction > 0 ? 3 : 0));
             arrow.Points.Add(new Windows.Foundation.Point(3, direction > 0 ? 0 : 3));
