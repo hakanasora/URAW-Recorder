@@ -22,6 +22,8 @@ public sealed class MonitorRenderer : IDisposable
     private readonly Dictionary<float,CanvasTextFormat> _formats = new();
     private double _low = 36, _targetLow = 36, _frameDelta,_lastDrawTime,_timeline;
     private double _vuLeft = -20, _vuRight = -20;
+    private double _riseRemaining;
+    private float _spectrumAlpha = 1f;
     private readonly Stopwatch _visualClock=Stopwatch.StartNew();
     private readonly MeterMotion _meterMotion=new();
     private readonly CentsMotion _centsMotion=new();
@@ -190,8 +192,8 @@ public sealed class MonitorRenderer : IDisposable
             var y=(height-188)/2;
             // Shift only the meter's zero point; samples and digital meters stay unchanged.
             double offset=-18-state.VuReferenceDbfs;
-            _vuLeft=SmoothVuFall(_vuLeft,vu.Left+offset,_frameDelta,ReducedMotion);
-            _vuRight=SmoothVuFall(_vuRight,vu.Right+offset,_frameDelta,ReducedMotion);
+            _vuLeft=SmoothVu(_vuLeft,vu.Left+offset,_frameDelta,ReducedMotion);
+            _vuRight=SmoothVu(_vuRight,vu.Right+offset,_frameDelta,ReducedMotion);
             Vu(sender,ds,x,y,_vuLeft,"L"); Vu(sender,ds,x+276,y,_vuRight,"R");
         }
         else if(state.Mode==MonitorMode.Spectrum) Spectrum(sender,ds,state,width,height);
@@ -199,12 +201,13 @@ public sealed class MonitorRenderer : IDisposable
 
     }
 
-    private static double SmoothVuFall(double current,double target,double dt,bool reducedMotion)
+    private static double SmoothVu(double current,double target,double dt,bool reducedMotion)
     {
         double clamped=Math.Clamp(target,-20,3);
-        if(reducedMotion||clamped>=current)return clamped;
-        double next=clamped+(current-clamped)*Math.Exp(-dt/.085);
-        return next-clamped<.02?clamped:next;
+        if(reducedMotion)return clamped;
+        double tau=clamped>=current?.050:.085;
+        double next=clamped+(current-clamped)*Math.Exp(-dt/tau);
+        return Math.Abs(clamped-next)<.02?clamped:next;
     }
     private void Spectrum(CanvasSwapChain sender,CanvasDrawingSession ds,ShellViewModel state,float w,float h)
     {
@@ -262,11 +265,25 @@ public sealed class MonitorRenderer : IDisposable
             }
             if(_projectedFrame!=frame || _projectionWidth!=w)
             {
-                if(_projectedFrame is { } previous && frame.EndFrame>previous.EndFrame)
-                    _blendDuration=Math.Clamp((frame.EndFrame-previous.EndFrame)/(hz[1]*frame.FftSize),.012,.060);
                 bool resize=_spectrumPoints.Length!=_buckets.Length;
-                if(resize){_spectrumPoints=new Vector2[_buckets.Length];_fromSpectrum=new Vector2[_buckets.Length];_drawSpectrum=new Vector2[_buckets.Length];}
-                else _drawSpectrum.CopyTo(_fromSpectrum,0);
+                if(resize)
+                {
+                    _spectrumPoints=new Vector2[_buckets.Length];
+                    _fromSpectrum=new Vector2[_buckets.Length];
+                    _drawSpectrum=new Vector2[_buckets.Length];
+                    _riseRemaining=ReducedMotion?0:.16;
+                    _spectrumAlpha=ReducedMotion?1f:0f;
+                }
+                else
+                {
+                    _drawSpectrum.CopyTo(_fromSpectrum,0);
+                    _riseRemaining=Math.Max(0,_riseRemaining-(_visualClock.Elapsed.TotalSeconds-_blendStarted));
+                    if(_spectrumAlpha<.9f)_riseRemaining=Math.Max(_riseRemaining,.12);
+                }
+                if(!resize && _projectedFrame is { } previous && frame.EndFrame>previous.EndFrame)
+                    _blendDuration=Math.Clamp((frame.EndFrame-previous.EndFrame)/(hz[1]*frame.FftSize),.012,.060);
+                else if(resize) _blendDuration=.020;
+                if(_riseRemaining>0)_blendDuration=Math.Max(_blendDuration,_riseRemaining);
                 for(int pixel=0;pixel<_buckets.Length;pixel++)
                 {
                     var bucket=_buckets[pixel];double level=double.NegativeInfinity;
@@ -280,12 +297,19 @@ public sealed class MonitorRenderer : IDisposable
                     }
                     _spectrumPoints[pixel]=new(left+pixel,Y(level));
                 }
-                if(resize)_spectrumPoints.CopyTo(_fromSpectrum,0);
+                if(resize)
+                {
+                    if(ReducedMotion)_spectrumPoints.CopyTo(_fromSpectrum,0);
+                    else for(int pixel=0;pixel<_buckets.Length;pixel++)_fromSpectrum[pixel]=new(left+pixel,bottom);
+                }
                 _projectedFrame=frame;_projectionWidth=w;_blendStarted=_visualClock.Elapsed.TotalSeconds;
             }
             if(_spectrumPoints.Length<2)return;
             float blend=ReducedMotion?1:(float)Math.Clamp((_visualClock.Elapsed.TotalSeconds-_blendStarted)/_blendDuration,0,1);
+            if(!ReducedMotion && _riseRemaining>0)blend=1f-(1f-blend)*(1f-blend);
             for(int i=0;i<_drawSpectrum.Length;i++)_drawSpectrum[i]=Vector2.Lerp(_fromSpectrum[i],_spectrumPoints[i],blend);
+            _spectrumAlpha=ReducedMotion?1f:Math.Min(1f,_spectrumAlpha+(float)_frameDelta/.09f);
+            decayFade=_spectrumAlpha;
         }
         else
         {
@@ -307,7 +331,8 @@ public sealed class MonitorRenderer : IDisposable
                 _spectrumPoints=[];_fromSpectrum=[];_drawSpectrum=[];
                 return;
             }
-            decayFade=Math.Clamp((bottom-minY)/14f,0f,1f);
+            decayFade=Math.Min(_spectrumAlpha,Math.Clamp((bottom-minY)/14f,0f,1f));
+            _spectrumAlpha=decayFade;
         }
         using var chart=new CanvasCommandList(sender);
         using(var ink=chart.CreateDrawingSession())
