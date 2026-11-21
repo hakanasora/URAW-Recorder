@@ -114,6 +114,32 @@ static class ListeningChecks
         await Until(()=>backlogService.Latest.FramePosition==65*480,"post-drop boundary");
         Assert(double.IsNegativeInfinity(backlogService.Latest.RmsDbfs)&&backlogService.Latest.Segment>0,
             "Queue overflow resets the first accepted post-gap block, not an older queued block");
+
+        await CheckStopPreservesStatusAndHandlesConcurrentFault(source,Assert);
+    }
+    private static async Task CheckStopPreservesStatusAndHandlesConcurrentFault(ListeningSource source,Action<bool,string> Assert)
+    {
+        var disposeEntered=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseDispose=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var factory=new FakeListeningFactory{OnDispose=()=>{disposeEntered.TrySetResult();return releaseDispose.Task;}};
+        await using var service=new ListeningService(factory);
+        try
+        {
+            await service.StartAsync(source);
+            var capture=factory.Current!;
+            Assert(service.Status.State==ListeningState.Waiting,"Active capture begins waiting before stop");
+            var stop=service.StopAsync();
+            await disposeEntered.Task.WaitAsync(TimeSpan.FromSeconds(4));
+            var midStopState=service.Status.State;
+            Assert(midStopState==ListeningState.Waiting,$"Stop freezes non-Opening status while capture disposes (observed {midStopState})");
+            capture.Fail(new IOException("late native fault during stop"));
+            releaseDispose.TrySetResult();
+            await stop.WaitAsync(TimeSpan.FromSeconds(4));
+            Assert(service.Status.State==ListeningState.Stopped,"Stop finishes cleanly after blocked capture disposal");
+            capture.Fail(new IOException("post-stop late native fault"));
+            Assert(service.Status.State==ListeningState.Stopped,"Late callback after disposal cannot mutate stopped state or throw");
+        }
+        finally{releaseDispose.TrySetResult();}
     }
     private static async Task CheckWatchdogUsesCurrentPacket(ListeningSource source,Action<bool,string> Assert)
     {
@@ -163,9 +189,11 @@ static class ListeningChecks
     }
     private static object SessionField(ListeningService service,string field)
     {
-        const BindingFlags fields=BindingFlags.Instance|BindingFlags.NonPublic;
-        var session=typeof(ListeningService).GetField("_session",fields)!.GetValue(service)!;
-        return session.GetType().GetField(field,fields)!.GetValue(session)!;
+        const BindingFlags nonPublic=BindingFlags.Instance|BindingFlags.NonPublic;
+        const BindingFlags all=nonPublic|BindingFlags.Public;
+        var phase=typeof(ListeningService).GetField("_phase",nonPublic)!.GetValue(service)!;
+        var session=phase.GetType().GetProperty("Session",all)!.GetValue(phase)!;
+        return session.GetType().GetField(field,nonPublic)!.GetValue(session)!;
     }
     private static int QueuedPacketCount(ListeningService service)
     {
@@ -182,11 +210,12 @@ static class ListeningChecks
     private sealed class FakeListeningFactory:IListeningCaptureFactory
     {
         public FakeListeningCapture? Current;public bool FailOpening,FaultBeforeReturn,BurstBeforeReturn,FailDisposal;
+        public Func<Task>? OnDispose;
         public int SuccessfulFormatReads=int.MaxValue;
         public Task<IListeningCaptureSession> OpenAsync(ListeningSource source,Func<CapturePacket,bool> submit,Action<Exception> fault)
         {
             if(FailOpening)throw new IOException("test opening failed");
-            Current=new(submit,fault,SuccessfulFormatReads,FailDisposal);
+            Current=new(submit,fault,SuccessfulFormatReads,FailDisposal,OnDispose);
             if(BurstBeforeReturn)for(int i=0;i<65;i++)Current.Push(Sine(480,.1f));
             if(FaultBeforeReturn)
             {
@@ -197,7 +226,7 @@ static class ListeningChecks
         }
     }
     private sealed class FakeListeningCapture(Func<CapturePacket,bool> submit,Action<Exception> fault,
-        int successfulFormatReads,bool failDisposal):IListeningCaptureSession
+        int successfulFormatReads,bool failDisposal,Func<Task>? onDispose=null):IListeningCaptureSession
     {
         private readonly AudioFormat _format=new(48000,1,32,32,PcmEncoding.Float);
         private int _formatReads;
@@ -213,10 +242,11 @@ static class ListeningChecks
             _position+=samples.Length;bool accepted=submit(packet);if(!accepted)packet.Dispose();return accepted;
         }
         public void Fail(Exception e)=>fault(e);
-        public ValueTask DisposeAsync()
+        public async ValueTask DisposeAsync()
         {
             Disposed=true;
-            return failDisposal?ValueTask.FromException(DisposeError):ValueTask.CompletedTask;
+            if(onDispose!=null)await onDispose().ConfigureAwait(false);
+            if(failDisposal)throw DisposeError;
         }
     }
 }

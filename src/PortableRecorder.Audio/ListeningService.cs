@@ -10,23 +10,36 @@ public sealed class ListeningService:IAsyncDisposable
     private readonly IListeningCaptureFactory _factory;
     private readonly TimeProvider _clock;
     private readonly SemaphoreSlim _commands=new(1,1);
-    private Session? _session;
-    private ListeningStatus _status=new(ListeningState.Stopped,null,null,"");
+    private ServicePhase _phase=new ServicePhase.Stopped(null);
     private double _gainDb;
     private long _epoch;
-    private bool _disposed;
     public ListeningService(IListeningCaptureFactory? factory=null):this(factory??new WasapiListeningCaptureFactory(),TimeProvider.System){}
     internal ListeningService(IListeningCaptureFactory factory,TimeProvider clock)
     {_factory=factory;_clock=clock;}
-    public ListeningStatus Status=>Volatile.Read(ref _session)?.Status??Volatile.Read(ref _status);
-    public AudioSnapshot Latest=>Volatile.Read(ref _session)?.Latest??AudioSnapshot.Empty(Volatile.Read(ref _epoch));
+    private Session? CurrentSession=>Volatile.Read(ref _phase) switch
+    {
+        ServicePhase.Opening opening=>opening.Session,
+        ServicePhase.Active active=>active.Session,
+        _=>null
+    };
+    public ListeningStatus Status=>Volatile.Read(ref _phase) switch
+    {
+        ServicePhase.Stopped stopped=>new(ListeningState.Stopped,stopped.LastSource,null,""),
+        ServicePhase.Opening opening=>opening.Session.Status,
+        ServicePhase.Active active=>active.Session.Status,
+        ServicePhase.Stopping stopping=>stopping.FrozenStatus,
+        ServicePhase.Faulted faulted=>faulted.Status,
+        ServicePhase.Disposed disposed=>new(ListeningState.Stopped,disposed.LastSource,null,""),
+        _=>new(ListeningState.Stopped,null,null,"")
+    };
+    public AudioSnapshot Latest=>CurrentSession?.Latest??AudioSnapshot.Empty(Volatile.Read(ref _epoch));
     public double GainDb=>Volatile.Read(ref _gainDb);
     public void SetGain(double db)
     {
         if(!double.IsFinite(db))throw new ArgumentOutOfRangeException(nameof(db));
         Volatile.Write(ref _gainDb,Math.Round(Math.Clamp(db,-60,60),1));
     }
-    public void ResetPeak()=>Volatile.Read(ref _session)?.ResetPeak();
+    public void ResetPeak()=>CurrentSession?.ResetPeak();
 
     public async Task StartAsync(ListeningSource source)
     {
@@ -35,16 +48,16 @@ public sealed class ListeningService:IAsyncDisposable
         await _commands.WaitAsync().ConfigureAwait(false);
         try
         {
-            ObjectDisposedException.ThrowIf(_disposed,this);
+            ObjectDisposedException.ThrowIf(Volatile.Read(ref _phase) is ServicePhase.Disposed,this);
             await StopCoreAsync().ConfigureAwait(false);
             long epoch=Interlocked.Increment(ref _epoch);
-            Volatile.Write(ref _status,new(ListeningState.Opening,source,null,"正在打开侦听…"));
             var session=new Session(source,epoch,()=>GainDb,_clock);
-            Volatile.Write(ref _session,session);
+            Volatile.Write(ref _phase,new ServicePhase.Opening(session));
             try
             {
                 var capture=await _factory.OpenAsync(source,session.Submit,session.Fault).ConfigureAwait(false);
                 session.Begin(capture);
+                Volatile.Write(ref _phase,new ServicePhase.Active(session));
             }
             catch(Exception error)
             {
@@ -54,8 +67,7 @@ public sealed class ListeningService:IAsyncDisposable
                 catch(Exception cleanupError){failure=AudioFailure.Combine(failure,cleanupError);}
                 finally
                 {
-                    Volatile.Write(ref _status,session.Status with{Message=Describe(failure)});
-                    Volatile.Write(ref _session,null);
+                    Volatile.Write(ref _phase,new ServicePhase.Faulted(session.Status with{Message=Describe(failure)}));
                 }
                 ExceptionDispatchInfo.Throw(failure);
             }
@@ -71,17 +83,54 @@ public sealed class ListeningService:IAsyncDisposable
     }
     private async Task StopCoreAsync()
     {
-        var session=Interlocked.Exchange(ref _session,null);
+        var current=Volatile.Read(ref _phase);
+        var session=current switch
+        {
+            ServicePhase.Opening opening=>opening.Session,
+            ServicePhase.Active active=>active.Session,
+            _=>null
+        };
         var previous=Status;
-        try{if(session!=null)await session.DisposeAsync().ConfigureAwait(false);}
-        finally{Volatile.Write(ref _status,new(ListeningState.Stopped,session?.Source??previous.Source,null,""));}
+        var lastSource=session?.Source??previous.Source;
+        if(session==null)
+        {
+            if(current is ServicePhase.Faulted)Volatile.Write(ref _phase,new ServicePhase.Stopped(lastSource));
+            return;
+        }
+        Volatile.Write(ref _phase,new ServicePhase.Stopping(previous,lastSource));
+        try{await session.DisposeAsync().ConfigureAwait(false);}
+        finally{Volatile.Write(ref _phase,new ServicePhase.Stopped(lastSource));}
     }
     public async ValueTask DisposeAsync()
     {
         await _commands.WaitAsync().ConfigureAwait(false);
-        try{if(_disposed)return;_disposed=true;await StopCoreAsync().ConfigureAwait(false);}
+        try
+        {
+            if(Volatile.Read(ref _phase) is ServicePhase.Disposed)return;
+            try{await StopCoreAsync().ConfigureAwait(false);}
+            finally
+            {
+                var lastSource=Volatile.Read(ref _phase) switch
+                {
+                    ServicePhase.Stopped stopped=>stopped.LastSource,
+                    ServicePhase.Stopping stopping=>stopping.LastSource,
+                    _=>Status.Source
+                };
+                Volatile.Write(ref _phase,new ServicePhase.Disposed(lastSource));
+            }
+        }
         finally{_commands.Release();}
-        // Commands arriving after disposal still acquire this gate and observe _disposed.
+        // Commands arriving after disposal still acquire this gate and observe ServicePhase.Disposed.
+    }
+    private abstract record ServicePhase
+    {
+        private ServicePhase(){}
+        public sealed record Stopped(ListeningSource? LastSource):ServicePhase;
+        public sealed record Opening(Session Session):ServicePhase;
+        public sealed record Active(Session Session):ServicePhase;
+        public sealed record Stopping(ListeningStatus FrozenStatus,ListeningSource? LastSource):ServicePhase;
+        public sealed record Faulted(ListeningStatus Status):ServicePhase;
+        public sealed record Disposed(ListeningSource? LastSource):ServicePhase;
     }
     private static string Describe(Exception e)=>e is AggregateException errors
         ?string.Join("；",errors.InnerExceptions.Select(Describe).Distinct(StringComparer.Ordinal))
@@ -105,12 +154,15 @@ public sealed class ListeningService:IAsyncDisposable
         private readonly Func<double> _gainDb;
         private readonly TimeProvider _clock;
         private readonly object _cleanupGate=new();
+        private readonly object _stopGate=new();
         private Task? _captureCleanup;
         private IListeningCaptureSession? _capture;
         private AudioAnalyzer? _analyzer;
         private Task _worker=Task.CompletedTask,_watchdog=Task.CompletedTask;
         private Observation _observation;
-        private int _stopping,_gapBeforeNextPacket,_peakReset,_analyzerDisposed;
+        private long _peakResetRequested,_peakResetApplied;
+        private int _stopping,_gapBeforeNextPacket,_analyzerDisposed;
+        private bool _stopDisposed;
         public ListeningSource Source {get;}
         public ListeningStatus Status=>Volatile.Read(ref _observation).Status;
         public Exception? Failure=>Volatile.Read(ref _observation).Failure;
@@ -119,7 +171,7 @@ public sealed class ListeningService:IAsyncDisposable
             get
             {
                 var analyzer=Volatile.Read(ref _analyzer);var latest=analyzer?.Latest??AudioSnapshot.Empty(_epoch);
-                if(Volatile.Read(ref _peakReset)!=0)latest=latest with{HeldPeakDbfs=null};
+                if(Volatile.Read(ref _peakResetRequested)!=Volatile.Read(ref _peakResetApplied))latest=latest with{HeldPeakDbfs=null};
                 return Status.State==ListeningState.Listening?latest:AudioSnapshot.Empty(_epoch) with
                     {HeldPeakDbfs=latest.HeldPeakDbfs,Segment=latest.Segment,SampleRate=latest.SampleRate,Channels=latest.Channels};
             }
@@ -161,11 +213,18 @@ public sealed class ListeningService:IAsyncDisposable
                 if(current.Status.State==ListeningState.Faulted)return;
                 var faulted=current with{Status=new(ListeningState.Faulted,Source,current.Status.Format,Describe(error)),Failure=error};
                 if(!ReferenceEquals(Interlocked.CompareExchange(ref _observation,faulted,current),current))continue;
-                _packets.Writer.TryComplete();_stop.Cancel();
+                _packets.Writer.TryComplete();SafeCancelStop();
                 return;
             }
         }
-        public void ResetPeak()=>Interlocked.Exchange(ref _peakReset,1);
+        public void ResetPeak()=>Interlocked.Increment(ref _peakResetRequested);
+        private void SafeCancelStop()
+        {
+            lock(_stopGate)
+            {
+                if(!_stopDisposed)_stop.Cancel();
+            }
+        }
         private async Task ProcessPacketsAsync(AudioFormat? format)
         {
             long frame=0;long? lastPacket=null;int segment=0;
@@ -179,7 +238,8 @@ public sealed class ListeningService:IAsyncDisposable
                 Volatile.Write(ref _analyzer,new AudioAnalyzer(format,_epoch));
                 await foreach(var item in _packets.Reader.ReadAllAsync(_stop.Token).ConfigureAwait(false))using(var packet=item.Packet)
                 {
-                    bool resetPeak=Interlocked.Exchange(ref _peakReset,0)!=0;
+                    long requestedReset=Volatile.Read(ref _peakResetRequested);
+                    bool resetPeak=requestedReset!=Volatile.Read(ref _peakResetApplied);
                     if(item.ResetBefore||packet.Discontinuity||
                         (lastPacket is long last&&_clock.GetElapsedTime(last,item.Arrival)>PacketTimeout))
                     {
@@ -187,7 +247,8 @@ public sealed class ListeningService:IAsyncDisposable
                         var next=new AudioAnalyzer(format,_epoch,segment:++segment,initialPeak:peak);
                         Volatile.Write(ref _analyzer,next);old.Dispose();
                     }
-                    if(resetPeak)_analyzer!.ResetPeak();
+                    else if(resetPeak)_analyzer!.ResetPeak();
+                    if(resetPeak)Volatile.Write(ref _peakResetApplied,requestedReset);
                     float[] samples=ArrayPool<float>.Shared.Rent(checked(packet.Frames*format.Channels));
                     try
                     {
@@ -261,7 +322,7 @@ public sealed class ListeningService:IAsyncDisposable
         }
         public async ValueTask DisposeAsync()
         {
-            Interlocked.Exchange(ref _stopping,1);_stop.Cancel();_packets.Writer.TryComplete();
+            Interlocked.Exchange(ref _stopping,1);SafeCancelStop();_packets.Writer.TryComplete();
             try{await ReleaseCaptureAsync().ConfigureAwait(false);}
             finally
             {
@@ -269,7 +330,8 @@ public sealed class ListeningService:IAsyncDisposable
                 finally
                 {
                     while(_packets.Reader.TryRead(out var item))item.Packet.Dispose();
-                    DisposeAnalyzer();_stop.Dispose();
+                    DisposeAnalyzer();
+                    lock(_stopGate){_stopDisposed=true;_stop.Dispose();}
                 }
             }
         }
