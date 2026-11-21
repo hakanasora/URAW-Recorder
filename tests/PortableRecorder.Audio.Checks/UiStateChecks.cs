@@ -307,6 +307,7 @@ static class UiStateChecks
         coord.EndFolderPicker();
 
         check(coord.TryBeginModeSwitch(WorkMode.Listening,false),"Switching to Listening permitted when idle");
+        check(!coord.CanEnableWorkModeSelector(active:false),"Work mode selector disabled while switching modes");
         check(!coord.TryEnterModal(ModalKind.RawDecision,false,out _),"RawDecision declined cleanly once mode switch begins");
         check(!coord.TryBeginAudioCommand(modeInitialization:false),"Normal audio command rejected during pre-commit mode switch");
         check(!coord.CanOpenRawDecision()&&!coord.CanEnqueueExclusiveNotice(),"RAW/exclusive notices blocked while switching to Listening");
@@ -315,6 +316,7 @@ static class UiStateChecks
         check(coord.CanRefreshListeningSources(modeInitialization:true,listeningActive:false,refreshInFlight:false),"Listening init refresh permitted after commit");
         check(!coord.CanRefreshListeningSources(modeInitialization:false,listeningActive:false,refreshInFlight:false),"User listening refresh blocked while switching still finishes");
         coord.EndModeSwitch();
+        check(coord.CanEnableWorkModeSelector(active:false)&&!coord.CanEnableWorkModeSelector(active:true),"Work mode selector disables while listening or recording is active and re-enables once stopped");
         check(!coord.TryEnterModal(ModalKind.ExclusiveNotice,false,out _),"Queued ExclusiveNotice rejected after mode switched to Listening");
         check(!coord.TryBeginCalibrationManager(false)&&!coord.TryBeginFolderPicker(false),"Recording overlays rejected in Listening mode");
         check(coord.CanRefreshListeningSources(modeInitialization:false,listeningActive:false,refreshInFlight:false),"Manual listening refresh permitted once idle in Listening");

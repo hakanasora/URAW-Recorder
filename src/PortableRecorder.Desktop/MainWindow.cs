@@ -1321,7 +1321,7 @@ public sealed partial class MainWindow : Window
     {
         if(_closing)return;
         if(_state.IsListening){RefreshListening();return;}
-        _workModeBox.IsEnabled=!_audioBusy&&!_state.Session.Active&&!WorkModeChanging;
+        _workModeBox.IsEnabled=_coordinator.CanEnableWorkModeSelector(_state.Session.Active);
         var stage=_state.Session.Stage;
         var active=_state.Session.Active;
         var paused=stage==RecordingStage.Paused;

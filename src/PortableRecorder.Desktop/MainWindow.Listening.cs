@@ -277,7 +277,7 @@ public sealed partial class MainWindow
         bool active=IsListeningActive(status.State);
         bool refreshing=_listenRefreshRequest!=null;
         bool application=_listenScope.SelectedIndex==1,endpoint=!application&&_listenTap.SelectedIndex==1;
-        _workModeBox.IsEnabled=!_audioBusy&&!WorkModeChanging;
+        _workModeBox.IsEnabled=_coordinator.CanEnableWorkModeSelector(active);
         foreach(var box in new[]{_listenScope,_listenTap,_listenEndpoint,_listenApplication})box.IsEnabled=!active&&!_audioBusy&&!WorkModeChanging;
         if(_listenRefresh!=null)_listenRefresh.IsEnabled=!refreshing&&!active&&!_audioBusy&&!WorkModeChanging;
         _listenTapGroup!.Visibility=application?Visibility.Collapsed:Visibility.Visible;

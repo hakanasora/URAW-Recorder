@@ -53,6 +53,9 @@ internal sealed class MainWindowCoordinator
 
     public void MarkClosed()=>Window=WindowPhase.Closed;
 
+    public bool CanEnableWorkModeSelector(bool active)
+        =>!IsClosing&&!active&&!AudioBusy&&!IsModeSwitching;
+
     public bool TryBeginModeSwitch(WorkMode target,bool sessionActive)
     {
         if(Window!=WindowPhase.Running||sessionActive||AudioBusy||Overlay is not OverlayState.None)return false;
