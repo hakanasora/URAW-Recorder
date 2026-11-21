@@ -132,8 +132,7 @@ internal sealed class LiveMonitorBuffer
             int toRead = (int)Math.Min(requestedFrames, write - startRead);
             CopyFromRing(startRead, destination.Slice(0, toRead * dstChannels), toRead, dstChannels);
 
-            // Re-validate against producer overrun so torn slots are never returned.
-            if (Interlocked.CompareExchange(ref _readFrame, startRead + toRead, origRead) == origRead)
+            if (TryCommitReadIfNotOverrun(origRead, startRead + toRead))
             {
                 if (toRead * dstChannels < destination.Length)
                     destination.Slice(toRead * dstChannels).Clear();
@@ -141,6 +140,9 @@ internal sealed class LiveMonitorBuffer
             }
         }
     }
+
+    private bool TryCommitReadIfNotOverrun(long expectedRead, long nextRead)
+        => Interlocked.CompareExchange(ref _readFrame, nextRead, expectedRead) == expectedRead;
 
     private void WriteDirect(ReadOnlySpan<float> input, int srcFrames, int srcChannels, int dstChannels)
     {
@@ -464,56 +466,7 @@ internal sealed class LiveMonitorController : IAsyncDisposable
                 await _gate.WaitAsync().ConfigureAwait(false);
                 try
                 {
-                    if (Volatile.Read(ref _phase) is not MonitorPhase.Running running)
-                    {
-                        stopLoop = true;
-                    }
-                    else
-                    {
-                        var fault = Interlocked.Exchange(ref _pendingFault, null);
-                        bool wasDeviceChange = deviceChanged || Interlocked.Exchange(ref _rebindFromDeviceChange, 0) != 0;
-
-                        if (wasDeviceChange)
-                        {
-                            _consecutiveFaultRebinds = 0;
-                        }
-                        else if (fault != null)
-                        {
-                            long now = Stopwatch.GetTimestamp();
-                            if (_lastFaultTicks != 0 && Stopwatch.GetElapsedTime(_lastFaultTicks, now) > TimeSpan.FromSeconds(2))
-                                _consecutiveFaultRebinds = 0;
-                            _lastFaultTicks = now;
-                            if (++_consecutiveFaultRebinds > 1)
-                            {
-                                faultNotification = AudioEngine.Friendly(fault);
-                                await TransitionToFaultedDisabledLockedAsync(running, faultNotification).ConfigureAwait(false);
-                                stopLoop = true;
-                            }
-                        }
-
-                        if (!stopLoop)
-                        {
-                            ILiveMonitorOutput? next = null;
-                            try
-                            {
-                                next = await _factory.OpenDefaultAsync().ConfigureAwait(false);
-                            }
-                            catch (Exception rebindError)
-                            {
-                                faultNotification = AudioEngine.Friendly(rebindError);
-                                await TransitionToFaultedDisabledLockedAsync(running, faultNotification).ConfigureAwait(false);
-                                stopLoop = true;
-                            }
-
-                            if (next != null)
-                            {
-                                next.Faulted += error => HandleOutputFault(next, error);
-                                Volatile.Write(ref _phase, running with { Output = next });
-                                Volatile.Write(ref _activeOutput, next);
-                                await SafeDisposeOutputAsync(running.Output).ConfigureAwait(false);
-                            }
-                        }
-                    }
+                    (stopLoop, faultNotification) = await RebindOnceLockedAsync(deviceChanged).ConfigureAwait(false);
                 }
                 finally
                 {
@@ -541,6 +494,51 @@ internal sealed class LiveMonitorController : IAsyncDisposable
                     _ = Task.Run(RunRebindLoopAsync);
             }
         }
+    }
+
+    private async Task<(bool StopLoop, string? FaultNotification)> RebindOnceLockedAsync(bool deviceChanged)
+    {
+        if (Volatile.Read(ref _phase) is not MonitorPhase.Running running)
+            return (true, null);
+
+        var fault = Interlocked.Exchange(ref _pendingFault, null);
+        bool wasDeviceChange = deviceChanged || Interlocked.Exchange(ref _rebindFromDeviceChange, 0) != 0;
+
+        if (wasDeviceChange)
+        {
+            _consecutiveFaultRebinds = 0;
+        }
+        else if (fault != null)
+        {
+            long now = Stopwatch.GetTimestamp();
+            if (_lastFaultTicks != 0 && Stopwatch.GetElapsedTime(_lastFaultTicks, now) > TimeSpan.FromSeconds(2))
+                _consecutiveFaultRebinds = 0;
+            _lastFaultTicks = now;
+            if (++_consecutiveFaultRebinds > 1)
+            {
+                string reason = AudioEngine.Friendly(fault);
+                await TransitionToFaultedDisabledLockedAsync(running, reason).ConfigureAwait(false);
+                return (true, reason);
+            }
+        }
+
+        ILiveMonitorOutput next;
+        try
+        {
+            next = await _factory.OpenDefaultAsync().ConfigureAwait(false);
+        }
+        catch (Exception rebindError)
+        {
+            string reason = AudioEngine.Friendly(rebindError);
+            await TransitionToFaultedDisabledLockedAsync(running, reason).ConfigureAwait(false);
+            return (true, reason);
+        }
+
+        next.Faulted += error => HandleOutputFault(next, error);
+        Volatile.Write(ref _phase, running with { Output = next });
+        Volatile.Write(ref _activeOutput, next);
+        await SafeDisposeOutputAsync(running.Output).ConfigureAwait(false);
+        return (false, null);
     }
 
     private async Task TransitionToFaultedDisabledLockedAsync(MonitorPhase.Running running, string reason)

@@ -41,8 +41,6 @@ public sealed class WasapiLiveMonitorFactory : ILiveMonitorFactory
             {
                 if (e.Flow == DataFlow.Render && e.Role == Role.Multimedia) changed();
             };
-            _notifications.DeviceRemoved += (_, _) => changed();
-            _notifications.DeviceStateChanged += (_, _) => changed();
         }
 
         public void Dispose()

@@ -17,7 +17,6 @@ static class LiveMonitorChecks
 
     private static void CheckBufferDsp(Action<bool,string> check)
     {
-        // Mono -> Stereo dual-mono and initial gain without startup burst.
         var stereo=new LiveMonitorBuffer(new(48000,2));
         stereo.Write([0.5f,-0.25f,0.75f],48000,1,0.5);
         var outStereo=new float[10];
@@ -27,14 +26,12 @@ static class LiveMonitorChecks
         check(Math.Abs(outStereo[2]+0.125f)<1e-5f&&Math.Abs(outStereo[3]+0.125f)<1e-5f,"Second mono frame preserves sign and gain");
         check(outStereo[6]==0f&&outStereo[7]==0f&&outStereo[8]==0f&&outStereo[9]==0f,"Underrun zero-fills remaining frames");
 
-        // Mono -> 6ch maps to ch0/ch1 and zeros remaining channels.
         var surround=new LiveMonitorBuffer(new(48000,6));
         surround.Write([0.4f],48000,1,1.0);
         var outSix=new float[6];
         check(surround.Read(outSix)==1,"Surround output reads 1 frame");
         check(Math.Abs(outSix[0]-0.4f)<1e-5f&&Math.Abs(outSix[1]-0.4f)<1e-5f&&outSix[2]==0f&&outSix[3]==0f&&outSix[4]==0f&&outSix[5]==0f,"Mono to >2ch duplicates ch0/ch1 and zeros others");
 
-        // Stereo -> Mono averages ch0 and ch1; 4ch -> 2ch takes first 2 channels.
         var mono=new LiveMonitorBuffer(new(48000,1));
         mono.Write([0.8f,-0.2f],48000,2,1.0);
         var outMono=new float[1];
@@ -45,7 +42,6 @@ static class LiveMonitorChecks
         var outDown2=new float[2];
         check(down2.Read(outDown2)==1&&Math.Abs(outDown2[0]-0.2f)<1e-5f&&Math.Abs(outDown2[1]-0.4f)<1e-5f,"4ch to 2ch preserves first two channels");
 
-        // Safety guard: non-finite becomes 0, out-of-range clamps to [-1, 1].
         var safe=new LiveMonitorBuffer(new(48000,1));
         safe.Write([float.NaN,float.PositiveInfinity,float.NegativeInfinity,2.5f,-3.0f],48000,1,1.0);
         var outSafe=new float[5];
@@ -53,7 +49,6 @@ static class LiveMonitorChecks
         check(outSafe[0]==0f&&outSafe[1]==0f&&outSafe[2]==0f,"Non-finite samples sanitize to zero");
         check(outSafe[3]==1f&&outSafe[4]==-1f,"Out-of-range samples clamp to [-1, 1]");
 
-        // Gain slew (~5 ms linear ramp at 48 kHz = 240 frames).
         var slew=new LiveMonitorBuffer(new(48000,1));
         var dc=new float[300];
         Array.Fill(dc,0.5f);
@@ -69,7 +64,6 @@ static class LiveMonitorChecks
         for(int i=1;i<240;i++)if(ramped[i]<ramped[i-1]-1e-6f){monotonic=false;break;}
         check(monotonic,"Gain ramp rises monotonically without zipper glitches");
 
-        // Continuous resampling across small packet boundaries (44.1 kHz -> 48 kHz and 96 kHz -> 48 kHz).
         var up=new LiveMonitorBuffer(new(48000,1));
         var src44=TestSupport.Sine(44100,441*3,1000,0.8,1);
         var renderedUp=new List<float>();
@@ -92,7 +86,6 @@ static class LiveMonitorChecks
         check(peakUp>0.75&&peakUp<=0.81,"44.1->48 kHz preserves sine amplitude");
         check(maxJump<expectedMaxStep*1.25,$"44.1->48 kHz stays continuous across uneven packet boundaries (maxJump={maxJump:F4})");
 
-        // Downsampling 96 -> 48 kHz and mid-stream format reset.
         var down=new LiveMonitorBuffer(new(48000,2));
         var src96=TestSupport.Sine(96000,960,1000,0.6,2);
         down.Write(src96.AsSpan(0,480*2),96000,2,1.0);
@@ -105,7 +98,6 @@ static class LiveMonitorChecks
         int gotSwitch=down.Read(afterSwitch);
         check(gotSwitch==4&&Math.Abs(afterSwitch[0]-0.3f)<1e-5f&&Math.Abs(afterSwitch[1]-0.3f)<1e-5f,"Mid-stream format change resets resampler cleanly");
 
-        // Overrun drops oldest queued frames and keeps latency bounded (~40 ms).
         var bounded=new LiveMonitorBuffer(new(48000,1));
         for(int p=0;p<20;p++)
         {
@@ -274,7 +266,6 @@ static class LiveMonitorChecks
 
     private static async Task CheckFaultIsolationFromRecording(string root,Action<bool,string> check)
     {
-        // Case 1: Initial open failure during active recording leaves recording intact.
         {
             var capture=new FakeFactory();
             var monitor=new FakeLiveMonitorFactory{FailOpen=new IOException("没有可用的默认播放设备。")};
@@ -299,7 +290,6 @@ static class LiveMonitorChecks
             check(engine.Status.FilePath!=null&&!engine.Status.Partial,"Recording saves cleanly after monitor open failure");
         }
 
-        // Case 2: Mid-recording stream fault with no fallback playback device disables monitor, notifies, never breaks recording.
         {
             var capture=new FakeFactory();
             var monitor=new FakeLiveMonitorFactory();
@@ -331,7 +321,6 @@ static class LiveMonitorChecks
             check(engine.Status.FilePath!=null&&!engine.Status.Partial,"Recording finishes non-partial after monitor fault");
         }
 
-        // Case 3: Synchronous throw inside output.Write() during active recording never crashes ProcessingPipeline.
         {
             var capture=new FakeFactory();
             var monitor=new FakeLiveMonitorFactory();
@@ -368,7 +357,6 @@ static class LiveMonitorChecks
         await engine.SetLiveMonitorEnabledAsync(true);
         var first=monitor.Current!;
 
-        // Rapid burst of default-device change events coalesces cleanly and swaps output.
         for(int i=0;i<5;i++)monitor.TriggerDefaultDeviceChanged();
         await TestSupport.Until(()=>!ReferenceEquals(monitor.Current,first)&&first.Disposed,"default device change swaps output and disposes old");
         var second=monitor.Current!;
@@ -378,7 +366,6 @@ static class LiveMonitorChecks
         capture.Push(TestSupport.Sine(48000,480,1000,0.5,1));
         await TestSupport.Until(()=>second.WriteCount>0,"audio resumes on new default output");
 
-        // AUDCLNT_E_DEVICE_INVALIDATED auto-recovers onto the next default device.
         second.TriggerFault(new COMException("Invalidated",unchecked((int)0x88890004)));
         await TestSupport.Until(()=>!ReferenceEquals(monitor.Current,second)&&second.Disposed,"invalidated stream auto-rebinds to healthy default device");
         var third=monitor.Current!;
@@ -386,7 +373,6 @@ static class LiveMonitorChecks
         capture.Push(TestSupport.Sine(48000,480,1000,0.5,1));
         await TestSupport.Until(()=>third.WriteCount>0,"audio resumes after invalidated stream recovery");
 
-        // Repeated immediate faults break out cleanly instead of looping forever.
         var terminalFault=new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
         engine.LiveMonitorFaulted+=reason=>terminalFault.TrySetResult(reason);
         int opensBeforeTerminal=monitor.OpenCount;
