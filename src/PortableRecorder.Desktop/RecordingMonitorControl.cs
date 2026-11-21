@@ -30,9 +30,6 @@ public sealed class RecordingMonitorControl : Grid
 
     private double RevealedWidth => KnobMarginLeft + _knob.VisualRightEdge + 4;
 
-    internal static ToggleVisualColors ResolveToggleVisual(bool enabled, bool hovering, bool pressed) =>
-        RecordingMonitorPresentation.ResolveToggleVisual(enabled, hovering, pressed);
-
     public RecordingMonitorControl(ShellViewModel state, Func<bool> animationsEnabled, Func<bool, Task> onToggleRequested)
     {
         _state = state;
@@ -230,7 +227,7 @@ public sealed class RecordingMonitorControl : Grid
 
     private void ApplyToggleVisual()
     {
-        var colors = ResolveToggleVisual(_state.RecordingMonitorEnabled, _hovering, _pressed);
+        var colors = RecordingMonitorPresentation.ResolveToggleVisual(_state.RecordingMonitorEnabled, _hovering, _pressed);
         _toggle.Background = Design.Brush(colors.Background);
         _toggle.BorderBrush = Design.Brush(colors.Border);
         _icon.Foreground = Design.Brush(colors.Foreground);
