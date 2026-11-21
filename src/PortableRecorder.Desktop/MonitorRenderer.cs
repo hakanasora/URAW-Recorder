@@ -21,6 +21,7 @@ public sealed class MonitorRenderer : IDisposable
     private float _projectionWidth;
     private readonly Dictionary<float,CanvasTextFormat> _formats = new();
     private double _low = 36, _targetLow = 36, _frameDelta,_lastDrawTime,_timeline;
+    private double _vuLeft = -20, _vuRight = -20;
     private readonly Stopwatch _visualClock=Stopwatch.StartNew();
     private readonly MeterMotion _meterMotion=new();
     private readonly CentsMotion _centsMotion=new();
@@ -176,7 +177,8 @@ public sealed class MonitorRenderer : IDisposable
         var sample=state.CurrentAudioSnapshot;
         if(!sample.Valid || sample.Epoch!=_visualEpoch || sample.Segment!=_visualSegment)
         {
-            _visualEpoch=sample.Epoch;_visualSegment=sample.Segment;_centsMotion.Reset();_projectedFrame=null;_spectrumPoints=[];_fromSpectrum=[];_drawSpectrum=[];
+            _visualEpoch=sample.Epoch;_visualSegment=sample.Segment;_centsMotion.Reset();_projectedFrame=null;
+            if(ReducedMotion){_spectrumPoints=[];_fromSpectrum=[];_drawSpectrum=[];}
         }
         _meterMotion.Push(sample,now);var vu=_meterMotion.Read(now,ReducedMotion);
         _timeline=_meterMotion.Timeline(now);
@@ -188,11 +190,21 @@ public sealed class MonitorRenderer : IDisposable
             var y=(height-188)/2;
             // Shift only the meter's zero point; samples and digital meters stay unchanged.
             double offset=-18-state.VuReferenceDbfs;
-            Vu(sender,ds,x,y,vu.Left+offset,"L"); Vu(sender,ds,x+276,y,vu.Right+offset,"R");
+            _vuLeft=SmoothVuFall(_vuLeft,vu.Left+offset,_frameDelta,ReducedMotion);
+            _vuRight=SmoothVuFall(_vuRight,vu.Right+offset,_frameDelta,ReducedMotion);
+            Vu(sender,ds,x,y,_vuLeft,"L"); Vu(sender,ds,x+276,y,_vuRight,"R");
         }
         else if(state.Mode==MonitorMode.Spectrum) Spectrum(sender,ds,state,width,height);
         else Pitch(sender,ds,state,width,height);
 
+    }
+
+    private static double SmoothVuFall(double current,double target,double dt,bool reducedMotion)
+    {
+        double clamped=Math.Clamp(target,-20,3);
+        if(reducedMotion||clamped>=current)return clamped;
+        double next=clamped+(current-clamped)*Math.Exp(-dt/.085);
+        return next-clamped<.02?clamped:next;
     }
     private void Spectrum(CanvasSwapChain sender,CanvasDrawingSession ds,ShellViewModel state,float w,float h)
     {
@@ -223,54 +235,80 @@ public sealed class MonitorRenderer : IDisposable
         }
         ds.DrawImage(_spectrumGrid);
         var frame=state.Snapshot.Spectrum;
-        if(!state.Snapshot.Valid || frame==null)return;
-        var hz=frame.FrequenciesHz;var levels=frame.Dbfs;
-        // The log-frequency projection depends on format and bounds, not signal level.
-        // Cache searches and powers instead of repeating them for every audio snapshot.
-        if(!ReferenceEquals(_projectionFrequencies,hz)||_bucketWidth!=w||_bucketHeight!=h)
+        bool live=state.Snapshot.Valid && frame!=null;
+        float decayFade=1f;
+        if(live)
         {
-            _projectionFrequencies=hz;_bucketWidth=w;_bucketHeight=h;
-            var buckets=new List<SpectrumBucket>();int last=hz.Length-1;
-            for(int pixel=0;pixel<=right-left;pixel++)
+            var hz=frame!.FrequenciesHz;var levels=frame.Dbfs;
+            // The log-frequency projection depends on format and bounds, not signal level.
+            // Cache searches and powers instead of repeating them for every audio snapshot.
+            if(!ReferenceEquals(_projectionFrequencies,hz)||_bucketWidth!=w||_bucketHeight!=h)
             {
-                double f=20*Math.Pow(1000,pixel/(double)(right-left));
-                if(f>hz[last])break;
-                double start=20*Math.Pow(1000,Math.Max(0,pixel-.5)/(right-left));
-                double end=20*Math.Pow(1000,Math.Min(right-left,pixel+.5)/(right-left));
-                int first=Array.BinarySearch(hz,start);if(first<0)first=~first;
-                int stop=Array.BinarySearch(hz,end);if(stop<0)stop=~stop;
-                int index=Array.BinarySearch(hz,f);if(index<0)index=~index;
-                index=Math.Clamp(index,1,last);
-                buckets.Add(new(first,Math.Min(stop,hz.Length),index,(f-hz[index-1])/(hz[index]-hz[index-1])));
-            }
-            _buckets=buckets.ToArray();_projectedFrame=null;
-        }
-        if(_projectedFrame!=frame || _projectionWidth!=w)
-        {
-            if(_projectedFrame is { } previous && frame.EndFrame>previous.EndFrame)
-                _blendDuration=Math.Clamp((frame.EndFrame-previous.EndFrame)/(hz[1]*frame.FftSize),.012,.060);
-            bool resize=_spectrumPoints.Length!=_buckets.Length;
-            if(resize){_spectrumPoints=new Vector2[_buckets.Length];_fromSpectrum=new Vector2[_buckets.Length];_drawSpectrum=new Vector2[_buckets.Length];}
-            else _drawSpectrum.CopyTo(_fromSpectrum,0);
-            for(int pixel=0;pixel<_buckets.Length;pixel++)
-            {
-                var bucket=_buckets[pixel];double level=double.NegativeInfinity;
-                if(bucket.Stop>bucket.First)
-                    for(int k=bucket.First;k<bucket.Stop;k++)level=Math.Max(level,levels[k]);
-                else
+                _projectionFrequencies=hz;_bucketWidth=w;_bucketHeight=h;
+                var buckets=new List<SpectrumBucket>();int last=hz.Length-1;
+                for(int pixel=0;pixel<=right-left;pixel++)
                 {
-                    // Power interpolation between real FFT points: no spline overshoot.
-                    double power=(1-bucket.Mix)*Math.Pow(10,levels[bucket.Index-1]/10d)+bucket.Mix*Math.Pow(10,levels[bucket.Index]/10d);
-                    level=power>0?10*Math.Log10(power):double.NegativeInfinity;
+                    double f=20*Math.Pow(1000,pixel/(double)(right-left));
+                    if(f>hz[last])break;
+                    double start=20*Math.Pow(1000,Math.Max(0,pixel-.5)/(right-left));
+                    double end=20*Math.Pow(1000,Math.Min(right-left,pixel+.5)/(right-left));
+                    int first=Array.BinarySearch(hz,start);if(first<0)first=~first;
+                    int stop=Array.BinarySearch(hz,end);if(stop<0)stop=~stop;
+                    int index=Array.BinarySearch(hz,f);if(index<0)index=~index;
+                    index=Math.Clamp(index,1,last);
+                    buckets.Add(new(first,Math.Min(stop,hz.Length),index,(f-hz[index-1])/(hz[index]-hz[index-1])));
                 }
-                _spectrumPoints[pixel]=new(left+pixel,Y(level));
+                _buckets=buckets.ToArray();_projectedFrame=null;
             }
-            if(resize)_spectrumPoints.CopyTo(_fromSpectrum,0);
-            _projectedFrame=frame;_projectionWidth=w;_blendStarted=_visualClock.Elapsed.TotalSeconds;
+            if(_projectedFrame!=frame || _projectionWidth!=w)
+            {
+                if(_projectedFrame is { } previous && frame.EndFrame>previous.EndFrame)
+                    _blendDuration=Math.Clamp((frame.EndFrame-previous.EndFrame)/(hz[1]*frame.FftSize),.012,.060);
+                bool resize=_spectrumPoints.Length!=_buckets.Length;
+                if(resize){_spectrumPoints=new Vector2[_buckets.Length];_fromSpectrum=new Vector2[_buckets.Length];_drawSpectrum=new Vector2[_buckets.Length];}
+                else _drawSpectrum.CopyTo(_fromSpectrum,0);
+                for(int pixel=0;pixel<_buckets.Length;pixel++)
+                {
+                    var bucket=_buckets[pixel];double level=double.NegativeInfinity;
+                    if(bucket.Stop>bucket.First)
+                        for(int k=bucket.First;k<bucket.Stop;k++)level=Math.Max(level,levels[k]);
+                    else
+                    {
+                        // Power interpolation between real FFT points: no spline overshoot.
+                        double power=(1-bucket.Mix)*Math.Pow(10,levels[bucket.Index-1]/10d)+bucket.Mix*Math.Pow(10,levels[bucket.Index]/10d);
+                        level=power>0?10*Math.Log10(power):double.NegativeInfinity;
+                    }
+                    _spectrumPoints[pixel]=new(left+pixel,Y(level));
+                }
+                if(resize)_spectrumPoints.CopyTo(_fromSpectrum,0);
+                _projectedFrame=frame;_projectionWidth=w;_blendStarted=_visualClock.Elapsed.TotalSeconds;
+            }
+            if(_spectrumPoints.Length<2)return;
+            float blend=ReducedMotion?1:(float)Math.Clamp((_visualClock.Elapsed.TotalSeconds-_blendStarted)/_blendDuration,0,1);
+            for(int i=0;i<_drawSpectrum.Length;i++)_drawSpectrum[i]=Vector2.Lerp(_fromSpectrum[i],_spectrumPoints[i],blend);
         }
-        if(_spectrumPoints.Length<2)return;
-        float blend=ReducedMotion?1:(float)Math.Clamp((_visualClock.Elapsed.TotalSeconds-_blendStarted)/_blendDuration,0,1);
-        for(int i=0;i<_drawSpectrum.Length;i++)_drawSpectrum[i]=Vector2.Lerp(_fromSpectrum[i],_spectrumPoints[i],blend);
+        else
+        {
+            if(ReducedMotion||_drawSpectrum.Length<2||Math.Abs(_projectionWidth-w)>.5f)
+            {
+                _spectrumPoints=[];_fromSpectrum=[];_drawSpectrum=[];
+                return;
+            }
+            float k=1f-MathF.Exp(-(float)_frameDelta/.085f);
+            float minY=bottom;
+            for(int i=0;i<_drawSpectrum.Length;i++)
+            {
+                float y=_drawSpectrum[i].Y+(bottom-_drawSpectrum[i].Y)*k;
+                _drawSpectrum[i]=new(_drawSpectrum[i].X,y);
+                if(y<minY)minY=y;
+            }
+            if(bottom-minY<.5f)
+            {
+                _spectrumPoints=[];_fromSpectrum=[];_drawSpectrum=[];
+                return;
+            }
+            decayFade=Math.Clamp((bottom-minY)/14f,0f,1f);
+        }
         using var chart=new CanvasCommandList(sender);
         using(var ink=chart.CreateDrawingSession())
         {
@@ -279,15 +317,15 @@ public sealed class MonitorRenderer : IDisposable
             {
                 float span=Math.Max(1,bottom-point.Y);
                 brush.StartPoint=point;brush.EndPoint=new(point.X,point.Y+span);
-                brush.Opacity=(float)(.84+.16*Math.Cos((point.X-left)*Math.PI));
+                brush.Opacity=(float)(.84+.16*Math.Cos((point.X-left)*Math.PI))*decayFade;
                 ink.FillRectangle(point.X,point.Y,1.1f,span,brush);
             }
             using var curve=Path(sender,_drawSpectrum);
-            double level=Math.Clamp((state.Snapshot.RmsDbfs+60)/54,0,1);float bloom=(float)(level*level);
+            double level=live?Math.Clamp((state.Snapshot.RmsDbfs+60)/54,0,1):0;float bloom=(float)(level*level)*decayFade;
             using var glow=new CanvasCommandList(sender);
-            using(var g=glow.CreateDrawingSession())g.DrawGeometry(curve,A(Design.Gold,.035+.48*bloom),2.5f);
+            using(var g=glow.CreateDrawingSession())g.DrawGeometry(curve,A(Design.Gold,(.035+.48*bloom)*decayFade),2.5f);
             using(var blur=new GaussianBlurEffect{Source=glow,BlurAmount=2+8*bloom,BorderMode=EffectBorderMode.Soft})ink.DrawImage(blur);
-            ink.DrawGeometry(curve,Design.Gold,1.8f);
+            ink.DrawGeometry(curve,A(Design.Gold,decayFade),1.8f);
         }
         using var mask=new CanvasCommandList(sender);
         using(var m=mask.CreateDrawingSession())
