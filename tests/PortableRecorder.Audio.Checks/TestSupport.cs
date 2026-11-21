@@ -3,10 +3,10 @@ using PortableRecorder.Audio;
 
 static class TestSupport
 {
-    public static AudioEngine CreateEngine(string root,FakeFactory factory,Func<string,AudioFormat,RecordingEncoding,IRecordingWriter>? writerFactory=null)
+    public static AudioEngine CreateEngine(string root,FakeFactory factory,Func<string,AudioFormat,RecordingEncoding,IRecordingWriter>? writerFactory=null,ILiveMonitorFactory? liveMonitorFactory=null)
     {
         string directory=Path.Combine(root,"engine-"+Guid.NewGuid().ToString("N"));
-        return new AudioEngine(factory,new CalibrationLibrary(Path.Combine(directory,"calibrations")),writerFactory,new InputFormatPreferences(Path.Combine(directory,"formats.json")));
+        return new AudioEngine(factory,new CalibrationLibrary(Path.Combine(directory,"calibrations")),writerFactory,new InputFormatPreferences(Path.Combine(directory,"formats.json")),liveMonitorFactory??new FakeLiveMonitorFactory());
     }
     public static float[] Sine(int rate,int frames,double frequency,double peak,int channels=1,bool inverted=false)
     {

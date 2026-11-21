@@ -41,6 +41,7 @@ internal sealed class ProcessingPipeline:IAsyncDisposable
     private readonly Func<double> _gain;
     private readonly Action<Exception> _fault;
     private readonly Action<string> _diagnostic;
+    private readonly LiveMonitorFeed? _monitorFeed;
     private long _queuedBytes,_budget=64*1024*1024,_frames,_base,_delivered,_unconfirmedDiscontinuities;
     private WorkerPhase _workerPhase=new WorkerPhase.AwaitingConfigure();
     private AttachmentPhase _attachment=new AttachmentPhase.Detached();
@@ -75,8 +76,8 @@ internal sealed class ProcessingPipeline:IAsyncDisposable
     public int RecoveredDiscontinuities=>Latest.RecoveredDiscontinuities;
     public long RecordingUnconfirmedDiscontinuities=>Interlocked.Read(ref _unconfirmedDiscontinuities);
     internal Exception? Failure=>(Volatile.Read(ref _workerPhase) as WorkerPhase.Faulted)?.Error;
-    public ProcessingPipeline(Func<double> gain,Action<Exception> fault,Action<string> diagnostic)
-    {_gain=gain;_fault=fault;_diagnostic=diagnostic;_worker=Task.Run(Run);}
+    public ProcessingPipeline(Func<double> gain,Action<Exception> fault,Action<string> diagnostic,LiveMonitorFeed? monitorFeed=null)
+    {_gain=gain;_fault=fault;_diagnostic=diagnostic;_monitorFeed=monitorFeed;_worker=Task.Run(Run);}
     public void Configure(CaptureInfo info,CalibrationPlan plan)
     {_budget=Math.Min(64L*1024*1024,info.Format.SampleRate*(long)info.Format.BlockAlign*2);_configured.TrySetResult((info,plan));}
     public bool Submit(CapturePacket packet)
@@ -254,6 +255,7 @@ internal sealed class ProcessingPipeline:IAsyncDisposable
             };
             int skipHeldPeak=(int)Math.Clamp(heldPeakStart-first,0,result.Frames);
             running.State.Analyzer.Process(samples,result.SourcePeak,last,skipHeldPeak);_delivered=last;
+            _monitorFeed?.Invoke(samples,running.Info.Format);
         }
         FinishBoundary();
     }

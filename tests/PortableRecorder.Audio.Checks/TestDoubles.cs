@@ -68,3 +68,98 @@ sealed class FailingWriter:IRecordingWriter
     public Task CompleteAsync()=>Failure==null?Task.CompletedTask:Task.FromException(Failure);
     public ValueTask DisposeAsync()=>new(CompleteAsync());
 }
+
+sealed class FakeLiveMonitorOutput:ILiveMonitorOutput
+{
+    private readonly LiveMonitorBuffer _buffer;
+    private int _writeCount;
+    private int _lastSourceRate;
+    private int _lastSourceChannels;
+    private double _lastLinearGain;
+    private int _disposed;
+
+    public MonitorOutputFormat OutputFormat {get;}
+    public int WriteCount=>Volatile.Read(ref _writeCount);
+    public int LastSourceRate=>Volatile.Read(ref _lastSourceRate);
+    public int LastSourceChannels=>Volatile.Read(ref _lastSourceChannels);
+    public double LastLinearGain=>Volatile.Read(ref _lastLinearGain);
+    public long QueuedFrames=>_buffer.QueuedFrames;
+    public bool Disposed=>Volatile.Read(ref _disposed)!=0;
+    public Exception? ThrowOnWrite;
+    public event Action<Exception>? Faulted;
+
+    public FakeLiveMonitorOutput(MonitorOutputFormat format)
+    {
+        OutputFormat=format;
+        _buffer=new LiveMonitorBuffer(format);
+    }
+
+    public void Write(ReadOnlySpan<float> interleavedSamples,int sourceSampleRate,int sourceChannels,double linearGain)
+    {
+        if(ThrowOnWrite is Exception error)throw error;
+        Volatile.Write(ref _lastSourceRate,sourceSampleRate);
+        Volatile.Write(ref _lastSourceChannels,sourceChannels);
+        Volatile.Write(ref _lastLinearGain,linearGain);
+        _buffer.Write(interleavedSamples,sourceSampleRate,sourceChannels,linearGain);
+        Interlocked.Increment(ref _writeCount);
+    }
+
+    public int ReadRendered(Span<float> destination)=>_buffer.Read(destination);
+    public void TriggerFault(Exception error)=>Faulted?.Invoke(error);
+
+    public ValueTask DisposeAsync()
+    {
+        Interlocked.Exchange(ref _disposed,1);
+        return ValueTask.CompletedTask;
+    }
+}
+
+sealed class FakeLiveMonitorFactory:ILiveMonitorFactory
+{
+    private readonly object _gate=new();
+    private readonly List<Action> _watchers=[];
+    private int _openCount;
+    private int _disposedWatchers;
+
+    public MonitorOutputFormat OutputFormat=new(48000,2);
+    public Exception? FailOpen;
+    public FakeLiveMonitorOutput? Current {get;private set;}
+    public List<FakeLiveMonitorOutput> Opened {get;}=[];
+    public int OpenCount=>Volatile.Read(ref _openCount);
+    public int ActiveWatchers {get{lock(_gate)return _watchers.Count;}}
+    public int DisposedWatchers=>Volatile.Read(ref _disposedWatchers);
+
+    public Task<ILiveMonitorOutput> OpenDefaultAsync(CancellationToken cancellationToken=default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        Interlocked.Increment(ref _openCount);
+        if(FailOpen is Exception error)return Task.FromException<ILiveMonitorOutput>(error);
+        var output=new FakeLiveMonitorOutput(OutputFormat);
+        lock(_gate){Current=output;Opened.Add(output);}
+        return Task.FromResult<ILiveMonitorOutput>(output);
+    }
+
+    public IDisposable WatchDefaultDeviceChanged(Action changed)
+    {
+        lock(_gate)_watchers.Add(changed);
+        return new WatcherRegistration(this,changed);
+    }
+
+    public void TriggerDefaultDeviceChanged()
+    {
+        Action[] snapshot;
+        lock(_gate)snapshot=_watchers.ToArray();
+        foreach(var callback in snapshot)callback();
+    }
+
+    private sealed class WatcherRegistration(FakeLiveMonitorFactory owner,Action callback):IDisposable
+    {
+        private int _disposed;
+        public void Dispose()
+        {
+            if(Interlocked.Exchange(ref _disposed,1)!=0)return;
+            lock(owner._gate)owner._watchers.Remove(callback);
+            Interlocked.Increment(ref owner._disposedWatchers);
+        }
+    }
+}

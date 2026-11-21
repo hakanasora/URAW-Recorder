@@ -8,6 +8,7 @@ public sealed partial class AudioEngine:IAsyncDisposable
     public CalibrationLibrary Calibrations {get;}
     public InputFormatPreferences InputFormats {get;}
     private readonly RecordingStore _recordings;
+    private readonly LiveMonitorController _liveMonitor;
     private readonly Func<string,AudioFormat,RecordingEncoding,IRecordingWriter> _createWriter;
     private readonly SemaphoreSlim _commands=new(1,1);
     private EnginePhase _phase=new EnginePhase.Stopped(null,false,"正在枚举输入设备");
@@ -18,15 +19,18 @@ public sealed partial class AudioEngine:IAsyncDisposable
     private HashSet<string> _knownDevices=[];
 
     public event Action<string>? Diagnostic;
+    public event Action<string>? LiveMonitorFaulted;
     private void Trace(string message){try{Diagnostic?.Invoke(message);}catch{/* Diagnostics cannot stop capture. */}}
 
-    public AudioEngine(ICaptureFactory? factory=null,CalibrationLibrary? calibrationLibrary=null,Func<string,AudioFormat,RecordingEncoding,IRecordingWriter>? writerFactory=null,InputFormatPreferences? inputFormats=null)
+    public AudioEngine(ICaptureFactory? factory=null,CalibrationLibrary? calibrationLibrary=null,Func<string,AudioFormat,RecordingEncoding,IRecordingWriter>? writerFactory=null,InputFormatPreferences? inputFormats=null,ILiveMonitorFactory? liveMonitorFactory=null)
     {
         _factory=factory??new WasapiCaptureFactory();
         Calibrations=calibrationLibrary??new CalibrationLibrary();
         InputFormats=inputFormats??new InputFormatPreferences();
         _recordings=new(Calibrations,Trace);
         _createWriter=writerFactory??((path,format,encoding)=>encoding.CreateWriter(path,format));
+        _liveMonitor=new(liveMonitorFactory??new WasapiLiveMonitorFactory(),Trace);
+        _liveMonitor.Faulted+=OnLiveMonitorFaulted;
     }
 
     private EnginePhase CurrentPhase=>Volatile.Read(ref _phase);
@@ -74,10 +78,24 @@ public sealed partial class AudioEngine:IAsyncDisposable
     public TimeSpan RecordedTime=>RecordingRate>0?TimeSpan.FromSeconds(WrittenFrames/(double)RecordingRate):TimeSpan.Zero;
     public IReadOnlyList<AudioDevice> EnumerateDevices()=>_factory.Enumerate();
 
+    public LiveMonitorStatus LiveMonitor=>_liveMonitor.Status;
+
     public void SetGain(double db)
     {
         if(!double.IsFinite(db))throw new ArgumentOutOfRangeException(nameof(db),"增益必须为有限数值。");
         Interlocked.Exchange(ref _gain,Math.Pow(10,Math.Clamp(db,-60,60)/20));
+    }
+    public Task SetLiveMonitorEnabledAsync(bool enabled)
+    {
+        if(enabled)ThrowIfDisposed();
+        return _liveMonitor.SetEnabledAsync(enabled);
+    }
+    public void SetLiveMonitorGain(double db)=>_liveMonitor.SetGain(db);
+    private void OnLiveMonitorFaulted(string reason)
+    {
+        Trace("Live monitor faulted: "+reason);
+        try{LiveMonitorFaulted?.Invoke(reason);}
+        catch(Exception error){Trace("Live monitor fault callback failed: "+error);}
     }
     public Task<EndpointVolumeSnapshot> QueryEndpointVolumeAsync(AudioDevice device)=>_factory.QueryEndpointVolumeAsync(device);
 
@@ -92,6 +110,8 @@ public sealed partial class AudioEngine:IAsyncDisposable
             if(phase is EnginePhase.RecordingSession)throw new InvalidOperationException("请先结束录制再切换工作模式。");
             var device=PhaseDevice(phase);
             bool normalConsent=PhaseNormalConsent(phase);
+            try{await _liveMonitor.SetEnabledAsync(false);}
+            catch(Exception error){Trace("Live monitor suspend failed: "+error);}
             try{await CloseCapture();}
             finally
             {
@@ -270,7 +290,7 @@ public sealed partial class AudioEngine:IAsyncDisposable
             if(Interlocked.CompareExchange(ref openingFault,error,null)==null)ReportFault(epoch,error);
         }
         var nativeFault=new TaskCompletionSource<Exception>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var pipe=new ProcessingPipeline(()=>Volatile.Read(ref _gain),PipelineFault,Trace);
+        var pipe=new ProcessingPipeline(()=>Volatile.Read(ref _gain),PipelineFault,Trace,_liveMonitor.Feed);
         void NativeFault(Exception error)
         {
             if(pipe.Failure is Exception processingError){PipelineFault(processingError);return;}
@@ -894,6 +914,9 @@ public sealed partial class AudioEngine:IAsyncDisposable
             catch(Exception error){failure=error;partial=true;}
             try{await CloseCapture();}
             catch(Exception error){failure=AudioFailure.Combine(failure,error);}
+            _liveMonitor.Faulted-=OnLiveMonitorFaulted;
+            try{await _liveMonitor.DisposeAsync();}
+            catch(Exception error){Trace("Live monitor shutdown failed: "+error);}
             if(failure!=null)
             {
                 Trace("Audio service shutdown failed: "+failure);
