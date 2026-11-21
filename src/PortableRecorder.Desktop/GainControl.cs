@@ -99,7 +99,7 @@ public sealed class GainControl : UserControl
             button.PointerExited+=(_,_)=>{hovering=false;button.Background=Design.Brush(Microsoft.UI.Colors.Transparent);};
             button.PointerPressed+=(_,_)=>button.Background=Design.Brush(Design.Hex("606065"));
             button.PointerReleased+=(_,_)=>button.Background=Design.Brush(hovering?Design.Hex("48484D"):Microsoft.UI.Colors.Transparent);
-            button.PointerCanceled+=(_,_)=>button.Background=Design.Brush(Microsoft.UI.Colors.Transparent);
+            button.PointerCanceled+=(_,_)=>{hovering=false;button.Background=Design.Brush(Microsoft.UI.Colors.Transparent);};
             AutomationProperties.SetName(button,name);ToolTipService.SetToolTip(button,name);
             button.Click+=(_,_)=>
             {
@@ -131,7 +131,7 @@ public sealed class GainControl : UserControl
             if(!_dragging)return;bool edit=_pressedNumber && !_moved;
             _dragging=false;ReleasePointerCapture(e.Pointer);if(edit)BeginEdit();e.Handled=true;
         };
-        PointerCanceled+=(s,e)=>CancelDrag();PointerCaptureLost+=(s,e)=>_dragging=false;
+        PointerCanceled+=(s,e)=>CancelDrag();PointerCaptureLost+=(s,e)=>CancelDrag();
         DoubleTapped+=(s,e)=>{if(_editing)return;_dragging=false;_state.SetGain(0);e.Handled=true;};KeyDown+=Key;
         _editor.KeyDown+=(s,e)=>
         {

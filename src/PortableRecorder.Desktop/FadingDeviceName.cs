@@ -41,10 +41,16 @@ public sealed class FadingDeviceName : Grid
 
     public void SetName(string value)
     {
-        if (_value == value) return;
-        _value = value; _label.Text = value;_channels=-1;
+        if (SetDisplayText(value))
+            AutomationProperties.SetName(this, "输入设备：" + value);
+    }
+
+    private bool SetDisplayText(string value)
+    {
+        if (_value == value) return false;
+        _value = value; _label.Text = value; _channels = -1;
         ToolTipService.SetToolTip(this, value);
-        AutomationProperties.SetName(this, "输入设备：" + value);
+        return true;
     }
 
     public void SetChannels(int channels)
@@ -64,7 +70,7 @@ public sealed class FadingDeviceName : Grid
     }
     public void SetListeningSource(string name,bool application)
     {
-        _listening=true;SetName(name);
+        _listening=true;SetDisplayText(name);
         _applicationIcon.Source=null;_applicationIcon.Visibility=Visibility.Collapsed;_microphone.Visibility=Visibility.Visible;
         _microphone.Glyph=application?"\uE7C4":"\uE977";_microphone.FontSize=16;
         AutomationProperties.SetName(this,"侦听来源："+name);
@@ -104,5 +110,5 @@ public sealed class FadingDeviceName : Grid
         _expandedWidth = 24 + Math.Min(MaxTextWidth, _label.NaturalWidth);
         if(!_recording && _reveal==null && Math.Abs(Width-_expandedWidth)>.1)Width=_expandedWidth;
     }
-    public void ReleaseResources(){_reveal?.Stop();_label.ReleaseResources();}
+    public void ReleaseResources(){_reveal?.Stop();_reveal=null;_label.ReleaseResources();}
 }

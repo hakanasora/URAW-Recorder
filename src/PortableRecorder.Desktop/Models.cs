@@ -39,10 +39,7 @@ public sealed class ShellViewModel:INotifyPropertyChanged
         Notify();
     }
     private double _recordGain,_listenGain;
-    public AudioSnapshot CurrentAudioSnapshot
-    {
-        get{var source=IsListening?Listener.Latest:Audio.Latest;return IsListening?source with{Epoch=source.Epoch|long.MinValue}:source;}
-    }
+    public AudioSnapshot CurrentAudioSnapshot=>IsListening?Listener.Latest:Audio.Latest;
     public TransportSession Session {get;}=new();
     public ObservableCollection<InputDevice> Devices {get;}=[];
     public ObservableCollection<CalibrationFile> Calibrations {get;}=[];
@@ -62,6 +59,7 @@ public sealed class ShellViewModel:INotifyPropertyChanged
     public Queue<PitchPoint> PitchHistory {get;}=new();
     public double MonitorTime {get;private set;}
     private long _epoch=-1,_pitchFrame=-1;
+    private WorkMode _snapshotMode=WorkMode.Recording;
     private int _segment=-1;
     private long _calibrationLibraryRevision=-1;
     public ShellViewModel(AudioEngine? audio=null)
@@ -97,14 +95,15 @@ public sealed class ShellViewModel:INotifyPropertyChanged
     public void SetWorkMode(bool listening)
     {
         IsListening=listening;GainDb=listening?_listenGain:_recordGain;
-        PitchHistory.Clear();_epoch=-1;_pitchFrame=-1;_segment=-1;
+        PitchHistory.Clear();_snapshotMode=listening?WorkMode.Listening:WorkMode.Recording;_epoch=-1;_pitchFrame=-1;_segment=-1;
         Refresh();Notify();
     }
     public async Task ResetPeakAsync(){if(IsListening)Listener.ResetPeak();else await Audio.ResetPeakAsync();Refresh();Notify();}
     public void Refresh()
     {
         var source=CurrentAudioSnapshot;
-        if(source.Epoch!=_epoch || source.Segment!=_segment){PitchHistory.Clear();_pitchFrame=-1;_epoch=source.Epoch;_segment=source.Segment;}
+        var mode=IsListening?WorkMode.Listening:WorkMode.Recording;
+        if((mode,source.Epoch)!=(_snapshotMode,_epoch) || source.Segment!=_segment){PitchHistory.Clear();_pitchFrame=-1;_snapshotMode=mode;_epoch=source.Epoch;_segment=source.Segment;}
         MonitorTime=source.Time;HeldPeak=source.HeldPeakDbfs;
         double? hz=source.Valid?source.FrequencyHz:null;
         double? midi=hz is double f?69+12*Math.Log2(f/440):null;
@@ -117,7 +116,7 @@ public sealed class ShellViewModel:INotifyPropertyChanged
             PitchHistory.Enqueue(new(source.PitchFramePosition/(double)source.SampleRate,midi));
             while(PitchHistory.TryPeek(out var point) && point.Time<MonitorTime-4.1)PitchHistory.Dequeue();
         }
-        Session.Update(Audio.Status.State,Audio.RecordedTime);
+        if(!IsListening)Session.Update(Audio.Status.State,Audio.RecordedTime);
     }
     public void Notify()=>PropertyChanged?.Invoke(this,new(null));
 }

@@ -275,6 +275,21 @@ static class UiStateChecks
         check(model.SelectedCalibration==null&&collection.Count==1&&collection[0].Id==third.Id,"Removing selected calibration never automatically picks another file");
 
         CoordinatorChecks(check);
+        await ShellViewModelSnapshotChecks(root,check);
+    }
+
+    private static async Task ShellViewModelSnapshotChecks(string root,Action<bool,string> check)
+    {
+        var factory=new FakeFactory();await using var audio=TestSupport.CreateEngine(root,factory);
+        var vm=new ShellViewModel(audio);await using var listener=vm.Listener;
+        check(!vm.IsListening && vm.CurrentAudioSnapshot.Epoch==audio.Latest.Epoch,"Recording mode exposes Audio.Latest directly");
+        vm.Session.Update(AudioRunState.Paused,TimeSpan.FromSeconds(12));
+        vm.SetWorkMode(true);
+        check(vm.IsListening && vm.CurrentAudioSnapshot.Epoch==vm.Listener.Latest.Epoch,"Listening mode preserves raw Epoch without bit-packing");
+        check(vm.Session.Stage==RecordingStage.Paused && vm.Session.Elapsed==TimeSpan.FromSeconds(12),"Listening refresh leaves recording TransportSession untouched");
+        vm.SetWorkMode(false);
+        vm.Refresh();
+        check(!vm.IsListening && vm.Session.Stage==RecordingStage.Ready,"Returning to recording mode resumes syncing TransportSession from Audio");
     }
 
     private static void CoordinatorChecks(Action<bool,string> check)

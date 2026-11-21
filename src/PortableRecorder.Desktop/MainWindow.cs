@@ -1324,6 +1324,7 @@ public sealed partial class MainWindow : Window
         bool refreshMotion=TransportPresentation.NeedsMotionUpdate(_lastStage,stage,reset:!animate);
         animate &= _settings.AnimationsEnabled;
         _lastStage=stage;
+        _lastAudioState=_state.Audio.Status.State;
         _clock.Text=_state.Session.DisplayTime;
         foreach(var control in _recordingControls)control.IsEnabled=!active && !_audioBusy && !WorkModeChanging;
         SyncCalibration();SyncInputFormat();UpdateQuality();
@@ -1356,7 +1357,7 @@ public sealed partial class MainWindow : Window
             _primaryContent.Children.Add(active?Design.ActionContent("stop",paused?null:"停止",Design.Alert):Design.ActionContent("record","录制"));
         }
         if(animate&&changed)
-            _primaryFade.To(0,60,()=>{PrimaryContent();_primaryFade.To(1,100);});
+            _primaryFade.To(0,60,()=>{if(generation==_transportGeneration&&!_closing){PrimaryContent();_primaryFade.To(1,100);}});
         else{_primaryFade.Stop();_primaryContent.Opacity=1;PrimaryContent();}
 
         if(active)
@@ -1369,7 +1370,7 @@ public sealed partial class MainWindow : Window
         var left=presentation.PauseWidth;var right=presentation.StopWidth;
         AnimateWidths(left,right,active?3:0,animate?240:0,()=>
         {
-            if(generation==_transportGeneration&&!_state.Session.Active)_pauseButton.Visibility=Visibility.Collapsed;
+            if(generation==_transportGeneration&&!_closing&&!_state.Session.Active)_pauseButton.Visibility=Visibility.Collapsed;
         });
 
         if(active)
@@ -1379,7 +1380,7 @@ public sealed partial class MainWindow : Window
             else{_clockFade.Stop();_clockSlot.Opacity=1;}
         }
         else if(animate&&wasActive)
-            _clockFade.To(0,120,()=>{if(!_state.Session.Active)_clockSlot.Visibility=Visibility.Collapsed;});
+            _clockFade.To(0,120,()=>{if(generation==_transportGeneration&&!_closing&&!_state.Session.Active)_clockSlot.Visibility=Visibility.Collapsed;});
         else{_clockFade.Stop();_clockSlot.Opacity=0;_clockSlot.Visibility=Visibility.Collapsed;}
 
         if(!active)
@@ -1391,10 +1392,11 @@ public sealed partial class MainWindow : Window
 
         void StatusContent()
         {
+            if(generation!=_transportGeneration||_closing)return;
             _sessionLabel.Text=TransportPresentation.From(_state.Audio.Status.State,_audioBusy,_state.Audio.CalibrationReadyToRecord).StatusText;
             _statusFade.To(1,animate?100:0,()=>
             {
-                if(_state.Session.Stage==RecordingStage.Paused)_statusFade.Breathe();
+                if(generation==_transportGeneration&&!_closing&&_state.Session.Stage==RecordingStage.Paused)_statusFade.Breathe();
             });
         }
         if(animate&&changed&&active&&wasActive)_statusFade.To(0,75,StatusContent);
