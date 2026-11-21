@@ -186,6 +186,8 @@ public sealed partial class MainWindow
     private void UpdateWorkModeSurface()
     {
         bool listening=_state.IsListening;
+        _monitorControl.Visibility=listening?Visibility.Collapsed:Visibility.Visible;
+        if(listening)_monitorControl.CancelEdit();
         _paneSelector.Visibility=listening?Visibility.Collapsed:Visibility.Visible;
         _listenHeading.Visibility=listening?Visibility.Visible:Visibility.Collapsed;
         _listenHost.Visibility=listening?Visibility.Visible:Visibility.Collapsed;

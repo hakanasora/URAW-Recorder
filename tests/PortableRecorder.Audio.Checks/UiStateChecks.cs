@@ -273,6 +273,16 @@ static class UiStateChecks
         vm.SetWorkMode(false);
         vm.Refresh();
         check(!vm.IsListening && vm.Session.Stage==RecordingStage.Ready,"Returning to recording mode resumes syncing TransportSession from Audio");
+        check(!vm.RecordingMonitorEnabled && vm.RecordingMonitorVolumePercent==100,"Recording monitor defaults to disabled at 100% volume");
+        vm.SetRecordingMonitorEnabled(true);
+        vm.SetRecordingMonitorVolume(140);
+        check(vm.RecordingMonitorEnabled && vm.RecordingMonitorVolumePercent==100,"Recording monitor volume never exceeds 100%");
+        vm.SetRecordingMonitorVolume(64.6);
+        check(vm.RecordingMonitorVolumePercent==65,"Recording monitor volume rounds cleanly within 0..100");
+        vm.SetRecordingMonitorVolume(-10);
+        check(vm.RecordingMonitorVolumePercent==0,"Recording monitor volume clamps to 0%");
+        vm.SetRecordingMonitorVolume(double.NaN);
+        check(vm.RecordingMonitorVolumePercent==0,"Non-finite recording monitor volume is ignored");
     }
 
     private static void CoordinatorChecks(Action<bool,string> check)

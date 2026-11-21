@@ -55,6 +55,7 @@ public sealed partial class MainWindow : Window
     private readonly Border _minus=new(){Width=18,Height=5,Background=Design.Brush(Design.White),VerticalAlignment=VerticalAlignment.Center};
     private readonly Button _settingsButton,_pauseButton,_stopButton,_discardButton;
     private readonly GainControl _gain;
+    private readonly RecordingMonitorControl _monitorControl;
     private readonly Grid _actions=new(){HorizontalAlignment=HorizontalAlignment.Right};
     private readonly StackPanel _activeButtons=new(){Orientation=Orientation.Horizontal,Spacing=3,Visibility=Visibility.Collapsed};
     private readonly Grid _clockSlot=new(){HorizontalAlignment=HorizontalAlignment.Center,VerticalAlignment=VerticalAlignment.Center,Visibility=Visibility.Collapsed};
@@ -175,11 +176,17 @@ public sealed partial class MainWindow : Window
         _transport.Background=Design.Brush(displaySurface);
         _transport.Children.Add(new Border{Height=1,Background=Design.Brush(MaterialSurface.Tint(Colors.White,14)),VerticalAlignment=VerticalAlignment.Top,IsHitTestVisible=false});
         _gain=new(_state){Width=96,HorizontalAlignment=HorizontalAlignment.Left,VerticalAlignment=VerticalAlignment.Center,Margin=new Thickness(190,0,0,0)};_transport.Children.Add(_gain);
+        _monitorControl=new(_state,()=>_settings.AnimationsEnabled){Margin=new Thickness(288,0,0,0)};_transport.Children.Add(_monitorControl);
         _inputName.HorizontalAlignment=HorizontalAlignment.Left;
         _inputName.VerticalAlignment=VerticalAlignment.Center;
         _inputName.Margin=new Thickness(28,0,0,0);
         _transport.Children.Add(_inputName);
-        _inputName.SizeChanged+=(_,_)=>_gain.Margin=new Thickness(28+_inputName.GainStartOffset,0,0,0);
+        _inputName.SizeChanged+=(_,_)=>
+        {
+            double gainLeft=28+_inputName.GainStartOffset;
+            _gain.Margin=new Thickness(gainLeft,0,0,0);
+            _monitorControl.Margin=new Thickness(gainLeft+_gain.Width+2,0,0,0);
+        };
         _clockSlot.Width=240;_clockSlot.Height=60;
         _clockSlot.RowDefinitions.Add(new(){Height=new GridLength(20)});
         _clockSlot.RowDefinitions.Add(new(){Height=new GridLength(40)});
@@ -262,7 +269,7 @@ public sealed partial class MainWindow : Window
             _deviceRefresh.DebounceElapsed();
             _=DrainDeviceRefreshQueue();
         };
-        _root.AddHandler(UIElement.PointerPressedEvent,new PointerEventHandler((_,args)=>_gain.CommitIfOutside(args)),true);
+        _root.AddHandler(UIElement.PointerPressedEvent,new PointerEventHandler((_,args)=>{_gain.CommitIfOutside(args);_monitorControl.CommitIfOutside(args);}),true);
         _main.SizeChanged+=(_,_)=>Layout();_root.KeyDown+=OnKeyDown;_timer.Tick+=(_,_)=>Tick();
         _settings.AnimationsEnabledChanged+=OnAnimationsChanged;
         _settings.TextScaleFactorChanged+=OnTextScaleChanged;
@@ -281,7 +288,7 @@ public sealed partial class MainWindow : Window
                 _=_state.Audio.DisposeAsync();
             }
             _coordinator.MarkClosed();
-            _dialogs.Close();_drawer.Dispose();_settings.ColorValuesChanged-=OnSystemColorsChanged;_settings.AnimationsEnabledChanged-=OnAnimationsChanged;_settings.TextScaleFactorChanged-=OnTextScaleChanged;if(_root.XamlRoot!=null)_root.XamlRoot.Changed-=OnXamlRootChanged;CompositionTarget.Rendering-=OnRendering;_inputName.ReleaseResources();_serviceNotice.ReleaseResources();_timer.Stop();_widthAnimation?.Stop();_monitorFade.Stop();_clockFade.Stop();_statusFade.Stop();_primaryFade.Stop();_pauseFade.Stop();_dialogShadeFade.Stop();ReleaseRenderSurface();_renderer.Dispose();
+            _dialogs.Close();_drawer.Dispose();_settings.ColorValuesChanged-=OnSystemColorsChanged;_settings.AnimationsEnabledChanged-=OnAnimationsChanged;_settings.TextScaleFactorChanged-=OnTextScaleChanged;if(_root.XamlRoot!=null)_root.XamlRoot.Changed-=OnXamlRootChanged;CompositionTarget.Rendering-=OnRendering;_inputName.ReleaseResources();_monitorControl.ReleaseResources();_serviceNotice.ReleaseResources();_timer.Stop();_widthAnimation?.Stop();_monitorFade.Stop();_clockFade.Stop();_statusFade.Stop();_primaryFade.Stop();_pauseFade.Stop();_dialogShadeFade.Stop();ReleaseRenderSurface();_renderer.Dispose();
         };Content=_root;
     }
     private void BuildTitleBar()
@@ -514,6 +521,7 @@ public sealed partial class MainWindow : Window
         try{_linkInk.Color=_settings.GetColorValue(UIColorType.AccentLight2);}
         catch{_linkInk.Color=Design.Blue;}
         _gain.SetAccent(_linkInk.Color);
+        _monitorControl.SetAccent(_linkInk.Color);
     }
     private void StyleField(Control field,List<Control>? group=null)
     {
@@ -1290,6 +1298,7 @@ public sealed partial class MainWindow : Window
         _minus.Visibility=double.IsFinite(db) && db<0?Visibility.Visible:Visibility.Collapsed;
         _peak.Text=_state.HeldPeak is double p?(double.IsNegativeInfinity(p)?"PEAK −∞ dBFS":$"PEAK {(p>=0?"+":"−")}{Math.Abs(p):0.0} dBFS"):"PEAK — dBFS";_peak.Foreground=_state.HeldPeak>=0?_overloadPeakInk:_normalPeakInk;
         _gain.Refresh();
+        _monitorControl.Refresh();
         if(_state.Snapshot.MidiNote is double midi)
         {
             var n=(int)Math.Round(midi);

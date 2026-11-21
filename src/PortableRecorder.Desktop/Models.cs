@@ -52,6 +52,8 @@ public sealed class ShellViewModel:INotifyPropertyChanged
     internal bool ExclusiveNoticeShown {get;}
     internal string? EncodingPreferenceWarning {get;}
     public double GainDb {get;private set;}
+    public bool RecordingMonitorEnabled {get;private set;}
+    public int RecordingMonitorVolumePercent {get;private set;}=100;
     public double? HeldPeak {get;private set;}
     public RecordingEncoding Encoding {get;set;}
     public MonitorSnapshot Snapshot {get;private set;}=new(false,double.NaN,double.NaN,double.NaN,
@@ -91,6 +93,20 @@ public sealed class ShellViewModel:INotifyPropertyChanged
         GainDb=Math.Round(Math.Clamp(db,-60,60),1);if(Math.Abs(GainDb)<.05)GainDb=0;
         if(IsListening){_listenGain=GainDb;Listener.SetGain(GainDb);}
         else{_recordGain=GainDb;Audio.SetGain(GainDb);}Notify();
+    }
+    public void SetRecordingMonitorEnabled(bool enabled)
+    {
+        if(RecordingMonitorEnabled==enabled)return;
+        RecordingMonitorEnabled=enabled;
+        Notify();
+    }
+    public void SetRecordingMonitorVolume(double percent)
+    {
+        if(!double.IsFinite(percent))return;
+        int clamped=(int)Math.Round(Math.Clamp(percent,0,100));
+        if(RecordingMonitorVolumePercent==clamped)return;
+        RecordingMonitorVolumePercent=clamped;
+        Notify();
     }
     public void SetWorkMode(bool listening)
     {
