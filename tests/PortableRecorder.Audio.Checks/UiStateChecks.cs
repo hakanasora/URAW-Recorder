@@ -273,5 +273,60 @@ static class UiStateChecks
         check(changes.SequenceEqual(new[]{System.Collections.Specialized.NotifyCollectionChangedAction.Remove})&&ReferenceEquals(collection[0],secondItem),"Removal updates one row and preserves surviving instances");
         library.Remove(second.Id);model.RefreshCalibrations();
         check(model.SelectedCalibration==null&&collection.Count==1&&collection[0].Id==third.Id,"Removing selected calibration never automatically picks another file");
+
+        CoordinatorChecks(check);
+    }
+
+    private static void CoordinatorChecks(Action<bool,string> check)
+    {
+        var coord=new MainWindowCoordinator();
+        check(!coord.IsStarted&&!coord.IsClosing,"Coordinator begins in Starting phase");
+        check(!coord.TryBeginModeSwitch(WorkMode.Listening,false),"Cannot switch modes before window starts");
+        check(coord.TryMarkStarted()&&coord.IsStarted&&!coord.IsStarted==false,"TryMarkStarted enters Running once");
+        check(!coord.TryMarkStarted(),"Repeated startup cannot re-enter Running");
+
+        check(coord.TryBeginCalibrationManager(recordingActive:false)&&coord.DialogOpen,"Calibration manager opens in idle recording mode");
+        check(coord.TryEnterModal(ModalKind.CalibrationManagerDialog,false,out var prevCal)&&coord.Overlay is OverlayState.CalibrationManager{InnerDialogOpen:true},"Calibration dialog nests inside CalibrationManager");
+        check(!coord.TryBeginModeSwitch(WorkMode.Listening,false),"Mode switch blocked while calibration modal open");
+        check(coord.TryBeginAudioCommand(false),"Removing calibration inside CalibrationManager gets normal audio lease");
+        coord.EndAudioCommand();
+        coord.ExitModal(prevCal);
+        check(coord.TryBeginFilePicker(recordingActive:false,out bool inMgr)&&inMgr,"File picker enters from idle CalibrationManager");
+        check(!coord.TryBeginModeSwitch(WorkMode.Listening,false),"Mode switch blocked while FileOpenPicker active");
+        check(!coord.CanOpenRawDecision()&&!coord.CanEnqueueExclusiveNotice(),"Raw and exclusive modals blocked while FileOpenPicker active");
+        coord.EndFilePicker(inMgr);
+        coord.EndCalibrationManager();
+        check(coord.Overlay is OverlayState.None,"Ending calibration manager clears Overlay");
+
+        check(coord.TryBeginFolderPicker(recordingActive:false)&&coord.Overlay is OverlayState.FolderPicker,"FolderPicker enters cleanly in Recording");
+        check(!coord.TryBeginModeSwitch(WorkMode.Listening,false),"Mode switch blocked while FolderPicker open");
+        coord.EndFolderPicker();
+
+        check(coord.TryBeginModeSwitch(WorkMode.Listening,false),"Switching to Listening permitted when idle");
+        check(!coord.TryBeginAudioCommand(modeInitialization:false),"Normal audio command rejected during pre-commit mode switch");
+        check(!coord.CanOpenRawDecision()&&!coord.CanEnqueueExclusiveNotice(),"RAW/exclusive notices blocked while switching to Listening");
+        coord.CommitModeSwitch(WorkMode.Listening);
+        check(!coord.InRecordingInputContext,"Committed Listening mode leaves recording input context");
+        check(coord.CanRefreshListeningSources(modeInitialization:true,listeningActive:false,refreshInFlight:false),"Listening init refresh permitted after commit");
+        check(!coord.CanRefreshListeningSources(modeInitialization:false,listeningActive:false,refreshInFlight:false),"User listening refresh blocked while switching still finishes");
+        coord.EndModeSwitch();
+        check(!coord.TryEnterModal(ModalKind.ExclusiveNotice,false,out _),"Queued ExclusiveNotice rejected after mode switched to Listening");
+        check(!coord.TryBeginCalibrationManager(false)&&!coord.TryBeginFolderPicker(false),"Recording overlays rejected in Listening mode");
+        check(coord.CanRefreshListeningSources(modeInitialization:false,listeningActive:false,refreshInFlight:false),"Manual listening refresh permitted once idle in Listening");
+
+        check(coord.TryBeginModeSwitch(WorkMode.Recording,false),"Switching back to Recording permitted");
+        coord.CommitModeSwitch(WorkMode.Recording);
+        check(coord.InRecordingInputContext,"Committed Recording re-enters recording input context");
+        check(coord.TryBeginAudioCommand(modeInitialization:true),"Mode initialization audio lease allowed after commit");
+        coord.EndAudioCommand();
+        coord.EndModeSwitch();
+        check(coord.CanAlignWindowsGain(RecordingMode.Exclusive)&&!coord.CanAlignWindowsGain(RecordingMode.Shared),"Windows gain alignment restricted to idle Exclusive Recording");
+
+        check(coord.TryBeginCleanup()&&coord.IsClosing,"Cleanup transitions cleanly to CleaningUp");
+        check(!coord.TryEnterModal(ModalKind.RawDecision,duringClose:true,out _),"Only cleanup Message modal allowed during close");
+        check(coord.TryEnterModal(ModalKind.Message,duringClose:true,out var prevClose),"Cleanup error Message permitted during CleaningUp");
+        coord.ExitModal(prevClose);
+        coord.MarkClosed();
+        check(!coord.TryEnterModal(ModalKind.Message,duringClose:true,out _),"No dialogs permitted after Closed");
     }
 }

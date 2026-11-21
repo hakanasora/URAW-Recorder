@@ -76,10 +76,17 @@ internal sealed class DeviceRefreshQueue
         return _active;
     }
 
-    public void Finish(Request request, Task completion)
+    public void Finish(Request request, Task completion, Action? onFinished = null)
     {
         _active = null;
-        _ = request.CompleteAfterAsync(completion);
+        _ = ObserveAsync(request, completion, onFinished);
+    }
+
+    private static async Task ObserveAsync(Request request, Task completion, Action? onFinished)
+    {
+        try { await request.CompleteAfterAsync(completion); }
+        catch { }
+        finally { onFinished?.Invoke(); }
     }
 
     public void Invalidate()
@@ -95,20 +102,43 @@ internal sealed class InputFormatQuery
 {
     public readonly record struct Request(int Version, string? DeviceId);
 
-    private Request _current;
-    public int Version => _current.Version;
-    public string? DeviceId => _current.DeviceId;
-    public bool Loading { get; private set; }
-    public InputFormatOptions? Options { get; private set; }
-    public string? Error { get; private set; }
+    public abstract record QueryPhase
+    {
+        private QueryPhase() { }
+        public sealed record Idle(int Version) : QueryPhase;
+        public sealed record Loading(int Version, string DeviceId) : QueryPhase;
+        public sealed record Ready(int Version, string DeviceId, InputFormatOptions Options) : QueryPhase;
+        public sealed record Failed(int Version, string DeviceId, string Error) : QueryPhase;
+    }
+
+    public QueryPhase Phase { get; private set; } = new QueryPhase.Idle(0);
+
+    public int Version => Phase switch
+    {
+        QueryPhase.Idle i => i.Version,
+        QueryPhase.Loading l => l.Version,
+        QueryPhase.Ready r => r.Version,
+        QueryPhase.Failed f => f.Version,
+        _ => 0
+    };
+
+    public string? DeviceId => Phase switch
+    {
+        QueryPhase.Loading l => l.DeviceId,
+        QueryPhase.Ready r => r.DeviceId,
+        QueryPhase.Failed f => f.DeviceId,
+        _ => null
+    };
+
+    public bool Loading => Phase is QueryPhase.Loading;
+    public InputFormatOptions? Options => (Phase as QueryPhase.Ready)?.Options;
+    public string? Error => (Phase as QueryPhase.Failed)?.Error;
 
     public Request Begin(string? deviceId)
     {
-        _current = new(Version + 1, deviceId);
-        Loading = deviceId != null;
-        Options = null;
-        Error = null;
-        return _current;
+        int nextVersion = Version + 1;
+        Phase = deviceId == null ? new QueryPhase.Idle(nextVersion) : new QueryPhase.Loading(nextVersion, deviceId);
+        return new(nextVersion, deviceId);
     }
 
     public void Invalidate() => Begin(null);
@@ -116,10 +146,16 @@ internal sealed class InputFormatQuery
     public bool TryComplete(Request request, string? selectedDevice, bool recordingContext,
         InputFormatOptions? options, string? error)
     {
-        if (!recordingContext || !Loading || request != _current || request.DeviceId != selectedDevice) return false;
-        Options = options;
-        Error = error;
-        Loading = false;
+        if (!recordingContext || Phase is not QueryPhase.Loading loading ||
+            request.Version != loading.Version || request.DeviceId != loading.DeviceId ||
+            request.DeviceId != selectedDevice)
+            return false;
+
+        Phase = error != null
+            ? new QueryPhase.Failed(loading.Version, loading.DeviceId, error)
+            : options != null
+                ? new QueryPhase.Ready(loading.Version, loading.DeviceId, options)
+                : new QueryPhase.Idle(loading.Version);
         return true;
     }
 }

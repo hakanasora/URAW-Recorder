@@ -24,8 +24,8 @@ public sealed partial class MainWindow
     private Button? _listenRefresh;
     private bool _updatingListening;
     private readonly WorkModeTransition _workModeTransition=new();
-    private bool WorkModeChanging=>_workModeTransition.Target!=null;
-    private WorkMode CurrentWorkMode=>_state.IsListening?WorkMode.Listening:WorkMode.Recording;
+    private bool WorkModeChanging=>_coordinator.IsModeSwitching||_workModeTransition.Target!=null;
+    private WorkMode CurrentWorkMode=>_coordinator.CommittedMode;
     private object? _listenRefreshRequest;
     private int _sourceIconVersion;
     private string? _listenViewKey;
@@ -67,8 +67,15 @@ public sealed partial class MainWindow
         {
             if(!_started||_workModeBox.SelectedIndex<0)return;
             var target=_workModeBox.SelectedIndex==1?WorkMode.Listening:WorkMode.Recording;
-            if(!_workModeTransition.TryBegin(CurrentWorkMode,target,_audioBusy||_state.Session.Active||_closing))
+            bool active=_state.Session.Active||ListeningActive;
+            if(!_coordinator.TryBeginModeSwitch(target,active))
             {
+                RestoreWorkModeSelection();
+                return;
+            }
+            if(!_workModeTransition.TryBegin(CurrentWorkMode,target,blocked:false))
+            {
+                _coordinator.EndModeSwitch();
                 RestoreWorkModeSelection();
                 return;
             }
@@ -77,6 +84,7 @@ public sealed partial class MainWindow
             if(!DispatcherQueue.TryEnqueue(async()=>await ApplyWorkMode()))
             {
                 _workModeTransition.End();
+                _coordinator.EndModeSwitch();
                 RestoreWorkModeSelection();
             }
         };
@@ -92,7 +100,8 @@ public sealed partial class MainWindow
             if(_closing||_audioBusy||_state.Session.Active)return;
             _workModeBox.IsEnabled=false;
             _stopButton.IsEnabled=false;
-            foreach(var control in _configuration)control.IsEnabled=false;
+            foreach(var control in _recordingControls)control.IsEnabled=false;
+            foreach(var control in _listeningControls)control.IsEnabled=false;
             RestoreWorkModeSelection();
             await _workModeTransition.ApplyAsync(async()=>
             {
@@ -107,12 +116,13 @@ public sealed partial class MainWindow
                 _listenRefreshRequest=null;
                 _sourceIconVersion++;
                 if(target==WorkMode.Listening)InvalidateRecordingInputQueries();
+                _coordinator.CommitModeSwitch(target);
                 _state.SetWorkMode(target==WorkMode.Listening);
                 RestoreWorkModeSelection();
                 _lastStage=null;_lastAudioState=null;_listenViewKey=null;_displayedListeningSource=null;
                 UpdateWorkModeSurface();
                 StartupLog.Write("Work mode: "+target);
-            },target=>target==WorkMode.Listening ? RefreshListeningSources() :
+            },target=>target==WorkMode.Listening ? RefreshListeningSources(modeInitialization:true) :
                 _noCapture ? Task.CompletedTask : LoadDevices(manual:true,modeInitialization:true));
         }
         catch(Exception error)
@@ -123,12 +133,13 @@ public sealed partial class MainWindow
         finally
         {
             _workModeTransition.End();
+            _coordinator.EndModeSwitch();
             if(!_closing)
             {
                 RestoreWorkModeSelection();
                 _state.Refresh();
                 if(_state.IsListening){_listenViewKey=null;RefreshListening();}
-                else{RefreshSession(true);SyncCalibration();SyncInputFormat();}
+                else{RefreshSession(true);SyncCalibration();SyncInputFormat();_=DrainDeviceRefreshQueue();}
                 RefreshValues();
             }
         }
@@ -138,7 +149,6 @@ public sealed partial class MainWindow
     {
         double[] values=[-18,-14,-10,-8,-6];
         var box=new ComboBox();StyleField(box);
-        _configuration.Remove(box); // Safe to adjust while recording; no sample processing changes.
         box.ItemsSource=values.Select(db=>$"−{Math.Abs(db):0} dBFS").ToArray();
         box.SelectedIndex=listening?4:0;
         AutomationProperties.SetName(box,"VU 参考");
@@ -160,7 +170,7 @@ public sealed partial class MainWindow
         _listenHost.VerticalScrollBarVisibility=ScrollBarVisibility.Auto;
         _listenHost.HorizontalScrollBarVisibility=ScrollBarVisibility.Disabled;
         _listenHost.HorizontalScrollMode=ScrollMode.Disabled;_listenHost.Content=_listenPage;pages.Children.Add(_listenHost);
-        foreach(var field in new[]{_listenScope,_listenTap,_listenEndpoint,_listenApplication})StyleField(field);
+        foreach(var field in new[]{_listenScope,_listenTap,_listenEndpoint,_listenApplication})StyleField(field,_listeningControls);
         _listenScope.ItemsSource=new[]{"整机侦听","应用侦听"};_listenScope.SelectedIndex=0;
         _listenTap.ItemsSource=new[]{"增强前","增强后 · 输出回环"};_listenTap.SelectedIndex=0;
         _listenEndpoint.DisplayMemberPath="Name";_listenApplication.DisplayMemberPath="Name";
@@ -170,7 +180,7 @@ public sealed partial class MainWindow
         _listenPage.Children.Add(Group("侦听范围","\uE7F4",_listenScope));
         _listenTapGroup=Group("取流位置","\uE8AB",_listenTap);_listenPage.Children.Add(_listenTapGroup);
         _listenEndpointGroup=Group("输出设备","\uE767",_listenEndpoint);_listenPage.Children.Add(_listenEndpointGroup);
-        _listenRefresh=LinkButton("刷新");_listenRefresh.Click+=async(_,_)=>await RefreshListeningSources();
+        _listenRefresh=LinkButton("刷新",_listeningControls);_listenRefresh.Click+=async(_,_)=>await RefreshListeningSources();
         var applicationHeading=new Grid{Height=24};
         applicationHeading.Children.Add(Label("应用","\uE7C4"));
         _listenRefresh.HorizontalAlignment=HorizontalAlignment.Right;
@@ -199,13 +209,18 @@ public sealed partial class MainWindow
         _activeButtons.Spacing=0;_clockSlot.Visibility=Visibility.Collapsed;
         _inputName.SetRecording(false,false);
         if(!listening){_lastNoticeKey="";_inputName.UseMicrophone();RefreshSession(false);}
-        else{_=SetListeningSourceIcon(SelectedListeningSource());RefreshListening();}
+        else
+        {
+            _displayedListeningSource=SelectedListeningSource();
+            _=SetListeningSourceIcon(_displayedListeningSource);
+            RefreshListening();
+        }
         RefreshValues();
     }
 
-    private async Task RefreshListeningSources()
+    private async Task RefreshListeningSources(bool modeInitialization=false)
     {
-        if(_closing||!_state.IsListening||_audioBusy||ListeningActive||_listenRefreshRequest!=null)return;
+        if(!_coordinator.CanRefreshListeningSources(modeInitialization,ListeningActive,_listenRefreshRequest!=null))return;
         var request=new object();
         _listenRefreshRequest=request;
         bool OwnsRequest()=>!_closing&&_state.IsListening&&ReferenceEquals(_listenRefreshRequest,request);

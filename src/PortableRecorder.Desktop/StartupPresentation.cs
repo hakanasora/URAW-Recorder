@@ -45,6 +45,7 @@ internal sealed class StartupPresentation
         {
             // Do not leave an activated application invisible if the compositor rejects the request.
             StartupLog.Write($"Startup reveal failed: 0x{result:X8}");
+            _cloaked = false;
             _window.Close();
             return;
         }

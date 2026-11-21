@@ -14,6 +14,7 @@
     <Compile Include="../../src/PortableRecorder.Desktop/OutputFolderPreferences.cs" Link="OutputFolderPreferences.cs" />
     <Compile Include="../../src/PortableRecorder.Desktop/MeterMotion.cs" Link="MeterMotion.cs" />
     <Compile Include="../../src/PortableRecorder.Desktop/DialogQueue.cs" Link="DialogQueue.cs" />
+    <Compile Include="../../src/PortableRecorder.Desktop/MainWindowCoordinator.cs" Link="MainWindowCoordinator.cs" />
     <Compile Include="../../src/PortableRecorder.Desktop/UiPresentation.cs" Link="UiPresentation.cs" />
     <Compile Include="../../src/PortableRecorder.Desktop/InputQueryState.cs" Link="InputQueryState.cs" />
     <Compile Include="../../src/PortableRecorder.Desktop/Models.cs" Link="Models.cs" />

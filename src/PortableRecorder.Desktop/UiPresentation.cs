@@ -18,11 +18,18 @@ internal sealed class WorkModeTransition
     public async Task ApplyAsync(Func<Task> stopCurrent, Func<bool> isClosing,
         Action<WorkMode> commit, Func<WorkMode, Task> refresh)
     {
-        if (Target is not WorkMode target || isClosing()) return;
-        await stopCurrent();
-        if (isClosing()) return;
-        commit(target);
-        await refresh(target);
+        try
+        {
+            if (Target is not WorkMode target || isClosing()) return;
+            await stopCurrent();
+            if (isClosing()) return;
+            commit(target);
+            await refresh(target);
+        }
+        finally
+        {
+            End();
+        }
     }
 
     public void End() => Target = null;

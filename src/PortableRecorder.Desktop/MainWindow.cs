@@ -89,15 +89,18 @@ public sealed partial class MainWindow : Window
     private RecordingCodec? _qualityCodec;
     private bool _updatingQuality;
     private readonly TextBlock _qualityTitle=Design.Text("压缩等级",12,Design.Muted);
-    private readonly List<Control> _configuration=[];
+    private readonly List<Control> _recordingControls=[],_listeningControls=[];
     private readonly SolidColorBrush _linkInk=Design.Brush(Design.Link);
     private Storyboard? _widthAnimation;
-    private bool _firstFrameLogged,_updatingForm,_started,_updatingCalibration,_alternateTypography;
+    private bool _firstFrameLogged,_updatingForm,_updatingCalibration,_alternateTypography;
     private TextBlock? _managerError;
-    private enum WindowLifetime { Running, CleaningUp, Closing }
-    private WindowLifetime _lifetime;
-    private bool _closing=>_lifetime!=WindowLifetime.Running;
-    private bool _audioBusy,_dialogOpen,_exclusiveNoticeShown,_exclusiveNoticePending;
+    private readonly MainWindowCoordinator _coordinator=new();
+    private bool _started=>_coordinator.IsStarted;
+    private bool _closing=>_coordinator.IsClosing;
+    private bool _audioBusy=>_coordinator.AudioBusy;
+    private bool _dialogOpen=>_coordinator.DialogOpen;
+    private bool _exclusiveNoticeShown,_exclusiveNoticePending;
+    private int _gainAlignGeneration;
     private AudioRunState? _lastAudioState;
     private readonly DialogQueue _dialogs=new();
     private readonly RawDecisionPrompt _rawPrompt=new();
@@ -113,7 +116,7 @@ public sealed partial class MainWindow : Window
     private readonly DispatcherTimer _deviceRefreshTimer=new(){Interval=TimeSpan.FromMilliseconds(300)};
     private readonly DeviceRefreshQueue _deviceRefresh=new();
     private bool _devicesLoaded;
-    private bool InRecordingInputContext=>!_closing&&!_state.IsListening;
+    private bool InRecordingInputContext=>_coordinator.InRecordingInputContext;
     private readonly Stopwatch _renderClock=Stopwatch.StartNew();
     private double _lastRender,_nextDisplayProbe;
     private bool _displayProbePending;
@@ -226,8 +229,8 @@ public sealed partial class MainWindow : Window
         {
             try
             {
-                if(_started)return;
-                StartupLog.Write("Root Loaded");_started=true;
+                if(!_coordinator.TryMarkStarted())return;
+                StartupLog.Write("Root Loaded");
                 UpdateTextScale();StartupLog.Write("Text scale ready");
                 _frame.Initialize();StartupLog.Write("Fixed client frame ready");
                 _root.XamlRoot.Changed+=OnXamlRootChanged;
@@ -246,6 +249,7 @@ public sealed partial class MainWindow : Window
                     }));}
                     catch(Exception error){StartupLog.Write("Device watcher unavailable: "+error);}
                     await LoadDevices(manual:false);
+                    if(_closing)return;
                 }
                 else StartupLog.Write("诊断模式：未打开麦克风");
             }
@@ -264,11 +268,23 @@ public sealed partial class MainWindow : Window
         _settings.TextScaleFactorChanged+=OnTextScaleChanged;
         AppWindow.Closing+=async(_,args)=>
         {
-            if(_lifetime==WindowLifetime.Closing)return;
+            if(_coordinator.Window==WindowPhase.Closed)return;
             args.Cancel=true;
             await CloseWithAudioCleanup();
         };
-        Closed+=(_,_)=>{_dialogs.Close();_drawer.Dispose();_settings.ColorValuesChanged-=OnSystemColorsChanged;_settings.AnimationsEnabledChanged-=OnAnimationsChanged;_settings.TextScaleFactorChanged-=OnTextScaleChanged;if(_root.XamlRoot!=null)_root.XamlRoot.Changed-=OnXamlRootChanged;CompositionTarget.Rendering-=OnRendering;_inputName.ReleaseResources();_serviceNotice.ReleaseResources();_timer.Stop();_widthAnimation?.Stop();_monitorFade.Stop();_clockFade.Stop();_statusFade.Stop();_primaryFade.Stop();_pauseFade.Stop();_dialogShadeFade.Stop();ReleaseRenderSurface();_renderer.Dispose();};Content=_root;
+        Closed+=(_,_)=>
+        {
+            if(_coordinator.TryBeginCleanup())
+            {
+                InvalidateRecordingInputQueries();
+                SaveOutputFolder();StopVolumeWatcher();
+                _deviceWatcher?.Dispose();_deviceWatcher=null;
+                _=_state.Listener.DisposeAsync();
+                _=_state.Audio.DisposeAsync();
+            }
+            _coordinator.MarkClosed();
+            _dialogs.Close();_drawer.Dispose();_settings.ColorValuesChanged-=OnSystemColorsChanged;_settings.AnimationsEnabledChanged-=OnAnimationsChanged;_settings.TextScaleFactorChanged-=OnTextScaleChanged;if(_root.XamlRoot!=null)_root.XamlRoot.Changed-=OnXamlRootChanged;CompositionTarget.Rendering-=OnRendering;_inputName.ReleaseResources();_serviceNotice.ReleaseResources();_timer.Stop();_widthAnimation?.Stop();_monitorFade.Stop();_clockFade.Stop();_statusFade.Stop();_primaryFade.Stop();_pauseFade.Stop();_dialogShadeFade.Stop();ReleaseRenderSurface();_renderer.Dispose();
+        };Content=_root;
     }
     private void BuildTitleBar()
     {
@@ -298,8 +314,7 @@ public sealed partial class MainWindow : Window
 
     private async Task CloseWithAudioCleanup()
     {
-        if(_closing)return;
-        _lifetime=WindowLifetime.CleaningUp;
+        if(!_coordinator.TryBeginCleanup())return;
         _dialogs.BeginCleanup();
         Exception? failure=null;
         try
@@ -324,7 +339,7 @@ public sealed partial class MainWindow : Window
             else if(failure!=null)
                 await Message("录音收尾异常",AudioEngine.Friendly(failure),duringClose:true);
         }
-        finally{_lifetime=WindowLifetime.Closing;_dialogs.Close();Close();}
+        finally{_coordinator.MarkClosed();_dialogs.Close();Close();}
     }
 
     private void OnXamlRootChanged(XamlRoot sender,XamlRootChangedEventArgs args){if(!_closing)_frame.RefreshDpi();}
@@ -386,33 +401,33 @@ public sealed partial class MainWindow : Window
         // and its label. The page scrolls only when the conditional calibration file row pushes
         // content past the fixed viewport instead of clipping it.
         _inputPage.Spacing=16;
-        StyleField(_recordModeBox);_recordModeBox.ItemsSource=new[]{"独占","共享"};
+        StyleField(_recordModeBox,_recordingControls);_recordModeBox.ItemsSource=new[]{"独占","共享"};
         _recordModeBox.SelectedIndex=_state.RecordMode==RecordingMode.Exclusive?0:1;
         _recordModeBox.SelectionChanged+=(_,_)=>SetRecordingMode(_recordModeBox.SelectedIndex);
         AutomationProperties.SetName(_recordModeBox,"录制模式");
         var modeGroup=Group("录制模式","\uE713",_recordModeBox,4);
         _modeGainHint.TextWrapping=TextWrapping.Wrap;modeGroup.Children.Add(_modeGainHint);_inputPage.Children.Add(modeGroup);
-        StyleField(_deviceBox);_deviceBox.ItemsSource=_state.Devices;_deviceBox.DisplayMemberPath="FriendlyName";
+        StyleField(_deviceBox,_recordingControls);_deviceBox.ItemsSource=_state.Devices;_deviceBox.DisplayMemberPath="FriendlyName";
         AutomationProperties.SetName(_deviceBox,"输入设备");
         _deviceBox.SelectionChanged+=async(_,_)=>
         {
             if(_updatingForm||_audioBusy||WorkModeChanging||!InRecordingInputContext||_deviceBox.SelectedItem is not InputDevice device)return;
+            _gainAlignGeneration++;
             _formatQuery.Invalidate();
-            await AudioCommand(async()=>
+            if(await AudioCommand(async()=>
             {
                 try{await _state.Audio.SelectDeviceAsync(new(device.Id,device.FriendlyName));}
                 finally{if(InRecordingInputContext)SyncSelectedInput();}
-            });
-            await LoadInputFormats();
+            }))await LoadInputFormats();
         };
         var deviceGroup=new StackPanel{Spacing=0};
         var deviceHeading=new Grid{Height=24};var deviceLabel=Label("输入设备","\uE720");deviceLabel.VerticalAlignment=VerticalAlignment.Center;deviceHeading.Children.Add(deviceLabel);
-        var refresh=LinkButton("刷新");refresh.HorizontalAlignment=HorizontalAlignment.Right;
+        var refresh=LinkButton("刷新",_recordingControls);refresh.HorizontalAlignment=HorizontalAlignment.Right;
         ToolTipService.SetToolTip(refresh,"刷新输入设备并重新连接监看");refresh.Click+=async(_,_)=>await LoadDevices();deviceHeading.Children.Add(refresh);
         deviceGroup.Children.Add(deviceHeading);
         _deviceBox.Margin=new Thickness(0,4,0,0);deviceGroup.Children.Add(_deviceBox);
         var formatTitle=Design.Text("输入格式",12,Design.Muted);formatTitle.Height=16;formatTitle.Margin=new Thickness(0,8,0,0);deviceGroup.Children.Add(formatTitle);
-        StyleField(_inputFormatBox);_inputFormatBox.PlaceholderText="正在读取格式";
+        StyleField(_inputFormatBox,_recordingControls);_inputFormatBox.PlaceholderText="正在读取格式";
         AutomationProperties.SetName(_inputFormatBox,"输入格式");
         _inputFormatBox.Resources["ComboBoxForegroundDisabled"]=Design.Brush(Design.Label);
         _inputFormatBox.Resources["ComboBoxBackgroundDisabled"]=Design.Brush(Design.Grid);
@@ -429,14 +444,14 @@ public sealed partial class MainWindow : Window
             _inputFormatViewKey=null;SyncInputFormat();
         };
         _inputPage.Children.Add(deviceGroup);
-        StyleField(_calibrationEnabledBox);_calibrationEnabledBox.ItemsSource=new[]{"启用","禁用"};
+        StyleField(_calibrationEnabledBox,_recordingControls);_calibrationEnabledBox.ItemsSource=new[]{"启用","禁用"};
         var calibrationLabel=Label("校准","\uE9E9");calibrationLabel.VerticalAlignment=VerticalAlignment.Center;_calibrationHeading.Children.Add(calibrationLabel);
-        var manage=LinkButton("管理校准");manage.HorizontalAlignment=HorizontalAlignment.Right;manage.VerticalAlignment=VerticalAlignment.Center;
+        var manage=LinkButton("管理校准",_recordingControls);manage.HorizontalAlignment=HorizontalAlignment.Right;manage.VerticalAlignment=VerticalAlignment.Center;
         manage.Click+=async(_,_)=>await ManageCalibrations();_calibrationHeading.Children.Add(manage);
         AutomationProperties.SetName(_calibrationEnabledBox,"校准");
         _calibrationSection.Children.Add(_calibrationHeading);
         _calibrationSection.Children.Add(_calibrationEnabledBox);
-        StyleField(_calibrationBox);_calibrationBox.ItemsSource=_state.Calibrations;_calibrationBox.DisplayMemberPath="Name";
+        StyleField(_calibrationBox,_recordingControls);_calibrationBox.ItemsSource=_state.Calibrations;_calibrationBox.DisplayMemberPath="Name";
         _calibrationBox.PlaceholderText="请选择校准文件";_calibrationFileRow.Child=_calibrationBox;_calibrationFileRow.Margin=new Thickness(0,4,0,0);_calibrationFileRow.Visibility=Visibility.Collapsed;
         _calibrationSection.Children.Add(_calibrationFileRow);
         AutomationProperties.SetName(_calibrationBox,"校准文件");
@@ -453,19 +468,19 @@ public sealed partial class MainWindow : Window
         };
         SyncCalibration();
         _inputPage.Children.Add(BuildVuReferenceGroup(listening:false));
-        StyleField(_path);_path.VerticalContentAlignment=VerticalAlignment.Center;_path.Padding=new Thickness(12,8,12,8);_path.TextChanged+=(_,_)=>ToolTipService.SetToolTip(_path,_path.Text);
+        StyleField(_path,_recordingControls);_path.VerticalContentAlignment=VerticalAlignment.Center;_path.Padding=new Thickness(12,8,12,8);_path.TextChanged+=(_,_)=>ToolTipService.SetToolTip(_path,_path.Text);
         _path.LostFocus+=(_,_)=>SaveOutputFolder();
         var pathRow=new Grid{ColumnSpacing=8};pathRow.ColumnDefinitions.Add(new(){Width=new GridLength(1,GridUnitType.Star)});pathRow.ColumnDefinitions.Add(new(){Width=new GridLength(36)});pathRow.Children.Add(_path);
-        var browse=Design.Button(Design.Icon("\uE8B7",16,Design.White),"浏览保存文件夹",Design.Field);browse.Width=36;browse.Height=36;browse.CornerRadius=new(3);browse.Padding=new Thickness(0);Grid.SetColumn(browse,1);pathRow.Children.Add(browse);_configuration.Add(browse);browse.Click+=async(_,_)=>await BrowseFolder();
+        var browse=Design.Button(Design.Icon("\uE8B7",16,Design.White),"浏览保存文件夹",Design.Field);browse.Width=36;browse.Height=36;browse.CornerRadius=new(3);browse.Padding=new Thickness(0);Grid.SetColumn(browse,1);pathRow.Children.Add(browse);_recordingControls.Add(browse);browse.Click+=async(_,_)=>await BrowseFolder();
         var pathGroup=Group("保存路径","\uE8B7",pathRow);_pathError.TextWrapping=TextWrapping.Wrap;_pathError.Visibility=Visibility.Collapsed;pathGroup.Children.Add(_pathError);_filePage.Children.Add(pathGroup);
         _savedOutputFolder=OutputFolderPreferences.Load(out var folderWarning);_path.Text=OutputFolderPreferences.DisplayFolder(_savedOutputFolder);
         if(folderWarning!=null){_pathError.Text=folderWarning;_pathError.Visibility=Visibility.Visible;StartupLog.Write(folderWarning);}
-        StyleField(_formatBox);_formatBox.Items.Add(new ComboBoxItem{Content="WAV · 32 位浮点",Tag="WAV"});
+        StyleField(_formatBox,_recordingControls);_formatBox.Items.Add(new ComboBoxItem{Content="WAV · 32 位浮点",Tag="WAV"});
         _formatBox.Items.Add(new ComboBoxItem{Content="FLAC · 24 位 PCM",Tag="FLAC"});
         _formatBox.Items.Add(new ComboBoxItem{Content="MP3 · LAME VBR",Tag="MP3"});_formatBox.SelectedIndex=(int)_encodingPreferences.Codec;
         _formatBox.SelectionChanged+=(_,_)=>{if(_formatBox.SelectedIndex<0)return;_encodingPreferences=_encodingPreferences with{Codec=(RecordingCodec)_formatBox.SelectedIndex};SaveEncoding();UpdateQuality();};
         var recordingFormatGroup=Group("录制格式","\uE8A5",_formatBox);_filePage.Children.Add(recordingFormatGroup);
-        StyleField(_qualityBox);_qualityTitle.Height=16;_qualityBox.Margin=new Thickness(0,4,0,0);
+        StyleField(_qualityBox,_recordingControls);_qualityTitle.Height=16;_qualityBox.Margin=new Thickness(0,4,0,0);
         _qualityGroup.Children.Add(_qualityTitle);_qualityGroup.Children.Add(_qualityBox);recordingFormatGroup.Children.Add(_qualityGroup);
         _qualityBox.SelectionChanged+=(_,_)=>
         {
@@ -479,13 +494,13 @@ public sealed partial class MainWindow : Window
     }
     private static StackPanel Label(string text,string glyph){var row=new StackPanel{Orientation=Orientation.Horizontal,Spacing=8,Height=20};row.Children.Add(Design.Icon(glyph,16,Design.Label));row.Children.Add(Design.Text(text,13,Design.Label));return row;}
     private static StackPanel Group(string title,string glyph,UIElement field,double spacing=8){var panel=new StackPanel{Spacing=spacing};panel.Children.Add(Label(title,glyph));panel.Children.Add(field);return panel;}
-    private Button LinkButton(string text)
+    private Button LinkButton(string text,List<Control>? group=null)
     {
         var label=Design.Text(text,13);label.Foreground=_linkInk;
         var button=Design.Button(label,text,Colors.Transparent);ToolTipService.SetToolTip(button,null);button.Height=24;button.Padding=new Thickness(0);
         button.HorizontalAlignment=HorizontalAlignment.Left;
         button.IsEnabledChanged+=(_,_)=>label.Foreground=button.IsEnabled?_linkInk:Design.Brush(Design.Muted);
-        _configuration.Add(button);return button;
+        group?.Add(button);return button;
     }
     private void OnSystemColorsChanged(UISettings sender,object args)
         =>DispatcherQueue.TryEnqueue(()=>{if(!_closing)UpdateSystemAccent();});
@@ -496,12 +511,12 @@ public sealed partial class MainWindow : Window
         catch{_linkInk.Color=Design.Blue;}
         _gain.SetAccent(_linkInk.Color);
     }
-    private void StyleField(Control field)
+    private void StyleField(Control field,List<Control>? group=null)
     {
         field.Height=36;field.MinHeight=36;field.MinWidth=0;field.FontSize=13;field.Foreground=Design.Brush(Design.White);field.Background=Design.Brush(Design.Field);field.BorderThickness=new Thickness(0);field.CornerRadius=new CornerRadius(3);field.Padding=new Thickness(12,0,12,0);field.HorizontalAlignment=HorizontalAlignment.Stretch;
         foreach(var key in new[]{"ComboBoxBackground","ComboBoxBackgroundPointerOver","ComboBoxBackgroundPressed","ComboBoxBackgroundDisabled","TextControlBackground","TextControlBackgroundPointerOver","TextControlBackgroundFocused","TextControlBackgroundDisabled"})field.Resources[key]=Design.Brush(Design.Field);
         foreach(var key in new[]{"ComboBoxBorderBrush","ComboBoxBorderBrushPointerOver","ComboBoxBorderBrushPressed","TextControlBorderBrush","TextControlBorderBrushPointerOver"})field.Resources[key]=Design.Brush(Colors.Transparent);
-        field.Resources["TextControlBorderBrushFocused"]=Design.Brush(Design.White);field.Resources["TextControlPlaceholderForeground"]=Design.Brush(Design.Hex("BDBDC2"));_configuration.Add(field);
+        field.Resources["TextControlBorderBrushFocused"]=Design.Brush(Design.White);field.Resources["TextControlPlaceholderForeground"]=Design.Brush(Design.Hex("BDBDC2"));group?.Add(field);
     }
     private void UpdateQuality()
     {
@@ -541,9 +556,14 @@ public sealed partial class MainWindow : Window
     }
     private async Task BrowseFolder()
     {
-        if(_state.Session.Active||_closing)return;
+        if(!_coordinator.TryBeginFolderPicker(_state.Session.Active))return;
         try{var result=await new FolderPicker(AppWindow.Id).PickSingleFolderAsync();if(_closing)return;if(result!=null){_path.Text=result.Path;SaveOutputFolder();}}
         catch(Exception error){StartupLog.Write("Folder picker: "+error);if(_closing)return;_pathError.Text="暂时无法打开文件夹选择器，请手动输入路径。";_pathError.Visibility=Visibility.Visible;}
+        finally
+        {
+            _coordinator.EndFolderPicker();
+            if(InRecordingInputContext)_=DrainDeviceRefreshQueue();
+        }
     }
     private void SaveOutputFolder()
     {
@@ -569,7 +589,7 @@ public sealed partial class MainWindow : Window
     }
     private async Task AddCalibration()
     {
-        if(_state.Session.Active||_closing)return;
+        if(!_coordinator.TryBeginFilePicker(_state.Session.Active,out bool openedInsideManager))return;
         try
         {
             var picker=new FileOpenPicker(AppWindow.Id);picker.FileTypeFilter.Add(".txt");picker.FileTypeFilter.Add(".cal");var files=await picker.PickMultipleFilesAsync();if(_closing || _state.Session.Active || files is null)return;
@@ -581,13 +601,18 @@ public sealed partial class MainWindow : Window
             }
         }
         catch(Exception error){await Message("校准文件",error.Message);}
+        finally
+        {
+            _coordinator.EndFilePicker(openedInsideManager);
+            if(InRecordingInputContext)_=DrainDeviceRefreshQueue();
+        }
     }
     private async Task ManageCalibrations()
     {
-        if(_closing||_state.Session.Active||_dialogOpen||_dialogs.IsBusy)return;_dialogOpen=true;
+        if(!_coordinator.TryBeginCalibrationManager(_state.Session.Active)||_dialogs.IsBusy)return;
         try
         {
-            while(!_closing&&!_state.Session.Active)
+            while(!_closing&&!_state.Session.Active&&InRecordingInputContext)
             {
                 var managerError=Design.Text("",12,Design.Alert);managerError.TextWrapping=TextWrapping.Wrap;managerError.Visibility=Visibility.Collapsed;_managerError=managerError;
                 var list=new ListView{Height=160,SelectionMode=ListViewSelectionMode.None,IsItemClickEnabled=false,
@@ -636,24 +661,28 @@ public sealed partial class MainWindow : Window
                 SyncCalibration();Rebuild();var content=new StackPanel{Spacing=8};content.Children.Add(_managerError);content.Children.Add(list);
                 var dialog=new ContentDialog{XamlRoot=_root.XamlRoot,Title="已添加的校准",Content=content,
                     PrimaryButtonText="添加校准",CloseButtonText="关闭",RequestedTheme=ElementTheme.Dark};
-                if(await ShowDialog(dialog)!=ContentDialogResult.Primary||_closing)return;
+                if(await ShowDialog(dialog,ModalKind.CalibrationManagerDialog)!=ContentDialogResult.Primary||_closing)return;
                 _managerError=null;await AddCalibration();
             }
         }
         catch(OperationCanceledException)when(_closing){}
-        catch(Exception error){StartupLog.Write("Calibration manager: "+error);await Message("管理校准",error.Message);}
-        finally{_dialogOpen=false;_managerError=null;}
+        catch(Exception error){StartupLog.Write("Calibration manager: "+error);_coordinator.EndCalibrationManager();await Message("管理校准",error.Message);}
+        finally
+        {
+            _coordinator.EndCalibrationManager();_managerError=null;
+            if(InRecordingInputContext)_=DrainDeviceRefreshQueue();
+        }
     }
-    private async Task<ContentDialogResult> ShowDialog(ContentDialog dialog,bool duringClose=false)
+    private async Task<ContentDialogResult> ShowDialog(ContentDialog dialog,ModalKind kind=ModalKind.Message,bool duringClose=false)
     {
         if(dialog.Title is string title && dialog.Content is string body && NoticePresentation.RepeatsBody(title,body))
             dialog.Title=null;
-        if(_lifetime!=(duringClose?WindowLifetime.CleaningUp:WindowLifetime.Running))return ContentDialogResult.None;
+        if(!_coordinator.CanEnterModal(kind,duringClose))return ContentDialogResult.None;
         try
         {
             return await _dialogs.ShowAsync(async cancellation=>
             {
-                if(_lifetime!=(duringClose?WindowLifetime.CleaningUp:WindowLifetime.Running))return ContentDialogResult.None;
+                if(!_coordinator.TryEnterModal(kind,duringClose,out var previousOverlay))return ContentDialogResult.None;
                 _activeDialog=dialog;
                 using var registration=cancellation.Register(()=>
                 {
@@ -731,14 +760,16 @@ public sealed partial class MainWindow : Window
                     }
                     if(!shadeClosing)_dialogShadeFade.To(0,0);
                     if(ReferenceEquals(_activeDialog,dialog))_activeDialog=null;
+                    _coordinator.ExitModal(previousOverlay);
                 }
             },cleanupError:duringClose);
         }
         catch(OperationCanceledException)when(_closing){return ContentDialogResult.None;}
+        finally{if(InRecordingInputContext)_=DrainDeviceRefreshQueue();}
     }
     private async Task Message(string title,string text,bool duringClose=false)
     {
-        try{await ShowDialog(new ContentDialog{XamlRoot=_root.XamlRoot,Title=title,Content=text,CloseButtonText="关闭",RequestedTheme=ElementTheme.Dark},duringClose);}
+        try{await ShowDialog(new ContentDialog{XamlRoot=_root.XamlRoot,Title=title,Content=text,CloseButtonText="关闭",RequestedTheme=ElementTheme.Dark},ModalKind.Message,duringClose);}
         catch(Exception error){StartupLog.Write("Message dialog failed: "+error);if(!_closing)_serviceNotice.SetNotice(text,text);}
     }
     private async Task ActivateNotice(NoticeData notice)
@@ -791,25 +822,49 @@ public sealed partial class MainWindow : Window
         _=DrainDeviceRefreshQueue();
         // CompositionTarget drives drawing separately; the timer only updates XAML and commands.
     }
-    private async Task AudioCommand(Func<Task> command,bool modeInitialization=false)
+    private async Task<bool> AudioCommand(Func<Task> command,bool modeInitialization=false)
     {
-        if(_audioBusy || _closing || (WorkModeChanging&&!modeInitialization))return;
-        _audioBusy=true;
+        if(!_coordinator.TryBeginAudioCommand(modeInitialization))return false;
+        bool listeningScope=_state.IsListening;
+        var controls=listeningScope?_listeningControls:_recordingControls;
         _stopButton.IsEnabled=false;_pauseButton.IsEnabled=false;_discardButton.IsEnabled=false;
-        foreach(var control in _configuration)control.IsEnabled=false;
-        try{await command();}
-        catch(Exception error){StartupLog.Write("Audio command: "+error);if(_dialogOpen&&_managerError!=null){_managerError.Text=AudioEngine.Friendly(error);_managerError.Visibility=Visibility.Visible;}else await Message("音频服务",AudioEngine.Friendly(error));}
-        finally{_audioBusy=false;if(!_closing){_state.Refresh();RefreshSession(true);RefreshValues();SyncCalibration();SyncInputFormat();}}
+        foreach(var control in controls)control.IsEnabled=false;
+        bool succeeded=false;
+        try
+        {
+            await command();
+            succeeded=true;
+        }
+        catch(Exception error)
+        {
+            StartupLog.Write("Audio command: "+error);
+            if(_dialogOpen&&_managerError!=null){_managerError.Text=AudioEngine.Friendly(error);_managerError.Visibility=Visibility.Visible;}
+            else await Message("音频服务",AudioEngine.Friendly(error));
+        }
+        finally
+        {
+            _coordinator.EndAudioCommand();
+            if(!_closing)
+            {
+                _state.Refresh();
+                if(_state.IsListening)RefreshListening();
+                else{RefreshSession(true);SyncCalibration();SyncInputFormat();}
+                RefreshValues();
+                if(InRecordingInputContext)_=DrainDeviceRefreshQueue();
+            }
+        }
+        return succeeded;
     }
     private void SetRecordingMode(int index)
     {
         if(index<0||_closing)return;
         var mode=index==0?RecordingMode.Exclusive:RecordingMode.Shared;
         if(mode==_state.RecordMode)return;
+        _gainAlignGeneration++;
         _state.RecordMode=mode;
         SaveRecordingMode();
         _inputFormatViewKey=null;SyncInputFormat();
-        if(mode!=RecordingMode.Exclusive||_exclusiveNoticeShown||_exclusiveNoticePending)return;
+        if(mode!=RecordingMode.Exclusive||_exclusiveNoticeShown||_exclusiveNoticePending||!_coordinator.CanEnqueueExclusiveNotice())return;
         _exclusiveNoticePending=DispatcherQueue.TryEnqueue(async()=>await ShowExclusiveNotice());
     }
 
@@ -817,7 +872,7 @@ public sealed partial class MainWindow : Window
     {
         try
         {
-            if(_closing||_state.RecordMode!=RecordingMode.Exclusive)return;
+            if(_state.RecordMode!=RecordingMode.Exclusive||!_coordinator.CanEnqueueExclusiveNotice())return;
             var body=Design.Text("独占录制期间，Windows 和其他应用将无法同时使用这个麦克风。Windows 的麦克风软件增益也会失效，输入电平可能明显降低。如果电平偏低，请在主界面手动调高增益，并留意峰值，避免削波。");
             body.TextWrapping=TextWrapping.Wrap;
             var dialog=new ContentDialog{XamlRoot=_root.XamlRoot,Content=body,CloseButtonText="关闭",RequestedTheme=ElementTheme.Dark};
@@ -826,7 +881,7 @@ public sealed partial class MainWindow : Window
                 _exclusiveNoticeShown=true;
                 SaveRecordingMode();
             };
-            await ShowDialog(dialog);
+            await ShowDialog(dialog,ModalKind.ExclusiveNotice);
         }
         catch(Exception error){StartupLog.Write("Exclusive notice dialog failed: "+error);}
         finally{_exclusiveNoticePending=false;}
@@ -909,6 +964,7 @@ public sealed partial class MainWindow : Window
     }
     private void InvalidateRecordingInputQueries()
     {
+        _gainAlignGeneration++;
         _deviceRefreshTimer.Stop();
         _deviceRefresh.Invalidate();
         _formatQuery.Invalidate();
@@ -923,8 +979,7 @@ public sealed partial class MainWindow : Window
         return completion;
     }
 
-    private bool CanRefreshDevices(bool modeInitialization)=>InRecordingInputContext&&!_audioBusy&&
-        (modeInitialization||(!WorkModeChanging&&!_dialogOpen&&!_dialogs.IsBusy));
+    private bool CanRefreshDevices(bool modeInitialization)=>_coordinator.CanRefreshDevices(modeInitialization);
 
     private async Task DrainDeviceRefreshQueue()
     {
@@ -937,7 +992,10 @@ public sealed partial class MainWindow : Window
                 StartupLog.Write("Device refresh: "+error);
                 completion=Task.FromException(error);
             }
-            _deviceRefresh.Finish(request,completion);
+            _deviceRefresh.Finish(request,completion,()=>DispatcherQueue.TryEnqueue(()=>
+            {
+                if(InRecordingInputContext)_=DrainDeviceRefreshQueue();
+            }));
         }
     }
 
@@ -964,8 +1022,7 @@ public sealed partial class MainWindow : Window
             await request.WaitUntilReadyAsync();
         if(!InRecordingInputContext||request.Invalidated)return false;
 
-        bool applied=false;
-        await AudioCommand(async()=>
+        bool applied=await AudioCommand(async()=>
         {
             _devicesLoaded=false;
             try
@@ -979,11 +1036,10 @@ public sealed partial class MainWindow : Window
                 {
                     SyncSelectedInput(same?null:devices);
                     if(request.Manual)EnsureVolumeWatcher(force:true);
-                    applied=true;
                 }
             }
         },request.ModeInitialization);
-        return applied&&InRecordingInputContext&&!_state.Session.Active&&
+        return applied&&InRecordingInputContext&&!request.Invalidated&&!_state.Session.Active&&
             (request.Manual||_formatQuery.DeviceId!=_state.Audio.SelectedDevice?.Id||(!_formatQuery.Loading&&_formatQuery.Options==null));
     }
 
@@ -1006,14 +1062,14 @@ public sealed partial class MainWindow : Window
 
     private async Task CheckRawDecision()
     {
-        if(_closing||WorkModeChanging||_dialogOpen||_dialogs.IsBusy||_audioBusy||
+        if(!_coordinator.CanOpenRawDecision()||
             _state.Audio.PendingRawConsent is not { } consent||!_rawPrompt.TryBegin(consent.DecisionId))return;
         var decision=consent.DecisionId;
         try
         {
             var result=await ShowDialog(new ContentDialog{XamlRoot=_root.XamlRoot,Title="此设备未接受 RAW 请求",
                 Content="可允许当前设备在本次运行中使用普通共享监看，或停止监看。此许可不适用于正式录制；设备忙、权限和断开等错误不会降级。",
-                PrimaryButtonText="允许本次普通共享监看",CloseButtonText="停止监看",RequestedTheme=ElementTheme.Dark});
+                PrimaryButtonText="允许本次普通共享监看",CloseButtonText="停止监看",RequestedTheme=ElementTheme.Dark},ModalKind.RawDecision);
             if(_closing)return;
             if(await _state.Audio.DecideRawFallbackAsync(decision,result==ContentDialogResult.Primary))
                 _rawPrompt.Complete(decision);
@@ -1097,7 +1153,7 @@ public sealed partial class MainWindow : Window
         bool loadingFormats=currentDevice&&_formatQuery.Loading;
         var live=actual is{Exclusive:false}?actual.Format:formats?.Shared;
         var preferred=audio.PreferredInputFormat;
-        string key=$"{shared}|{audio.SelectedDevice?.Id}|{loadingFormats}|{formats?.GetHashCode()}|{live}|{preferred}|{actual?.Exclusive}|{actual?.Raw}|{_liveEndpointVolume}|{formatError}";
+        string key=$"{shared}|{audio.SelectedDevice?.Id}|{loadingFormats}|{formats?.GetHashCode()}|{live}|{preferred}|{actual?.Exclusive}|{actual?.Raw}|{_liveEndpointVolume}|{formatError}|{_coordinator.CanAlignWindowsGain(_state.RecordMode)&&!_state.Session.Active}";
         _inputFormatBox.IsEnabled=InputFormatPresentation.CanSelect(_state.RecordMode,audio.SelectedDevice!=null,loadingFormats,formats!=null,_audioBusy||WorkModeChanging,_state.Session.Active);
         if(key==_inputFormatViewKey)return;_inputFormatViewKey=key;_updatingInputFormat=true;
         string endpointGain=InputFormatPresentation.EndpointGain(_liveEndpointVolume,actual?.Exclusive==true);
@@ -1108,10 +1164,12 @@ public sealed partial class MainWindow : Window
         else if(shared)_modeGainHint.Inlines.Add(new Microsoft.UI.Xaml.Documents.Run{Text=InputFormatPresentation.FormatGain(volume!.Decibels)+" 的软件增益由 Windows 音频管理控制。"});
         else
         {
+            bool canAlign=_coordinator.CanAlignWindowsGain(_state.RecordMode)&&!_state.Session.Active;
             _modeGainHint.Inlines.Add(new Microsoft.UI.Xaml.Documents.Run{Text="欲对齐 Windows 软件增益后的电平，需 "});
-            var link=new Microsoft.UI.Xaml.Documents.Hyperlink{Foreground=_linkInk,UnderlineStyle=Microsoft.UI.Xaml.Documents.UnderlineStyle.None};
+            var link=new Microsoft.UI.Xaml.Documents.Hyperlink{Foreground=canAlign?_linkInk:Design.Brush(Design.Muted),UnderlineStyle=Microsoft.UI.Xaml.Documents.UnderlineStyle.None};
             link.Inlines.Add(new Microsoft.UI.Xaml.Documents.Run{Text=InputFormatPresentation.FormatGain(volume!.Decibels)});
-            link.Click+=async(_,_)=>await ApplyWindowsGain();_modeGainHint.Inlines.Add(link);
+            link.Click+=async(_,_)=>{if(_coordinator.CanAlignWindowsGain(_state.RecordMode)&&!_state.Session.Active)await ApplyWindowsGain();};
+            _modeGainHint.Inlines.Add(link);
             _modeGainHint.Inlines.Add(new Microsoft.UI.Xaml.Documents.Run{Text="。"});
         }
         ToolTipService.SetToolTip(_modeGainHint,"点击设置软件增益会立即影响监看与录音，可能造成削波。其他处理差异可能使电平不完全一致。");
@@ -1200,20 +1258,20 @@ public sealed partial class MainWindow : Window
     private async Task ApplyWindowsGain()
     {
         var device=_state.Audio.SelectedDevice;
-        if(device==null||_state.RecordMode!=RecordingMode.Exclusive||_closing||_state.IsListening||WorkModeChanging)return;
-        int query=_formatQuery.Version;
+        if(device==null||!_coordinator.CanAlignWindowsGain(_state.RecordMode)||_state.Session.Active)return;
+        int generation=++_gainAlignGeneration;
         try
         {
             var volume=await _state.Audio.QueryEndpointVolumeAsync(device);
-            if(_closing||_state.IsListening||WorkModeChanging||query!=_formatQuery.Version)return;
-            if(_state.Audio.SelectedDevice?.Id!=device.Id||_state.RecordMode!=RecordingMode.Exclusive){await Message("无法对齐增益","设备或录制模式已改变，请重新选择。");return;}
+            if(_closing||generation!=_gainAlignGeneration||!_coordinator.CanAlignWindowsGain(_state.RecordMode)||_state.Session.Active)return;
+            if(_state.Audio.SelectedDevice?.Id!=device.Id){await Message("无法对齐增益","设备或录制模式已改变，请重新选择。");return;}
             var error=InputFormatPresentation.AlignmentUnavailable(volume);
             if(error!=null){await Message("无法对齐增益",error);return;}
             _state.SetGain(volume.Decibels);_gain.Refresh();
         }
         catch(Exception error)
         {
-            if(!_closing&&!_state.IsListening&&!WorkModeChanging&&query==_formatQuery.Version)
+            if(!_closing&&generation==_gainAlignGeneration&&InRecordingInputContext)
                 await Message("无法对齐增益","读取 Windows 输入增益失败："+error.Message);
         }
     }
@@ -1267,7 +1325,7 @@ public sealed partial class MainWindow : Window
         animate &= _settings.AnimationsEnabled;
         _lastStage=stage;
         _clock.Text=_state.Session.DisplayTime;
-        foreach(var control in _configuration)control.IsEnabled=!active && !_audioBusy && !WorkModeChanging;
+        foreach(var control in _recordingControls)control.IsEnabled=!active && !_audioBusy && !WorkModeChanging;
         SyncCalibration();SyncInputFormat();UpdateQuality();
         var presentation=TransportPresentation.From(_state.Audio.Status.State,_audioBusy,_state.Audio.CalibrationReadyToRecord);
         _stopButton.IsEnabled=presentation.CanStop&&!WorkModeChanging;_pauseButton.IsEnabled=presentation.CanPause;_discardButton.IsEnabled=presentation.CanDiscard;
