@@ -225,7 +225,7 @@ public sealed class AudioEngine:IAsyncDisposable
                 }
             }
             var chosen=(!manualRefresh?added.FirstOrDefault():null)??current??devices.FirstOrDefault(d=>d.IsDefault)??devices.FirstOrDefault();
-            if(phase is EnginePhase.Suspended && interrupted==null)
+            if(phase is EnginePhase.Suspended && !manualRefresh && interrupted==null)
             {
                 bool suspendedConsent=ResolveDeviceConsent(oldDevice,PhaseNormalConsent(phase),chosen);
                 SetPhase(new EnginePhase.Suspended(chosen,suspendedConsent));

@@ -179,6 +179,8 @@ static class LifecycleChecks
             var second=new AudioDevice("second","Second suspended",false);
             await engine.ReconcileDevicesAsync([factory.Device,second]);
             Assert(engine.Status.State==AudioRunState.Stopped && opens==before && engine.SelectedDevice?.Id==second.Id,"Hotplug updates suspended selection without opening capture");
+            await engine.ReconcileDevicesAsync([factory.Device,second],manualRefresh:true);
+            Assert(engine.Status.State==AudioRunState.Monitoring && opens>before,"Manual reconciliation wakes a suspended monitor when returning from another mode");
         }
         {
             var factory=new FakeFactory();await using var engine=CreateEngine(root,factory);
