@@ -274,13 +274,13 @@ public sealed class MonitorRenderer : IDisposable
         using var chart=new CanvasCommandList(sender);
         using(var ink=chart.CreateDrawingSession())
         {
-            using var brush=new CanvasLinearGradientBrush(sender,[Stop(0,A(Design.Gold,.84)),Stop(.14f,A(Design.Gold,.58)),Stop(.42f,A(Amber,.30)),Stop(.76f,A(Amber,.075)),Stop(1,A(Amber,0))]);
+            using var brush=new CanvasLinearGradientBrush(sender,[Stop(0,A(Design.Gold,.80)),Stop(.16f,A(Design.Gold,.54)),Stop(.45f,A(Amber,.28)),Stop(.78f,A(Amber,.11)),Stop(1,A(Amber,.04))]);
             foreach(var point in _drawSpectrum)
             {
-                float depth=Math.Max(1,Math.Min((bottom-top)*.46f,bottom-point.Y));
-                brush.StartPoint=point;brush.EndPoint=point+new Vector2(0,depth);
+                float span=Math.Max(1,bottom-point.Y);
+                brush.StartPoint=point;brush.EndPoint=new(point.X,point.Y+span);
                 brush.Opacity=(float)(.84+.16*Math.Cos((point.X-left)*Math.PI));
-                ink.FillRectangle(point.X,point.Y,1.1f,bottom-point.Y,brush);
+                ink.FillRectangle(point.X,point.Y,1.1f,span,brush);
             }
             using var curve=Path(sender,_drawSpectrum);
             double level=Math.Clamp((state.Snapshot.RmsDbfs+60)/54,0,1);float bloom=(float)(level*level);
