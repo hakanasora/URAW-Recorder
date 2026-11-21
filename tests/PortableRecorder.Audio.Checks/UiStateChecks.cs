@@ -155,7 +155,38 @@ static class UiStateChecks
         await CheckInputQueries(check);
         await CalibrationCollectionChecks(root,check);
         CoordinatorChecks(check);
+        MonitorToggleVisualChecks(check);
         await ShellViewModelSnapshotChecks(root,check);
+    }
+
+    private static void MonitorToggleVisualChecks(Action<bool,string> check)
+    {
+        var transparent=Windows.UI.Color.FromArgb(0,255,255,255);
+        var muted=Windows.UI.Color.FromArgb(255,0x86,0x86,0x8B);
+        var grid=Windows.UI.Color.FromArgb(255,0x29,0x29,0x2C);
+        var pressed=Windows.UI.Color.FromArgb(255,0x1F,0x1F,0x22);
+        var white=Windows.UI.Color.FromArgb(255,0xF5,0xF5,0xF7);
+
+        var unlitDefault=RecordingMonitorPresentation.ResolveToggleVisual(enabled:false,hovering:false,pressed:false);
+        check(unlitDefault==new ToggleVisualColors(transparent,transparent,muted),"Unlit toggle default uses transparent surface, no border, and muted icon");
+
+        var unlitHover=RecordingMonitorPresentation.ResolveToggleVisual(enabled:false,hovering:true,pressed:false);
+        check(unlitHover==new ToggleVisualColors(grid,transparent,muted),"Unlit toggle hover fills Grid background without border while icon stays muted");
+
+        foreach(bool hovering in new[]{false,true})
+        {
+            var unlitPressed=RecordingMonitorPresentation.ResolveToggleVisual(enabled:false,hovering,pressed:true);
+            check(unlitPressed==new ToggleVisualColors(pressed,transparent,muted),"Unlit toggle pressed darkens fill without border and keeps muted icon");
+        }
+
+        foreach(bool hovering in new[]{false,true})
+        {
+            var lit=RecordingMonitorPresentation.ResolveToggleVisual(enabled:true,hovering,pressed:false);
+            check(lit==new ToggleVisualColors(grid,transparent,white),"Lit toggle permanently fills Grid background without border and illuminates icon");
+
+            var litPressed=RecordingMonitorPresentation.ResolveToggleVisual(enabled:true,hovering,pressed:true);
+            check(litPressed==new ToggleVisualColors(pressed,transparent,white),"Lit toggle pressed darkens fill without border while icon stays illuminated");
+        }
     }
 
     private static async Task CheckInputQueries(Action<bool,string> check)

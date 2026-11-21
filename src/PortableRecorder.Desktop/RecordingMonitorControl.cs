@@ -12,6 +12,8 @@ namespace PortableRecorder.Desktop;
 
 public sealed class RecordingMonitorControl : Grid
 {
+    private enum RevealPhase { Collapsed, Opening, Open, Closing }
+
     private const double KnobMarginLeft = 8;
     private readonly ShellViewModel _state;
     private readonly Button _toggle;
@@ -20,12 +22,16 @@ public sealed class RecordingMonitorControl : Grid
     private readonly RectangleGeometry _revealClip = new();
     private readonly GainControl _knob;
     private readonly NativeTween _reveal;
+    private RevealPhase _phase = RevealPhase.Collapsed;
     private bool _hovering;
     private bool _pressed;
     private bool _toggling;
     private bool? _lastEnabled;
 
     private double RevealedWidth => KnobMarginLeft + _knob.VisualRightEdge + 4;
+
+    internal static ToggleVisualColors ResolveToggleVisual(bool enabled, bool hovering, bool pressed) =>
+        RecordingMonitorPresentation.ResolveToggleVisual(enabled, hovering, pressed);
 
     public RecordingMonitorControl(ShellViewModel state, Func<bool> animationsEnabled, Func<bool, Task> onToggleRequested)
     {
@@ -62,9 +68,20 @@ public sealed class RecordingMonitorControl : Grid
             """);
         _toggle.PointerEntered += (_, _) => { _hovering = true; ApplyToggleVisual(); };
         _toggle.PointerExited += (_, _) => { _hovering = false; _pressed = false; ApplyToggleVisual(); };
-        _toggle.PointerPressed += (_, _) => { _pressed = true; ApplyToggleVisual(); };
-        _toggle.PointerReleased += (_, _) => { _pressed = false; ApplyToggleVisual(); };
+        _toggle.AddHandler(UIElement.PointerPressedEvent, new PointerEventHandler((_, args) =>
+        {
+            if (!args.GetCurrentPoint(_toggle).Properties.IsLeftButtonPressed) return;
+            _pressed = true;
+            ApplyToggleVisual();
+        }), true);
+        _toggle.AddHandler(UIElement.PointerReleasedEvent, new PointerEventHandler((_, _) =>
+        {
+            if (!_pressed) return;
+            _pressed = false;
+            ApplyToggleVisual();
+        }), true);
         _toggle.PointerCanceled += (_, _) => { _hovering = false; _pressed = false; ApplyToggleVisual(); };
+        _toggle.PointerCaptureLost += (_, _) => { _pressed = false; ApplyToggleVisual(); };
         _toggle.Click += async (_, _) =>
         {
             if (_toggling) return;
@@ -113,19 +130,9 @@ public sealed class RecordingMonitorControl : Grid
                 _revealHost.Width = clamped;
                 _revealClip.Rect = new Rect(0, 0, clamped, 44);
             },
-            milliseconds: 360,
-            x1: .25, y1: .1, x2: .25, y2: 1,
-            completed: () =>
-            {
-                if (!_state.RecordingMonitorEnabled)
-                    _revealHost.Visibility = Visibility.Collapsed;
-            });
-
-        _knob.VisualWidthChanged += () =>
-        {
-            if (_state.RecordingMonitorEnabled)
-                _reveal.To(RevealedWidth);
-        };
+            milliseconds: 260,
+            x1: .22, y1: 1, x2: .36, y2: 1,
+            completed: CompleteReveal);
 
         Children.Add(_toggle);
         Children.Add(_revealHost);
@@ -149,41 +156,83 @@ public sealed class RecordingMonitorControl : Grid
         AutomationProperties.SetName(_toggle, enabled ? "关闭监听" : "开启监听");
         ToolTipService.SetToolTip(_toggle, enabled ? "正在监听，点击关闭" : "开启录制监听");
 
-        if (!enabled) _knob.CancelInteraction();
-        if (enabled)
+        if (enabled) OpenReveal(animate);
+        else CloseReveal(animate);
+    }
+
+    private void OpenReveal(bool animate)
+    {
+        if (!animate)
         {
-            if (_revealHost.Visibility != Visibility.Visible)
-            {
-                _reveal.Jump(0);
-                _revealHost.Visibility = Visibility.Visible;
-            }
-            if (animate) _reveal.To(RevealedWidth);
-            else _reveal.Jump(RevealedWidth);
+            _phase = RevealPhase.Open;
+            _reveal.Stop();
+            _revealHost.Clip = null;
+            _revealHost.Width = double.NaN;
+            _revealHost.Visibility = Visibility.Visible;
+            return;
         }
-        else if (animate)
+
+        if (_phase == RevealPhase.Open) return;
+        if (_phase == RevealPhase.Collapsed)
         {
-            _reveal.To(0);
-        }
-        else
-        {
+            _revealClip.Rect = new Rect(0, 0, 0, 44);
+            _revealHost.Clip = _revealClip;
+            _revealHost.Width = double.NaN;
+            _revealHost.Visibility = Visibility.Visible;
+            UpdateLayout();
+            double target = RevealedWidth;
             _reveal.Jump(0);
+            _phase = RevealPhase.Opening;
+            _reveal.To(target);
+            return;
+        }
+
+        _phase = RevealPhase.Opening;
+        _reveal.To(RevealedWidth);
+    }
+
+    private void CloseReveal(bool animate)
+    {
+        _knob.CancelInteraction();
+        if (!animate || _phase == RevealPhase.Collapsed)
+        {
+            _phase = RevealPhase.Collapsed;
+            _reveal.Jump(0);
+            _revealHost.Clip = _revealClip;
             _revealHost.Visibility = Visibility.Collapsed;
+            return;
+        }
+
+        double startWidth = _phase == RevealPhase.Open
+            ? Math.Max(_revealHost.ActualWidth, RevealedWidth)
+            : Math.Max(0, _reveal.Current);
+        _phase = RevealPhase.Closing;
+        _revealHost.Clip = _revealClip;
+        _reveal.Jump(startWidth);
+        _reveal.To(0);
+    }
+
+    private void CompleteReveal()
+    {
+        switch (_phase)
+        {
+            case RevealPhase.Opening:
+                _phase = RevealPhase.Open;
+                _revealHost.Width = double.NaN;
+                _revealHost.Clip = null;
+                break;
+            case RevealPhase.Closing:
+                _phase = RevealPhase.Collapsed;
+                _revealHost.Visibility = Visibility.Collapsed;
+                break;
         }
     }
 
     private void ApplyToggleVisual()
     {
-        if (_state.RecordingMonitorEnabled)
-        {
-            _toggle.Background = Design.Brush(_pressed ? Design.Hex("1F1F22") : Design.Grid);
-            _toggle.BorderBrush = Design.Brush(Design.White);
-            _icon.Foreground = Design.Brush(Design.White);
-        }
-        else
-        {
-            _toggle.Background = Design.Brush(_pressed ? Design.Hex("1F1F22") : _hovering ? Design.Grid : Colors.Transparent);
-            _toggle.BorderBrush = Design.Brush(Colors.Transparent);
-            _icon.Foreground = Design.Brush(_hovering ? Design.White : Design.Muted);
-        }
+        var colors = ResolveToggleVisual(_state.RecordingMonitorEnabled, _hovering, _pressed);
+        _toggle.Background = Design.Brush(colors.Background);
+        _toggle.BorderBrush = Design.Brush(colors.Border);
+        _icon.Foreground = Design.Brush(colors.Foreground);
     }
 }

@@ -77,3 +77,23 @@ internal sealed class RawDecisionPrompt
         if (_showing == decision) _showing = null;
     }
 }
+
+internal readonly record struct ToggleVisualColors(
+    Windows.UI.Color Background,
+    Windows.UI.Color Border,
+    Windows.UI.Color Foreground);
+
+internal static class RecordingMonitorPresentation
+{
+    private static readonly Windows.UI.Color Transparent = Windows.UI.Color.FromArgb(0, 255, 255, 255);
+    private static readonly Windows.UI.Color Muted = Windows.UI.Color.FromArgb(255, 0x86, 0x86, 0x8B);
+    private static readonly Windows.UI.Color Grid = Windows.UI.Color.FromArgb(255, 0x29, 0x29, 0x2C);
+    private static readonly Windows.UI.Color Pressed = Windows.UI.Color.FromArgb(255, 0x1F, 0x1F, 0x22);
+    private static readonly Windows.UI.Color White = Windows.UI.Color.FromArgb(255, 0xF5, 0xF5, 0xF7);
+
+    public static ToggleVisualColors ResolveToggleVisual(bool enabled, bool hovering, bool pressed) =>
+        new(
+            Background: pressed ? Pressed : enabled || hovering ? Grid : Transparent,
+            Border: Transparent,
+            Foreground: enabled ? White : Muted);
+}
