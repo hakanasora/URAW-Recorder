@@ -73,6 +73,7 @@ public sealed class ShellViewModel:INotifyPropertyChanged
         ModePreferenceWarning=modeWarning;ExclusiveNoticeShown=exclusiveNoticeShown;
         EncodingSettings=EncodingPreferences.Load(out var encodingWarning);EncodingPreferenceWarning=encodingWarning;
         RecordingMonitorDb=MonitorPreferences.Load(_monitorPreferencesPath);
+        Audio.SetLiveMonitorGain(RecordingMonitorDb);
         Encoding=EncodingSettings.Encoding;RefreshCalibrations();
     }
     public void RefreshCalibrations()
@@ -103,10 +104,22 @@ public sealed class ShellViewModel:INotifyPropertyChanged
         if(IsListening){_listenGain=GainDb;Listener.SetGain(GainDb);}
         else{_recordGain=GainDb;Audio.SetGain(GainDb);}Notify();
     }
-    public void SetRecordingMonitorEnabled(bool enabled)
+    public async Task SetRecordingMonitorEnabledAsync(bool enabled)
     {
-        if(RecordingMonitorEnabled==enabled)return;
-        RecordingMonitorEnabled=enabled;
+        try
+        {
+            await Audio.SetLiveMonitorEnabledAsync(enabled);
+        }
+        finally
+        {
+            SyncRecordingMonitorState();
+        }
+    }
+    public void SyncRecordingMonitorState()
+    {
+        bool actual=Audio.LiveMonitor.Enabled;
+        if(RecordingMonitorEnabled==actual)return;
+        RecordingMonitorEnabled=actual;
         Notify();
     }
     public void SetRecordingMonitorGain(double db)
@@ -115,6 +128,7 @@ public sealed class ShellViewModel:INotifyPropertyChanged
         double normalized=NormalizeGainDb(db);
         if(RecordingMonitorDb==normalized)return;
         RecordingMonitorDb=normalized;
+        Audio.SetLiveMonitorGain(RecordingMonitorDb);
         Notify();
     }
     public void SaveRecordingMonitorPreferences()

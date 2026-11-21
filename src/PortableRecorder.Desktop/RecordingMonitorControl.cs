@@ -22,11 +22,12 @@ public sealed class RecordingMonitorControl : Grid
     private readonly NativeTween _reveal;
     private bool _hovering;
     private bool _pressed;
+    private bool _toggling;
     private bool? _lastEnabled;
 
     private double RevealedWidth => KnobMarginLeft + _knob.VisualRightEdge + 4;
 
-    public RecordingMonitorControl(ShellViewModel state, Func<bool> animationsEnabled)
+    public RecordingMonitorControl(ShellViewModel state, Func<bool> animationsEnabled, Func<bool, Task> onToggleRequested)
     {
         _state = state;
         Height = 44;
@@ -64,10 +65,19 @@ public sealed class RecordingMonitorControl : Grid
         _toggle.PointerPressed += (_, _) => { _pressed = true; ApplyToggleVisual(); };
         _toggle.PointerReleased += (_, _) => { _pressed = false; ApplyToggleVisual(); };
         _toggle.PointerCanceled += (_, _) => { _hovering = false; _pressed = false; ApplyToggleVisual(); };
-        _toggle.Click += (_, _) =>
+        _toggle.Click += async (_, _) =>
         {
-            _state.SetRecordingMonitorEnabled(!_state.RecordingMonitorEnabled);
-            Refresh(animate: true);
+            if (_toggling) return;
+            _toggling = true;
+            try
+            {
+                await onToggleRequested(!_state.RecordingMonitorEnabled);
+            }
+            finally
+            {
+                _toggling = false;
+                Refresh(animate: true);
+            }
         };
 
         _knob = new GainControl(new GainControlOptions(

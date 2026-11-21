@@ -99,7 +99,12 @@ public sealed partial class MainWindow
             else
             {
                 try{await _state.Audio.SuspendMonitoringAsync();}
-                finally{StopVolumeWatcher();}
+                finally
+                {
+                    StopVolumeWatcher();
+                    _state.SyncRecordingMonitorState();
+                    _monitorControl.Refresh(animate:false);
+                }
             }
             if(_closing)return;
             _listenRefreshRequest=null;
@@ -186,8 +191,10 @@ public sealed partial class MainWindow
     private void UpdateWorkModeSurface()
     {
         bool listening=_state.IsListening;
+        _state.SyncRecordingMonitorState();
         _monitorControl.Visibility=listening?Visibility.Collapsed:Visibility.Visible;
         if(listening)_monitorControl.CancelEdit();
+        _monitorControl.Refresh(animate:false);
         _paneSelector.Visibility=listening?Visibility.Collapsed:Visibility.Visible;
         _listenHeading.Visibility=listening?Visibility.Visible:Visibility.Collapsed;
         _listenHost.Visibility=listening?Visibility.Visible:Visibility.Collapsed;

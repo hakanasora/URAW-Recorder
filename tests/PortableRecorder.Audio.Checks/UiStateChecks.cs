@@ -226,7 +226,7 @@ static class UiStateChecks
         string directory=Path.Combine(root,"ui-calibration-collection");Directory.CreateDirectory(directory);
         var library=new CalibrationLibrary(Path.Combine(directory,"library"));
         var factory=new FakeFactory();
-        await using var engine=new AudioEngine(factory,library,inputFormats:new(Path.Combine(directory,"formats.json")));
+        await using var engine=new AudioEngine(factory,library,inputFormats:new(Path.Combine(directory,"formats.json")),liveMonitorFactory:new FakeLiveMonitorFactory());
         await engine.SelectDeviceAsync(factory.Device);
         CalibrationLibrary.Entry Import(string name)
         {
@@ -263,7 +263,9 @@ static class UiStateChecks
 
     private static async Task ShellViewModelSnapshotChecks(string root,Action<bool,string> check)
     {
-        var factory=new FakeFactory();await using var audio=TestSupport.CreateEngine(root,factory);
+        var factory=new FakeFactory();var monitorFactory=new FakeLiveMonitorFactory();
+        await using var audio=TestSupport.CreateEngine(root,factory,liveMonitorFactory:monitorFactory);
+        await audio.SelectDeviceAsync(factory.Device);
         var vm=new ShellViewModel(audio,Path.Combine(root,"initial-monitor.json"));await using var listener=vm.Listener;
         check(!vm.IsListening && vm.CurrentAudioSnapshot.Epoch==audio.Latest.Epoch,"Recording mode exposes Audio.Latest directly");
         vm.Session.Update(AudioRunState.Paused,TimeSpan.FromSeconds(12));
@@ -273,27 +275,49 @@ static class UiStateChecks
         vm.SetWorkMode(false);
         vm.Refresh();
         check(!vm.IsListening && vm.Session.Stage==RecordingStage.Ready,"Returning to recording mode resumes syncing TransportSession from Audio");
-        check(!vm.RecordingMonitorEnabled && vm.RecordingMonitorDb==0,"Recording monitor defaults to disabled at 0 dB");
-        vm.SetRecordingMonitorEnabled(true);
+        check(!vm.RecordingMonitorEnabled && vm.RecordingMonitorDb==0 && monitorFactory.OpenCount==0,"Recording monitor defaults to disabled at 0 dB without opening playback");
+
+        await vm.SetRecordingMonitorEnabledAsync(true);
+        check(vm.RecordingMonitorEnabled && audio.LiveMonitor.Enabled && monitorFactory.OpenCount==1,"SetRecordingMonitorEnabledAsync(true) activates backend output");
         vm.SetRecordingMonitorGain(72);
         check(vm.RecordingMonitorEnabled && vm.RecordingMonitorDb==60,"Recording monitor gain clamps upper bound to +60 dB");
         vm.SetRecordingMonitorGain(-6.54);
         check(vm.RecordingMonitorDb==-6.5,"Recording monitor gain rounds cleanly to 0.1 dB within -60..+60");
+        factory.Push([0.5f,0.5f,0.5f,0.5f]);
+        await TestSupport.Until(()=>monitorFactory.Current!.WriteCount>0,"monitor receives packet after gain change");
+        check(Math.Abs(monitorFactory.Current!.LastLinearGain-Math.Pow(10,-6.5/20))<1e-6,"SetRecordingMonitorGain pushes linear gain to AudioEngine backend");
         vm.SetRecordingMonitorGain(-75);
         check(vm.RecordingMonitorDb==-60,"Recording monitor gain clamps lower bound to -60 dB");
         vm.SetRecordingMonitorGain(double.NaN);
         check(vm.RecordingMonitorDb==-60,"Non-finite recording monitor gain is ignored");
+        await vm.SetRecordingMonitorEnabledAsync(false);
+        check(!vm.RecordingMonitorEnabled && !audio.LiveMonitor.Enabled && monitorFactory.Current.Disposed,"SetRecordingMonitorEnabledAsync(false) closes backend output");
+
+        await vm.SetRecordingMonitorEnabledAsync(true);
+        await audio.SuspendMonitoringAsync();
+        vm.SyncRecordingMonitorState();
+        check(!vm.RecordingMonitorEnabled && !audio.LiveMonitor.Enabled,"SyncRecordingMonitorState reflects auto-off after SuspendMonitoringAsync");
 
         string monitorPrefPath=Path.Combine(root,"recording-monitor.json");
-        var prefVm=new ShellViewModel(audio,monitorPrefPath);
+        var prefMonitorFactory=new FakeLiveMonitorFactory();
+        await using var prefAudio=TestSupport.CreateEngine(root,new FakeFactory(),liveMonitorFactory:prefMonitorFactory);
+        var prefVm=new ShellViewModel(prefAudio,monitorPrefPath);await using var prefListener=prefVm.Listener;
         check(!prefVm.RecordingMonitorEnabled && prefVm.RecordingMonitorDb==0,"Missing monitor preference starts disabled at 0 dB");
-        prefVm.SetRecordingMonitorEnabled(true);
+        await prefVm.SetRecordingMonitorEnabledAsync(true);
         prefVm.SetRecordingMonitorGain(-12.5);
         prefVm.SaveRecordingMonitorPreferences();
 
-        var restartedVm=new ShellViewModel(audio,monitorPrefPath);
-        check(!restartedVm.RecordingMonitorEnabled && restartedVm.RecordingMonitorDb==-12.5,
+        var restartCapture=new FakeFactory();var restartMonitor=new FakeLiveMonitorFactory();
+        await using var restartAudio=TestSupport.CreateEngine(root,restartCapture,liveMonitorFactory:restartMonitor);
+        await restartAudio.SelectDeviceAsync(restartCapture.Device);
+        var restartedVm=new ShellViewModel(restartAudio,monitorPrefPath);await using var restartedListener=restartedVm.Listener;
+        check(!restartedVm.RecordingMonitorEnabled && restartedVm.RecordingMonitorDb==-12.5 && restartMonitor.OpenCount==0,
             "Restart resets monitor toggle to disabled while restoring saved dB gain");
+        await restartedVm.SetRecordingMonitorEnabledAsync(true);
+        restartCapture.Push([0.5f,0.5f,0.5f,0.5f]);
+        await TestSupport.Until(()=>restartMonitor.Current!.WriteCount>0,"restarted monitor receives initial packet");
+        check(Math.Abs(restartMonitor.Current!.LastLinearGain-Math.Pow(10,-12.5/20))<1e-6,
+            "Cold start pushes saved RecordingMonitorDb to backend before monitor is enabled");
 
         File.WriteAllText(monitorPrefPath,"{broken-json");
         check(MonitorPreferences.Load(monitorPrefPath)==0,"Corrupt monitor preference safely resets to 0 dB");
@@ -330,18 +354,24 @@ static class UiStateChecks
         check(!coord.TryBeginModeSwitch(WorkMode.Listening,false),"Mode switch blocked while FolderPicker open");
         coord.EndFolderPicker();
 
+        check(coord.CanEnqueueMonitorCalibrationNotice(),"MonitorCalibrationNotice can enqueue in idle Recording mode");
+        check(coord.TryEnterModal(ModalKind.MonitorCalibrationNotice,false,out var prevMonCal),"MonitorCalibrationNotice enters modal in idle Recording mode");
+        check(!coord.CanEnqueueMonitorCalibrationNotice()&&!coord.CanEnterModal(ModalKind.MonitorCalibrationNotice,false),"MonitorCalibrationNotice blocked while another modal is open");
+        coord.ExitModal(prevMonCal);
+        check(coord.Overlay is OverlayState.None,"Exiting MonitorCalibrationNotice clears Overlay");
+
         check(coord.TryBeginModeSwitch(WorkMode.Listening,false),"Switching to Listening permitted when idle");
         check(!coord.CanEnableWorkModeSelector(active:false),"Work mode selector disabled while switching modes");
         check(!coord.TryEnterModal(ModalKind.RawDecision,false,out _),"RawDecision declined cleanly once mode switch begins");
         check(!coord.TryBeginAudioCommand(modeInitialization:false),"Normal audio command rejected during pre-commit mode switch");
-        check(!coord.CanOpenRawDecision()&&!coord.CanEnqueueExclusiveNotice(),"RAW/exclusive notices blocked while switching to Listening");
+        check(!coord.CanOpenRawDecision()&&!coord.CanEnqueueExclusiveNotice()&&!coord.CanEnqueueMonitorCalibrationNotice(),"RAW/exclusive/monitor notices blocked while switching to Listening");
         coord.CommitModeSwitch(WorkMode.Listening);
         check(!coord.InRecordingInputContext,"Committed Listening mode leaves recording input context");
         check(coord.CanRefreshListeningSources(modeInitialization:true,listeningActive:false,refreshInFlight:false),"Listening init refresh permitted after commit");
         check(!coord.CanRefreshListeningSources(modeInitialization:false,listeningActive:false,refreshInFlight:false),"User listening refresh blocked while switching still finishes");
         coord.EndModeSwitch();
         check(coord.CanEnableWorkModeSelector(active:false)&&!coord.CanEnableWorkModeSelector(active:true),"Work mode selector disables while listening or recording is active and re-enables once stopped");
-        check(!coord.TryEnterModal(ModalKind.ExclusiveNotice,false,out _),"Queued ExclusiveNotice rejected after mode switched to Listening");
+        check(!coord.TryEnterModal(ModalKind.ExclusiveNotice,false,out _)&&!coord.TryEnterModal(ModalKind.MonitorCalibrationNotice,false,out _),"Queued ExclusiveNotice and MonitorCalibrationNotice rejected after mode switched to Listening");
         check(!coord.TryBeginCalibrationManager(false)&&!coord.TryBeginFolderPicker(false),"Recording overlays rejected in Listening mode");
         check(coord.CanRefreshListeningSources(modeInitialization:false,listeningActive:false,refreshInFlight:false),"Manual listening refresh permitted once idle in Listening");
 

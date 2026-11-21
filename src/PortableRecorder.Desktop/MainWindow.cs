@@ -102,6 +102,7 @@ public sealed partial class MainWindow : Window
     private bool _audioBusy=>_coordinator.AudioBusy;
     private bool _dialogOpen=>_coordinator.CalibrationManagerOpen;
     private bool _exclusiveNoticeShown,_exclusiveNoticePending;
+    private bool _monitorCalibrationNoticeShown,_monitorCalibrationNoticePending;
     private int _gainAlignGeneration;
     private AudioRunState? _lastAudioState;
     private readonly DialogQueue _dialogs=new();
@@ -136,6 +137,7 @@ public sealed partial class MainWindow : Window
         Title="URAW Recorder";ExtendsContentIntoTitleBar=true;
         AppWindow.SetIcon(System.IO.Path.Combine(AppContext.BaseDirectory,"Assets","URAWRecorder.ico"));
         _state.Audio.Diagnostic+=StartupLog.Write;
+        _state.Audio.LiveMonitorFaulted+=OnLiveMonitorFaulted;
         _startupPresentation=new StartupPresentation(this);
         _frame=new FixedWindowFrame(this,()=>_root.XamlRoot?.RasterizationScale??FixedWindowFrame.NativeScale(this));
         _frame.Initialize();
@@ -177,7 +179,7 @@ public sealed partial class MainWindow : Window
         _transport.Background=Design.Brush(displaySurface);
         _transport.Children.Add(new Border{Height=1,Background=Design.Brush(MaterialSurface.Tint(Colors.White,14)),VerticalAlignment=VerticalAlignment.Top,IsHitTestVisible=false});
         _gain=new(_state){Width=96,HorizontalAlignment=HorizontalAlignment.Left,VerticalAlignment=VerticalAlignment.Center,Margin=new Thickness(190,0,0,0)};_transport.Children.Add(_gain);
-        _monitorControl=new(_state,()=>_settings.AnimationsEnabled){Margin=new Thickness(262,0,0,0)};_transport.Children.Add(_monitorControl);
+        _monitorControl=new(_state,()=>_settings.AnimationsEnabled,ToggleRecordingMonitorAsync){Margin=new Thickness(262,0,0,0)};_transport.Children.Add(_monitorControl);
         _inputName.HorizontalAlignment=HorizontalAlignment.Left;
         _inputName.VerticalAlignment=VerticalAlignment.Center;
         _inputName.Margin=new Thickness(28,0,0,0);
@@ -299,6 +301,7 @@ public sealed partial class MainWindow : Window
                 _=_state.Audio.DisposeAsync();
             }
             _coordinator.MarkClosed();
+            _state.Audio.LiveMonitorFaulted-=OnLiveMonitorFaulted;
             _dialogs.Close();_drawer.Dispose();_settings.ColorValuesChanged-=OnSystemColorsChanged;_settings.AnimationsEnabledChanged-=OnAnimationsChanged;_settings.TextScaleFactorChanged-=OnTextScaleChanged;if(_root.XamlRoot!=null)_root.XamlRoot.Changed-=OnXamlRootChanged;CompositionTarget.Rendering-=OnRendering;_inputName.ReleaseResources();_monitorControl.ReleaseResources();_monitorPushTween.Stop();_serviceNotice.ReleaseResources();_timer.Stop();_widthAnimation?.Stop();_monitorFade.Stop();_clockFade.Stop();_statusFade.Stop();_primaryFade.Stop();_pauseFade.Stop();_dialogShadeFade.Stop();ReleaseRenderSurface();_renderer.Dispose();
         };Content=_root;
     }
@@ -912,6 +915,71 @@ public sealed partial class MainWindow : Window
         finally{_exclusiveNoticePending=false;}
     }
 
+    private async Task ToggleRecordingMonitorAsync(bool enable)
+    {
+        if(_closing||_state.IsListening)return;
+        try
+        {
+            await _state.SetRecordingMonitorEnabledAsync(enable);
+            if(_closing)return;
+            _monitorControl.Refresh(animate:true);
+            if(_state.RecordingMonitorEnabled)MaybeEnqueueMonitorCalibrationNotice();
+        }
+        catch(Exception error)
+        {
+            StartupLog.Write("Live monitor toggle failed: "+error);
+            _state.SyncRecordingMonitorState();
+            _monitorControl.Refresh(animate:true);
+            if(!_closing)await Message(enable?"无法开启监听":"关闭监听失败",AudioEngine.Friendly(error));
+        }
+    }
+
+    private void OnLiveMonitorFaulted(string reason)
+    {
+        if(_closing)return;
+        DispatcherQueue.TryEnqueue(async()=>
+        {
+            if(_closing)return;
+            _state.SyncRecordingMonitorState();
+            _monitorControl.Refresh(animate:true);
+            await Message("监听已关闭",reason);
+        });
+    }
+
+    private void MaybeEnqueueMonitorCalibrationNotice()
+    {
+        if(_closing||_monitorCalibrationNoticeShown||_monitorCalibrationNoticePending||!_state.RecordingMonitorEnabled)return;
+        var status=_state.Audio.Calibration;
+        if(!status.Applied||status.LatencyFrames<=0||!_coordinator.CanEnqueueMonitorCalibrationNotice())return;
+        _monitorCalibrationNoticePending=DispatcherQueue.TryEnqueue(async()=>await ShowMonitorCalibrationNotice());
+    }
+
+    private async Task ShowMonitorCalibrationNotice()
+    {
+        try
+        {
+            if(_closing||_monitorCalibrationNoticeShown||!_state.RecordingMonitorEnabled)return;
+            var status=_state.Audio.Calibration;
+            if(!status.Applied||status.LatencyFrames<=0||!_coordinator.CanEnqueueMonitorCalibrationNotice())return;
+            int latencyMs=(int)Math.Round(status.LatencyFrames*1000.0/Math.Max(1,status.SampleRate));
+            string profile=string.IsNullOrWhiteSpace(status.Name)?"当前频响校准":$"“{status.Name}”";
+            var body=Design.Text($"当前已启用频响校准（{profile}），监听信号会经过校准滤波器，将引入约 {latencyMs} ms 的固定监听延迟。\n\n这不会影响录音文件与频响校准精度；若希望获得更低的实时监听延迟，可在设置中临时禁用校准。");
+            body.TextWrapping=TextWrapping.Wrap;
+            var dialog=new ContentDialog
+            {
+                XamlRoot=_root.XamlRoot,
+                Title="启用校准会引入监听延迟",
+                Content=body,
+                CloseButtonText="我知道了",
+                RequestedTheme=ElementTheme.Dark
+            };
+            dialog.Opened+=(_,_)=>_monitorCalibrationNoticeShown=true;
+            await ShowDialog(dialog,ModalKind.MonitorCalibrationNotice);
+        }
+        catch(Exception error){StartupLog.Write("Monitor calibration notice dialog failed: "+error);}
+        finally{_monitorCalibrationNoticePending=false;}
+    }
+
     private void SaveRecordingMode()
     {
         try{RecordingPreferences.Save(_state.RecordMode,exclusiveNoticeShown:_exclusiveNoticeShown);_modePreferenceWarning=null;}
@@ -1133,6 +1201,7 @@ public sealed partial class MainWindow : Window
             ToolTipService.SetToolTip(_calibrationHeading,_calibrationDescription);
         }
         _calibrationBox.IsEnabled=choice.Enabled&&_state.Calibrations.Count>0&&!_state.Session.Active&&!_audioBusy&&!WorkModeChanging;
+        MaybeEnqueueMonitorCalibrationNotice();
     }
     private string CalibrationDescription()=>_calibrationDescription;
     private static string DescribeCalibration(CalibrationStatus status,CalibrationLibrary.Selection choice)
