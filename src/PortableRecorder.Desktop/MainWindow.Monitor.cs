@@ -100,7 +100,11 @@ public sealed partial class MainWindow
             if (_state.RecordMode != RecordingMode.Exclusive || _exclusiveNoticeShown || !_coordinator.CanEnqueueRecordingNotice()) return;
             await ShowRecordingNoticeDialogAsync(
                 null,
-                "选择独占模式后，应用会立即独占麦克风，待机和停止录制后也会继续采集。Windows 和其他应用此时无法同时使用这个麦克风。Windows 的麦克风软件增益也会失效，输入电平可能明显降低。如果电平偏低，请在主界面手动调高增益，并留意峰值，避免削波。",
+                """
+                独占模式下，即使没在录音，其他应用也无法使用此麦克风。
+
+                Windows 的麦克风软件增益在独占模式下失效。电平偏低时，可在主界面调高增益，留意峰值以免削波。
+                """,
                 "关闭",
                 () =>
                 {
