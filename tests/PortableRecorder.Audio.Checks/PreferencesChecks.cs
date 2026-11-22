@@ -16,11 +16,11 @@ static class PreferencesChecks
         {
             string settings=Path.Combine(root,"preferences.json");
             Assert(RecordingPreferences.Load(out var warning,out bool shown,settings)==RecordingMode.Shared&&warning==null&&!shown,"A new install starts in shared mode with the exclusive notice unseen");
-            File.WriteAllText(settings,"{\"RecordingMode\":\"Exclusive\"}");
-            Assert(RecordingPreferences.Load(out warning,out shown,settings)==RecordingMode.Exclusive&&warning==null&&!shown,"Old exclusive preference survives without assuming the notice was shown");
-            RecordingPreferences.Save(RecordingMode.Exclusive,settings,exclusiveNoticeShown:true);
+            File.WriteAllText(settings,"{\"RecordingMode\":\"Exclusive\",\"ExclusiveNoticeShown\":true}");
+            Assert(RecordingPreferences.Load(out warning,out shown,settings)==RecordingMode.Exclusive&&warning==null&&!shown,"Legacy exclusive mode persists and the new idle ownership notice is due");
+            RecordingPreferences.Save(RecordingMode.Exclusive,settings,exclusiveMonitoringNoticeShown:true);
             Assert(RecordingPreferences.Load(out warning,out shown,settings)==RecordingMode.Exclusive&&warning==null&&shown,"Exclusive choice and notice survive process reload");
-            RecordingPreferences.Save(RecordingMode.Shared,settings,exclusiveNoticeShown:shown);
+            RecordingPreferences.Save(RecordingMode.Shared,settings,exclusiveMonitoringNoticeShown:shown);
             Assert(RecordingPreferences.Load(out warning,out shown,settings)==RecordingMode.Shared&&warning==null&&shown,"Returning to shared mode preserves the notice across restarts");
             File.WriteAllText(settings,"{broken");Assert(RecordingPreferences.Load(settings)==RecordingMode.Shared,"Invalid preference safely falls back");
             Assert(!Directory.GetFiles(root,"*.tmp").Any(),"Atomic preference save cleans temporary file");

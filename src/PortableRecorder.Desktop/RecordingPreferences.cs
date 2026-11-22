@@ -8,15 +8,15 @@ internal static class RecordingPreferences
     private const int MaximumBytes=64*1024;
     public static RecordingMode Load(string? path=null)=>Load(out _,path);
     public static RecordingMode Load(out string? warning,string? path=null)=>Load(out warning,out _,path);
-    public static RecordingMode Load(out string? warning,out bool exclusiveNoticeShown,string? path=null)
+    public static RecordingMode Load(out string? warning,out bool exclusiveMonitoringNoticeShown,string? path=null)
     {
-        warning=null;exclusiveNoticeShown=false;path??=DefaultPath;
+        warning=null;exclusiveMonitoringNoticeShown=false;path??=DefaultPath;
         try
         {
             if(!File.Exists(path)&&!Directory.Exists(path))return RecordingMode.Shared;
             using var json=JsonDocument.Parse(AtomicFile.ReadTextBounded(path,MaximumBytes,"录制模式偏好文件过大。"));
             var root=json.RootElement;
-            exclusiveNoticeShown=root.TryGetProperty("ExclusiveNoticeShown",out var notice)&&notice.ValueKind==JsonValueKind.True;
+            exclusiveMonitoringNoticeShown=root.TryGetProperty("ExclusiveMonitoringNoticeShown",out var notice)&&notice.ValueKind==JsonValueKind.True;
             if(root.TryGetProperty("RecordingMode",out var mode)&&Enum.TryParse<RecordingMode>(mode.GetString(),out var value)&&Enum.IsDefined(value))return value;
             throw new InvalidDataException("录制模式偏好缺失或无效。");
         }
@@ -24,9 +24,9 @@ internal static class RecordingPreferences
         {warning="录制模式偏好不可用，当前使用共享："+error.Message;}
         return RecordingMode.Shared;
     }
-    public static void Save(RecordingMode mode,string? path=null,bool exclusiveNoticeShown=false)
+    public static void Save(RecordingMode mode,string? path=null,bool exclusiveMonitoringNoticeShown=false)
     {
         if(!Enum.IsDefined(mode))throw new ArgumentOutOfRangeException(nameof(mode));
-        AtomicFile.WriteAllBytes(path??DefaultPath,JsonSerializer.SerializeToUtf8Bytes(new{RecordingMode=mode.ToString(),ExclusiveNoticeShown=exclusiveNoticeShown}),MaximumBytes);
+        AtomicFile.WriteAllBytes(path??DefaultPath,JsonSerializer.SerializeToUtf8Bytes(new{RecordingMode=mode.ToString(),ExclusiveMonitoringNoticeShown=exclusiveMonitoringNoticeShown}),MaximumBytes);
     }
 }

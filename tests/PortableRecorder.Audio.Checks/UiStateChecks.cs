@@ -6,6 +6,8 @@ static class UiStateChecks
     public static async Task Run(string root,Action<bool,string> check)
     {
         string calibration=NoticePresentation.Details("校准尚未生效，请选择有效文件或禁用校准。","共享监看 · RAW 请求已接受；校准尚未生效：请选择校准文件，或禁用校准后录制。","校准尚未生效，请选择有效文件。\n校准尚未生效：请选择校准文件，或禁用校准后录制。\n未应用校准；保留原始频响。未启用绝对声压。");
+        check(NoticePresentation.Details("校准尚未生效，请选择有效文件。","独占监看 · RAW 请求已接受；校准尚未生效：请选择校准文件，或禁用校准后录制。")
+            =="校准尚未生效，请选择有效文件或禁用校准。","Exclusive monitor calibration notice deduplicates the same missing calibration");
         check(calibration.Split("校准尚未生效").Length==2,"Equivalent calibration notices appear once");
         check(calibration.Contains("未启用绝对声压"),"Distinct calibration limitations survive deduplication");
         check(NoticePresentation.Details("原因甲","原因乙","原因甲")=="原因甲\n原因乙","Distinct causes preserved and exact duplicates removed");

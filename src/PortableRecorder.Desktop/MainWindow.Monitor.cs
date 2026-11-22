@@ -11,23 +11,32 @@ public sealed partial class MainWindow
     private bool _monitorCalibrationNoticeShown;
     private bool _monitorCalibrationNoticePending;
 
-    private void SetRecordingMode(int index)
+    private async Task SetRecordingModeAsync(int index)
     {
         if (index < 0 || _closing) return;
         var mode = index == 0 ? RecordingMode.Exclusive : RecordingMode.Shared;
-        if (mode == _state.RecordMode) return;
+        var previous = _state.RecordMode;
+        if (mode == previous) return;
         _gainAlignGeneration++;
-        _state.RecordMode = mode;
-        SaveRecordingMode();
-        _inputFormatViewKey = null;
-        SyncInputFormat();
-        if (mode == RecordingMode.Exclusive && !_exclusiveNoticeShown)
+        await AudioCommand(async () =>
+        {
+            try { await _state.Audio.SetRecordingModeAsync(mode); }
+            finally { if (_state.RecordMode != previous) SaveRecordingMode(); }
+        });
+        if (_closing) return;
+        _recordModeBox.SelectedIndex = _state.RecordMode == RecordingMode.Exclusive ? 0 : 1;
+        MaybeEnqueueExclusiveNotice();
+    }
+
+    private void MaybeEnqueueExclusiveNotice()
+    {
+        if (_state.RecordMode == RecordingMode.Exclusive && !_exclusiveNoticeShown)
             EnqueueRecordingNotice(ref _exclusiveNoticePending, ShowExclusiveNotice);
     }
 
     private void SaveRecordingMode()
     {
-        try { RecordingPreferences.Save(_state.RecordMode, exclusiveNoticeShown: _exclusiveNoticeShown); _modePreferenceWarning = null; }
+        try { RecordingPreferences.Save(_state.RecordMode, exclusiveMonitoringNoticeShown: _exclusiveNoticeShown); _modePreferenceWarning = null; }
         catch (Exception error) { _modePreferenceWarning = "录制模式偏好未保存：" + error.Message; StartupLog.Write(_modePreferenceWarning); }
     }
 
@@ -91,7 +100,7 @@ public sealed partial class MainWindow
             if (_state.RecordMode != RecordingMode.Exclusive || _exclusiveNoticeShown || !_coordinator.CanEnqueueRecordingNotice()) return;
             await ShowRecordingNoticeDialogAsync(
                 null,
-                "独占录制期间，Windows 和其他应用将无法同时使用这个麦克风。Windows 的麦克风软件增益也会失效，输入电平可能明显降低。如果电平偏低，请在主界面手动调高增益，并留意峰值，避免削波。",
+                "选择独占模式后，应用会立即独占麦克风，待机和停止录制后也会继续采集。Windows 和其他应用此时无法同时使用这个麦克风。Windows 的麦克风软件增益也会失效，输入电平可能明显降低。如果电平偏低，请在主界面手动调高增益，并留意峰值，避免削波。",
                 "关闭",
                 () =>
                 {

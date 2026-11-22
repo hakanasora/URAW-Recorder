@@ -2,7 +2,10 @@ namespace PortableRecorder.Audio;
 
 public sealed partial class AudioEngine
 {
-    private sealed record CaptureBinding(AudioDevice Device,IAudioCaptureService Capture,ProcessingPipeline Pipeline,Task<Exception> NativeFault,bool NormalConsent);
+    private sealed record CaptureBinding(AudioDevice Device,IAudioCaptureService Capture,ProcessingPipeline Pipeline,Task<Exception> NativeFault,bool NormalConsent)
+    {
+        public bool Healthy=>!NativeFault.IsCompleted&&Pipeline.Failure==null;
+    }
     private sealed record RecordingOutcome(string? FilePath,bool Partial,string Message,long? OwnerEpoch=null);
 
     private abstract record EnginePhase
@@ -63,6 +66,15 @@ public sealed partial class AudioEngine
 
     private static IRecordingWriter? PhaseWriter(EnginePhase phase)=>
         phase is EnginePhase.RecordingSession session?session.Writer:null;
+
+    private static RecordingOutcome? PhaseOutcome(EnginePhase phase)=>phase switch
+    {
+        EnginePhase.Stopped s=>s.LastOutcome,
+        EnginePhase.AwaitingRawConsent a=>a.LastOutcome,
+        EnginePhase.Monitoring m=>m.LastOutcome,
+        EnginePhase.Faulted f=>f.LastOutcome,
+        _=>null
+    };
 
     private static AudioStatus ProjectStatus(EnginePhase phase)=>phase switch
     {

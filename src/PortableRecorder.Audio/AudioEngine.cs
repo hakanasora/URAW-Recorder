@@ -12,6 +12,7 @@ public sealed partial class AudioEngine:IAsyncDisposable
     private readonly Func<string,AudioFormat,RecordingEncoding,IRecordingWriter> _createWriter;
     private readonly SemaphoreSlim _commands=new(1,1);
     private EnginePhase _phase=new EnginePhase.Stopped(null,false,"正在枚举输入设备");
+    private volatile RecordingMode _recordingMode;
     private string? _calibrationError;
     private double _gain=1,_previousPeak=double.NaN;
     private long _epoch,_decision,_lastWritten;
@@ -22,8 +23,10 @@ public sealed partial class AudioEngine:IAsyncDisposable
     public event Action<string>? LiveMonitorFaulted;
     private void Trace(string message){try{Diagnostic?.Invoke(message);}catch{/* Diagnostics cannot stop capture. */}}
 
-    public AudioEngine(ICaptureFactory? factory=null,CalibrationLibrary? calibrationLibrary=null,Func<string,AudioFormat,RecordingEncoding,IRecordingWriter>? writerFactory=null,InputFormatPreferences? inputFormats=null,ILiveMonitorFactory? liveMonitorFactory=null)
+    public AudioEngine(ICaptureFactory? factory=null,CalibrationLibrary? calibrationLibrary=null,Func<string,AudioFormat,RecordingEncoding,IRecordingWriter>? writerFactory=null,InputFormatPreferences? inputFormats=null,ILiveMonitorFactory? liveMonitorFactory=null,RecordingMode recordingMode=RecordingMode.Shared)
     {
+        if(!Enum.IsDefined(recordingMode))throw new ArgumentOutOfRangeException(nameof(recordingMode));
+        _recordingMode=recordingMode;
         _factory=factory??new WasapiCaptureFactory();
         Calibrations=calibrationLibrary??new CalibrationLibrary();
         InputFormats=inputFormats??new InputFormatPreferences();
@@ -37,6 +40,7 @@ public sealed partial class AudioEngine:IAsyncDisposable
     private void SetPhase(EnginePhase next)=>Volatile.Write(ref _phase,next);
 
     public AudioDevice? SelectedDevice=>PhaseDevice(CurrentPhase);
+    public RecordingMode ConfiguredRecordingMode=>_recordingMode;
     public CalibrationLibrary.Selection CalibrationSelection=>SelectedDevice is { } device?Calibrations.GetSelection(device.Id):new(false,null);
     public bool CalibrationReadyToRecord=>!CalibrationSelection.Enabled||Calibration.Applied&&Volatile.Read(ref _calibrationError)==null;
     public AudioFormat? PreferredInputFormat=>SelectedDevice is { } device?InputFormats.Get(device.Id):null;
@@ -110,6 +114,26 @@ public sealed partial class AudioEngine:IAsyncDisposable
         catch(Exception error){Trace("Live monitor fault callback failed: "+error);}
     }
     public Task<EndpointVolumeSnapshot> QueryEndpointVolumeAsync(AudioDevice device)=>_factory.QueryEndpointVolumeAsync(device);
+
+    public async Task SetRecordingModeAsync(RecordingMode mode)
+    {
+        if(!Enum.IsDefined(mode))throw new ArgumentOutOfRangeException(nameof(mode));
+        await _commands.WaitAsync();
+        try
+        {
+            ThrowIfDisposed();
+            if(_recordingMode==mode)return;
+            var phase=CurrentPhase;
+            if(phase is EnginePhase.RecordingSession)throw new InvalidOperationException("录制和暂停期间不能更改录制模式。");
+            _recordingMode=mode;
+            if(phase is not EnginePhase.Suspended&&PhaseDevice(phase) is { } device)
+            {
+                await CloseForDeviceHandoff(device);
+                await OpenMonitor(device,PhaseNormalConsent(phase),PhaseOutcome(phase),includeBannerWithOutcome:true);
+            }
+        }
+        finally{_commands.Release();}
+    }
 
     /// <summary>Release idle microphone capture while another work mode owns monitoring.</summary>
     public async Task SuspendMonitoringAsync()
@@ -191,7 +215,7 @@ public sealed partial class AudioEngine:IAsyncDisposable
         switch(CurrentPhase)
         {
             case EnginePhase.Monitoring monitoring:
-                SetPhase(monitoring with{BaseMessage=prefixMessage+"；已恢复共享监看。"});
+                SetPhase(monitoring with{BaseMessage=prefixMessage+$"；已恢复{MonitorModeName(monitoring.Binding)}监看。"});
                 break;
             case EnginePhase.Faulted faulted:
                 SetPhase(faulted with{Message=prefixMessage+"；恢复监看失败："+faulted.Message});
@@ -263,9 +287,15 @@ public sealed partial class AudioEngine:IAsyncDisposable
         finally{_commands.Release();}
     }
 
-    private string MonitorBanner(bool normalConsent)
+    private static string MonitorModeName(CaptureBinding binding)=>binding.Capture.Info.Exclusive?"独占":"共享";
+    private static string ExclusiveOpenFailure(Exception error)=>"无法打开独占监看："+Friendly(error)+" 可刷新输入设备重试。";
+
+    private bool MatchesMonitorMode(CaptureBinding binding)=>binding.Capture.Info.Exclusive==(_recordingMode==RecordingMode.Exclusive);
+
+    private string MonitorBanner(CaptureBinding binding)
     {
-        string message=normalConsent?"共享监看 · 普通输入（仅本次许可）":"共享监看 · RAW 请求已接受";
+        string input=binding.Capture.Info.Raw?"RAW 请求已接受":"普通输入（仅本次许可）";
+        string message=$"{MonitorModeName(binding)}监看 · {input}";
         string? warning=Volatile.Read(ref _calibrationError)??Calibrations.Warning;
         return warning==null?message:message+"；"+warning;
     }
@@ -273,22 +303,24 @@ public sealed partial class AudioEngine:IAsyncDisposable
     private async Task OpenMonitor(AudioDevice device,bool normalConsent,RecordingOutcome? outcome=null,bool includeBannerWithOutcome=false)
     {
         if(CurrentPhase is EnginePhase.Disposed)return;
+        bool exclusive=_recordingMode==RecordingMode.Exclusive;
         try
         {
-            var binding=await OpenCapture(device,exclusive:false,raw:!normalConsent,normalConsent,outcome);
+            var binding=await OpenCapture(device,exclusive,raw:exclusive||!normalConsent,normalConsent,outcome);
             string baseMessage=outcome==null
-                ?MonitorBanner(normalConsent)
-                :includeBannerWithOutcome?$"{outcome.Message}；{MonitorBanner(normalConsent)}":outcome.Message;
+                ?MonitorBanner(binding)
+                :includeBannerWithOutcome?$"{outcome.Message}；{MonitorBanner(binding)}":outcome.Message;
             SetPhase(new EnginePhase.Monitoring(binding,baseMessage,outcome));
         }
-        catch(RawUnavailableException error)
+        catch(RawUnavailableException error) when(!exclusive)
         {
             long decisionId=Interlocked.Increment(ref _decision);
             SetPhase(new EnginePhase.AwaitingRawConsent(device,decisionId,error.Message,outcome));
         }
         catch(Exception error)
         {
-            SetPhase(new EnginePhase.Faulted(device,normalConsent,Friendly(error),null,outcome));
+            string message=exclusive?ExclusiveOpenFailure(error):Friendly(error);
+            SetPhase(new EnginePhase.Faulted(device,normalConsent,message,null,outcome));
         }
     }
 
@@ -316,7 +348,7 @@ public sealed partial class AudioEngine:IAsyncDisposable
             var capture=await _factory.OpenAsync(device,exclusive,raw,epoch,pipe.Submit,NativeFault,preferred);
             try
             {
-                if(preferred!=null&&capture.Info.Format!=preferred)throw new NotSupportedException("采集实际格式与所选独占格式不一致，已拒绝录制。");
+                if(preferred!=null&&capture.Info.Format!=preferred)throw new NotSupportedException("采集实际格式与所选独占格式不一致，已停止打开输入。");
                 var plan=CalibrationPlan.Identity;string? calibrationError=null;
                 var selection=Calibrations.GetSelection(device.Id);
                 string? id=selection.Enabled?selection.ProfileId:null;
@@ -381,7 +413,11 @@ public sealed partial class AudioEngine:IAsyncDisposable
 
     public static string DefaultRecordingFolder=>RecordingStore.DefaultFolder;
 
-    public async Task StartRecordingAsync(string directory,RecordingMode mode,RecordingEncoding? encoding=null)
+    public Task StartConfiguredRecordingAsync(string directory,RecordingEncoding? encoding=null)=>StartRecording(directory,null,encoding);
+
+    public Task StartRecordingAsync(string directory,RecordingMode mode,RecordingEncoding? encoding=null)=>StartRecording(directory,mode,encoding);
+
+    private async Task StartRecording(string directory,RecordingMode? mode,RecordingEncoding? encoding)
     {
         await _commands.WaitAsync();
         CaptureBinding? binding=null;
@@ -395,18 +431,25 @@ public sealed partial class AudioEngine:IAsyncDisposable
             var phase=CurrentPhase;
             if(phase is EnginePhase.RecordingSession)throw new InvalidOperationException("已经在录制。");
             device=PhaseDevice(phase)??throw new InvalidOperationException("没有选中的输入设备。");
-            if(!Enum.IsDefined(mode))throw new ArgumentOutOfRangeException(nameof(mode));
+            if(mode is { } requestedMode&&!Enum.IsDefined(requestedMode))throw new ArgumentOutOfRangeException(nameof(mode));
             preparationStarted=true;
             normalConsent=PhaseNormalConsent(phase);
-            bool exclusive=mode==RecordingMode.Exclusive;
+            bool exclusive=(mode??_recordingMode)==RecordingMode.Exclusive;
             binding=phase is EnginePhase.Monitoring m?m.Binding:null;
-            if(binding==null||exclusive||!binding.Capture.Info.Raw)
+            if(binding==null||!binding.Healthy||binding.Capture.Info.Exclusive!=exclusive||!binding.Capture.Info.Raw||
+                (exclusive&&InputFormats.Get(device.Id) is { } preferred&&binding.Capture.Info.Format!=preferred))
             {
                 binding=null;
-                await CloseCapture();
+                await CloseForDeviceHandoff(device);
                 try{binding=await OpenCapture(device,exclusive,raw:true,normalConsent);}
-                catch(Exception error){await OpenMonitor(device,normalConsent);throw new IOException("录制输入打开失败："+Friendly(error),error);}
-                SetPhase(new EnginePhase.Monitoring(binding,MonitorBanner(normalConsent)));
+                catch(Exception error)
+                {
+                    if(exclusive&&_recordingMode==RecordingMode.Exclusive)
+                        SetPhase(new EnginePhase.Faulted(device,normalConsent,ExclusiveOpenFailure(error)));
+                    else await OpenMonitor(device,normalConsent);
+                    throw new IOException("录制输入打开失败："+Friendly(error),error);
+                }
+                SetPhase(new EnginePhase.Monitoring(binding,MonitorBanner(binding)));
             }
             if(Volatile.Read(ref _calibrationError) is string calError)throw new InvalidOperationException(calError+" 请重新选择校准或明确关闭校准后录制。");
             if(!binding.Capture.Info.Raw)throw new InvalidOperationException("正式录制必须接受 RAW 请求。");
@@ -430,13 +473,12 @@ public sealed partial class AudioEngine:IAsyncDisposable
                 try{await writer.CompleteAsync();}
                 catch(Exception error){failure=AudioFailure.Combine(failure,error);}
             }
-            // If preparation failed after exclusive capture opened, release it before restoring shared monitoring.
-            if(binding?.Capture.Info.Exclusive==true)
+            if(binding!=null&&(!MatchesMonitorMode(binding)||!binding.Healthy))
             {
                 try{await CloseCapture();}catch(Exception error){failure=AudioFailure.Combine(failure,error);}
                 await OpenMonitor(device!,normalConsent);
             }
-            else if(binding!=null)SetPhase(new EnginePhase.Monitoring(binding,MonitorBanner(binding.NormalConsent)));
+            else if(binding!=null)SetPhase(new EnginePhase.Monitoring(binding,MonitorBanner(binding)));
             Trace("Recording preparation failed: "+failure);
             ExceptionDispatchInfo.Capture(failure).Throw();
         }
@@ -544,7 +586,7 @@ public sealed partial class AudioEngine:IAsyncDisposable
                 throw new InvalidOperationException("请先暂停，再丢弃本次录音。");
             var writer=session.Writer;
             var binding=session.Binding;
-            string path=writer.Path;var auxiliary=writer.AuxiliaryPaths;bool exclusive=binding.Capture.Info.Exclusive;
+            string path=writer.Path;var auxiliary=writer.AuxiliaryPaths;
             // Close/drain the owned file before deleting; this cannot touch earlier recordings.
             try{await StopWriter(StopMode.DiscardAndRestoreMonitor);}
             catch(Exception finalizationError)
@@ -567,7 +609,7 @@ public sealed partial class AudioEngine:IAsyncDisposable
                 catch(Exception error){failure=AudioFailure.Combine(failure,error);}
             }
             _lastWritten=0;
-            if(exclusive)
+            if(!MatchesMonitorMode(binding)||!binding.Healthy)
             {
                 try{await CloseCapture();}catch(Exception error){failure=AudioFailure.Combine(failure,error);}
                 await OpenMonitor(binding.Device,binding.NormalConsent);
@@ -618,7 +660,7 @@ public sealed partial class AudioEngine:IAsyncDisposable
         }
 
         string? summaryError=await Task.Run(()=>_recordings.SaveCalibrationSummary(writer,failure,unconfirmedDiscontinuities));
-        bool exclusive=binding.Capture.Info.Exclusive;
+        bool switchMonitor=!MatchesMonitorMode(binding);
         if(failure!=null)
         {
             bool captureGap=failure is CaptureGapException||binding.Pipeline.Failure is CaptureGapException;
@@ -630,16 +672,16 @@ public sealed partial class AudioEngine:IAsyncDisposable
                 await RecoverAfterCaptureGapAsync(binding.Device,binding.NormalConsent,writer.Path,Friendly(failure));
                 ExceptionDispatchInfo.Capture(failure).Throw();
             }
-            if(restoreMonitor&&(exclusive||nativeError!=null))
+            bool retainBinding=!restoreMonitor||(!switchMonitor&&binding.Healthy);
+            if(!retainBinding)
             {
                 try{await CloseCapture(preservePeak:false);}
                 catch(Exception cleanupError){failure=AudioFailure.Combine(failure,cleanupError);}
             }
             Trace("Recording finalization failed: "+failure);
-            CaptureBinding? retained=!restoreMonitor||(!exclusive&&nativeError==null)?binding:null;
             SetPhase(new EnginePhase.Faulted(binding.Device,binding.NormalConsent,
                 "录制结束异常："+Friendly(failure)+(summaryError==null?"":"；校准摘要写入失败："+summaryError),
-                retained,new(writer.Path,true,"录制结束异常："+Friendly(failure),binding.Capture.Info.Epoch)));
+                retainBinding?binding:null,new(writer.Path,true,"录制结束异常："+Friendly(failure),binding.Capture.Info.Epoch)));
             ExceptionDispatchInfo.Capture(failure).Throw();
         }
 
@@ -655,7 +697,7 @@ public sealed partial class AudioEngine:IAsyncDisposable
             return;
         }
 
-        if(exclusive&&restoreMonitor)
+        if(switchMonitor&&restoreMonitor)
         {
             Exception? monitorFailure=null;
             try{await CloseCapture(preservePeak:false);}catch(Exception error){monitorFailure=error;}
@@ -739,7 +781,7 @@ public sealed partial class AudioEngine:IAsyncDisposable
         await PersistCalibrationChange(device,plan,()=>Calibrations.Configure(device.Id,choice),error);
         if(CurrentPhase is EnginePhase.Monitoring monitoring)
         {
-            string message=error??(choice.Enabled?$"已启用频响校准：{plan.Profile!.Name}":"校准已禁用；共享监看");
+            string message=error??(choice.Enabled?$"已启用频响校准：{plan.Profile!.Name}":$"校准已禁用；{MonitorModeName(monitoring.Binding)}监看");
             SetPhase(monitoring with{BaseMessage=message,LastOutcome=null});
         }
     }
@@ -806,9 +848,16 @@ public sealed partial class AudioEngine:IAsyncDisposable
             var phase=CurrentPhase;
             if(phase is EnginePhase.RecordingSession)throw new InvalidOperationException("录制和暂停期间不能更换输入格式。");
             var device=PhaseDevice(phase)??throw new InvalidOperationException("尚未选择输入设备。");
+            var previous=InputFormats.Get(device.Id);
             if(format!=null&&!(await _factory.QueryFormatsAsync(device)).Exclusive.Contains(format))
                 throw new NotSupportedException("设备当前不支持此独占输入格式。");
             InputFormats.Set(device.Id,format);
+            if(_recordingMode==RecordingMode.Exclusive&&phase is not EnginePhase.Suspended&&
+                (previous!=format||phase is not EnginePhase.Monitoring {Binding.Healthy:true}))
+            {
+                await CloseForDeviceHandoff(device);
+                await OpenMonitor(device,PhaseNormalConsent(phase),PhaseOutcome(phase),includeBannerWithOutcome:true);
+            }
         }
         finally{_commands.Release();}
     }
@@ -839,7 +888,7 @@ public sealed partial class AudioEngine:IAsyncDisposable
             {
                 await PersistCalibrationChange(device!,CalibrationPlan.Identity,()=>Calibrations.Remove(id),null);
                 if(CurrentPhase is EnginePhase.Monitoring monitoring)
-                    SetPhase(monitoring with{BaseMessage="已移除当前校准；共享监看未应用校准。",LastOutcome=null});
+                    SetPhase(monitoring with{BaseMessage=$"已移除当前校准；{MonitorModeName(monitoring.Binding)}监看未应用校准。",LastOutcome=null});
             }
             else await Task.Run(()=>Calibrations.Remove(id));
         }

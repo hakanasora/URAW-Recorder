@@ -66,7 +66,7 @@ public sealed partial class MainWindow : Window
     private readonly Grid _calibrationHeading=new(){Height=24};
     private readonly Border _calibrationFileRow=new();
     private readonly Grid _inputFormatGroup=new();
-    private readonly TextBlock _inputFormatHint=Design.Text("当录制模式为共享时，该选项不可用",11,Design.Muted);
+    private readonly TextBlock _inputFormatHint=Design.Text("",11,Design.Muted);
     private readonly TextBlock _modeGainHint=Design.Text("",11,Design.Muted);
     private MMDeviceEnumerator? _volumeEnumerator;
     private MMDevice? _volumeDevice;
@@ -221,7 +221,7 @@ public sealed partial class MainWindow : Window
         {
             if(_state.IsListening)await ToggleListening();
             else if(_state.Session.Active)await _state.Audio.StopRecordingAsync();
-            else await _state.Audio.StartRecordingAsync(OutputFolderPreferences.Normalize(_path.Text),_state.RecordMode,_state.Encoding);
+            else await _state.Audio.StartConfiguredRecordingAsync(OutputFolderPreferences.Normalize(_path.Text),_state.Encoding);
         });
         _activeButtons.Visibility=Visibility.Visible;_activeButtons.Spacing=0;
         _discardButton=Design.Button(Design.Icon("\uE74D",16,Design.White),"丢弃",Design.TransportAction);
@@ -268,6 +268,7 @@ public sealed partial class MainWindow : Window
                     catch(Exception error){StartupLog.Write("Device watcher unavailable: "+error);}
                     await LoadDevices(manual:false);
                     if(_closing)return;
+                    MaybeEnqueueExclusiveNotice();
                 }
                 else StartupLog.Write("诊断模式：未打开麦克风");
             }
@@ -426,7 +427,7 @@ public sealed partial class MainWindow : Window
         _inputPage.Spacing=16;
         StyleField(_recordModeBox,_recordingControls);_recordModeBox.ItemsSource=new[]{"独占","共享"};
         _recordModeBox.SelectedIndex=_state.RecordMode==RecordingMode.Exclusive?0:1;
-        _recordModeBox.SelectionChanged+=(_,_)=>SetRecordingMode(_recordModeBox.SelectedIndex);
+        _recordModeBox.SelectionChanged+=async(_,_)=>await SetRecordingModeAsync(_recordModeBox.SelectedIndex);
         AutomationProperties.SetName(_recordModeBox,"录制模式");
         var modeGroup=Group("录制模式","\uE713",_recordModeBox,4);
         _modeGainHint.TextWrapping=TextWrapping.Wrap;modeGroup.Children.Add(_modeGainHint);_inputPage.Children.Add(modeGroup);
@@ -458,7 +459,6 @@ public sealed partial class MainWindow : Window
         _inputFormatBox.Resources["ComboBoxDropDownGlyphForegroundDisabled"]=Design.Brush(Design.Muted);
         _inputFormatBox.Margin=new Thickness(0,4,0,0);_inputFormatGroup.Children.Add(_inputFormatBox);deviceGroup.Children.Add(_inputFormatGroup);
         _inputFormatHint.TextWrapping=TextWrapping.Wrap;_inputFormatHint.Margin=new Thickness(0,4,0,0);
-        _inputFormatHint.Visibility=_state.RecordMode==RecordingMode.Shared?Visibility.Visible:Visibility.Collapsed;
         deviceGroup.Children.Add(_inputFormatHint);
         _inputFormatBox.SelectionChanged+=async(_,_)=>
         {
@@ -1134,8 +1134,6 @@ public sealed partial class MainWindow : Window
     {
         if(!InRecordingInputContext)return;
         var audio=_state.Audio;bool shared=_state.RecordMode==RecordingMode.Shared;
-        var hintVisibility=Visibility.Visible;
-        if(_inputFormatHint.Visibility!=hintVisibility)_inputFormatHint.Visibility=hintVisibility;
         var actual=audio.Status.Capture;
         bool currentDevice=_formatQuery.DeviceId==audio.SelectedDevice?.Id;
         var formats=currentDevice?_formatQuery.Options:null;
@@ -1143,11 +1141,11 @@ public sealed partial class MainWindow : Window
         bool loadingFormats=currentDevice&&_formatQuery.Loading;
         var live=actual is{Exclusive:false}?actual.Format:formats?.Shared;
         var preferred=audio.PreferredInputFormat;
-        string key=$"{shared}|{audio.SelectedDevice?.Id}|{loadingFormats}|{formats?.GetHashCode()}|{live}|{preferred}|{actual?.Exclusive}|{actual?.Raw}|{_liveEndpointVolume}|{formatError}|{_coordinator.CanAlignWindowsGain(_state.RecordMode)&&!_state.Session.Active}";
+        string key=$"{shared}|{audio.SelectedDevice?.Id}|{loadingFormats}|{formats?.GetHashCode()}|{live}|{preferred}|{actual?.Format}|{actual?.Exclusive}|{actual?.Raw}|{_liveEndpointVolume}|{formatError}|{_coordinator.CanAlignWindowsGain(_state.RecordMode)&&!_state.Session.Active}";
         _inputFormatBox.IsEnabled=InputFormatPresentation.CanSelect(_state.RecordMode,audio.SelectedDevice!=null,loadingFormats,formats!=null,_audioBusy||WorkModeChanging,_state.Session.Active);
         if(key==_inputFormatViewKey)return;_inputFormatViewKey=key;_updatingInputFormat=true;
         string endpointGain=InputFormatPresentation.EndpointGain(_liveEndpointVolume,actual?.Exclusive==true);
-        _inputFormatHint.Text=shared?"共享格式沿用 Windows 设置。":"仅当录制时切换为独占。";
+        _inputFormatHint.Text=shared?"共享格式沿用 Windows 设置。":"独占格式同时用于监看与录制。";
         _modeGainHint.Inlines.Clear();var volume=_liveEndpointVolume;
         string? unavailable=InputFormatPresentation.AlignmentUnavailable(volume);
         if(unavailable!=null)_modeGainHint.Inlines.Add(new Microsoft.UI.Xaml.Documents.Run{Text=unavailable+"。"});
@@ -1184,8 +1182,8 @@ public sealed partial class MainWindow : Window
             }
         }
         finally{_updatingInputFormat=false;}
-        string explanation=shared?"共享模式沿用 Windows 当前格式；请在 Windows 设置中更改系统格式。":"此处选择独占录制的目标格式；待机和停止后仍为共享监看。自动以外的选择不会静默改用其他格式。";
-        if(!shared)explanation+="\n独占录制设置："+(preferred?.Description??"自动（设备推荐）");
+        string explanation=shared?"共享模式沿用 Windows 当前格式；请在 Windows 设置中更改系统格式。":"所选格式立即用于独占监看，并用于后续录制。打开失败时可选择其他格式或刷新输入设备重试。";
+        if(!shared)explanation+="\n所选独占格式："+(preferred?.Description??"自动（设备推荐）");
         if(actual!=null)explanation+=$"\n当前实际{(actual.Exclusive?"独占":"共享")} · {actual.Format.Description} · {(actual.Raw?"RAW 请求已接受":"普通输入（仅本次许可）")}";
         else explanation+="\n当前没有有效监看输入；若显示格式，它是最近查询的系统格式，不代表正在采集。";
         explanation+="\n"+endpointGain+"\nRAW 请求不代表绕过共享软件音量。";

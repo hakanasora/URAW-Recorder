@@ -31,7 +31,7 @@ internal static class NoticePresentation
             {
                 // Split only the known monitoring prefix; paths and arbitrary errors remain intact.
                 var line = raw.Trim();
-                foreach (var prefix in new[] { "共享监看 · RAW 请求已接受；", "共享监看 · 普通输入（仅本次许可）；" })
+                foreach (var prefix in new[] { "独占监看 · RAW 请求已接受；", "共享监看 · RAW 请求已接受；", "共享监看 · 普通输入（仅本次许可）；" })
                     if (line.StartsWith(prefix, StringComparison.Ordinal)) line = line[prefix.Length..];
                 var key = line switch
                 {

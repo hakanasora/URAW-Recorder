@@ -46,7 +46,7 @@ public sealed class ShellViewModel:INotifyPropertyChanged
     public InputDevice SelectedInput {get;set;}=new("","未选择输入设备");
     public CalibrationFile? SelectedCalibration {get;set;}
     public MonitorMode Mode {get;set;}
-    public RecordingMode RecordMode {get;set;}
+    public RecordingMode RecordMode=>Audio.ConfiguredRecordingMode;
     internal EncodingPreferences EncodingSettings {get;}
     internal string? ModePreferenceWarning {get;}
     internal bool ExclusiveNoticeShown {get;}
@@ -68,8 +68,8 @@ public sealed class ShellViewModel:INotifyPropertyChanged
     public ShellViewModel(AudioEngine? audio=null,string? monitorPreferencesPath=null)
     {
         _monitorPreferencesPath=monitorPreferencesPath;
-        Audio=audio??new AudioEngine();
-        RecordMode=RecordingPreferences.Load(out var modeWarning,out var exclusiveNoticeShown);
+        var mode=RecordingPreferences.Load(out var modeWarning,out var exclusiveNoticeShown);
+        Audio=audio??new AudioEngine(recordingMode:mode);
         ModePreferenceWarning=modeWarning;ExclusiveNoticeShown=exclusiveNoticeShown;
         EncodingSettings=EncodingPreferences.Load(out var encodingWarning);EncodingPreferenceWarning=encodingWarning;
         RecordingMonitorDb=MonitorPreferences.Load(_monitorPreferencesPath);

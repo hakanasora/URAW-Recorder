@@ -118,7 +118,7 @@ public sealed class RecordingMonitorControl : Grid
         ApplyToggleVisual();
 
         AutomationProperties.SetName(_toggle, enabled ? "关闭监听" : "开启监听");
-        ToolTipService.SetToolTip(_toggle, enabled ? "正在监听，点击关闭" : "开启录制监听");
+        ToolTipService.SetToolTip(_toggle, enabled ? "关闭麦克风实时回放" : "通过当前输出设备实时听到麦克风输入");
 
         if (!enabled) _knob.CancelInteraction();
         _knob.Visibility = enabled ? Visibility.Visible : Visibility.Collapsed;

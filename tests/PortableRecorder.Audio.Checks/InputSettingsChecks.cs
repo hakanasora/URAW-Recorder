@@ -81,6 +81,97 @@ static class InputSettingsChecks
         check(dangling.GetSelection("fake")==new CalibrationLibrary.Selection(false,null),"Dangling old binding cannot trap user in enabled calibration");
         await CalibrationRemovalWriteFailure(directory,check);
         await CalibrationCaptureFailureAfterSave(directory,source,check);
+        await ConfiguredExclusiveMonitoring(directory,check);
+    }
+
+    private static async Task ConfiguredExclusiveMonitoring(string directory,Action<bool,string> check)
+    {
+        var factory=new FakeFactory{DenySharedRaw=true};
+        var formats=new InputFormatPreferences(Path.Combine(directory,"exclusive-monitor-formats.json"));
+        var options=await factory.QueryFormatsAsync(factory.Device);
+        var preferred=options.Exclusive.Single(f=>f.SampleRate==96000);
+        formats.Set(factory.Device.Id,preferred);
+        await using var engine=new AudioEngine(factory,new CalibrationLibrary(Path.Combine(directory,"exclusive-monitor-calibrations")),
+            inputFormats:formats,recordingMode:RecordingMode.Exclusive);
+        await engine.ReconcileDevicesAsync([factory.Device]);
+        var capture=factory.Current!;
+        check(engine.Status.Capture is {Exclusive:true,Raw:true} startup&&startup.Format==preferred&&!engine.RawDecisionPending,
+            "Saved exclusive mode opens the chosen RAW format before recording");
+        factory.Push([.75f]);
+        await TestSupport.Until(()=>engine.Latest.Valid,"exclusive idle meter receives samples");
+        check(!engine.LiveMonitor.Enabled,"Exclusive meter receives samples with playback switched off");
+
+        await engine.StartConfiguredRecordingAsync(directory);
+        string path=engine.Status.FilePath!;
+        factory.Push([.25f]);
+        await TestSupport.Until(()=>engine.WrittenFrames==1,"exclusive recording receives its first sample");
+        await engine.PauseAsync(true);
+        long beforePause=engine.Latest.FramePosition;
+        factory.Push([.5f]);
+        await TestSupport.Until(()=>engine.Latest.FramePosition>beforePause,"exclusive pause keeps meter running");
+        check(engine.Status.Capture?.Epoch==capture.Info.Epoch&&engine.WrittenFrames==1,"Pause keeps the capture and excludes paused audio");
+        await engine.PauseAsync(false);
+        factory.Push([-.25f]);
+        await TestSupport.Until(()=>engine.WrittenFrames==2,"exclusive recording resumes on the same stream");
+        await engine.StopRecordingAsync();
+        check(engine.Status.State==AudioRunState.Monitoring&&engine.Status.Capture==capture.Info&&!capture.Closed&&
+            engine.Status.FilePath==path&&!engine.Status.Partial&&!engine.RawDecisionPending,"Stop saves and keeps the original exclusive monitor");
+        using(var wave=new WaveFileReader(path))
+        {
+            var samples=new float[2];wave.ToSampleProvider().Read(samples);
+            check(wave.WaveFormat.SampleRate==preferred.SampleRate&&samples.SequenceEqual(new[]{.25f,-.25f}),
+                "The file uses the exclusive monitor format and contains just the recording intervals");
+        }
+        await engine.StartConfiguredRecordingAsync(directory);
+        string discarded=engine.Status.FilePath!;
+        await engine.PauseAsync(true);
+        await engine.DiscardRecordingAsync();
+        check(!File.Exists(discarded)&&engine.Status.Capture==capture.Info&&!capture.Closed&&engine.WrittenFrames==0,
+            "Discard deletes the recording and keeps the exclusive monitor");
+
+        await engine.SetInputFormatAsync(null);
+        var auto=factory.Current!;
+        check(capture.Closed&&auto.Info.Exclusive&&engine.Status.Capture?.Format==options.Shared,
+            "Selecting automatic reopens the exclusive monitor immediately");
+        factory.RejectPreferred=true;
+        await engine.SetInputFormatAsync(preferred);
+        check(auto.Closed&&engine.Status.State==AudioRunState.Faulted&&engine.Status.Capture==null&&
+            !engine.RawDecisionPending&&engine.PreferredInputFormat==preferred&&engine.Status.Message.Contains("独占监看"),
+            "Rejected format leaves exclusive selected and reports missing capture without RAW fallback");
+        factory.RejectPreferred=false;
+        await engine.ReconcileDevicesAsync([factory.Device],manualRefresh:true);
+        check(engine.Status.Capture is {Exclusive:true} retried&&retried.Format==preferred,
+            "Manual refresh retries the same exclusive format");
+
+        await engine.StartConfiguredRecordingAsync(directory);
+        string interrupted=engine.Status.FilePath!;
+        var beforeGap=factory.Current!;
+        factory.Push([.125f]);
+        await TestSupport.Until(()=>engine.WrittenFrames==1,"exclusive recording has data before a capture gap");
+        factory.Push([.125f],gap:true);
+        try{await engine.StopRecordingAsync();}catch(CaptureGapException){}
+        await TestSupport.Until(()=>engine.Status.State==AudioRunState.Monitoring,"exclusive monitoring recovers after a recording gap");
+        check(beforeGap.Closed&&engine.Status.Capture is {Exclusive:true} afterGap&&afterGap.Format==preferred&&
+            engine.Status.Partial&&engine.Status.FilePath==interrupted&&!engine.RawDecisionPending,
+            "Recording gap preserves the partial recording and reopens the selected exclusive format");
+
+        var second=new AudioDevice("second","Second device");
+        await engine.ReconcileDevicesAsync([factory.Device,second]);
+        check(engine.Status.Capture is {Exclusive:true} handedOff&&handedOff.Device.Id==second.Id&&handedOff.Format==options.Shared,
+            "New device is monitored exclusively with its own automatic format");
+        await engine.SuspendMonitoringAsync();
+        check(factory.Current!.Closed&&engine.Status.Capture==null,"Listening releases the exclusive microphone");
+        await engine.ReconcileDevicesAsync([factory.Device,second],manualRefresh:true);
+        check(engine.Status.Capture is {Exclusive:true} returned&&returned.Device.Id==second.Id,
+            "Returning to recording restores the exclusive monitor");
+        await engine.SetRecordingModeAsync(RecordingMode.Shared);
+        check(engine.PendingRawConsent!=null&&factory.Current!.Closed,"Selecting shared releases exclusive ownership and follows shared RAW consent");
+        var consent=engine.PendingRawConsent!;
+        int attempts=0;
+        factory.BeforeOpen=_=>{attempts++;throw new RawUnavailableException("Exclusive RAW unavailable");};
+        await engine.SetRecordingModeAsync(RecordingMode.Exclusive);
+        check(attempts==1&&engine.Status.State==AudioRunState.Faulted&&!engine.RawDecisionPending&&
+            !await engine.DecideRawFallbackAsync(consent.DecisionId,true),"Exclusive RAW failure does not prompt for ordinary shared input or accept stale consent");
     }
 
     private static async Task CalibrationRemovalWriteFailure(string directory,Action<bool,string> check)
